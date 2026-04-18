@@ -1,10 +1,11 @@
 import SwiftUI
+import AppKit
 
-// MARK: - MR List State
+// MARK: - Issues State
 
 @MainActor
-final class MergeRequestsState: ObservableObject {
-    @Published var mergeRequests: [GitLabMergeRequest] = []
+final class IssuesState: ObservableObject {
+    @Published var issues: [GitLabIssue] = []
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
@@ -18,16 +19,16 @@ final class MergeRequestsState: ObservableObject {
         let token = requestCounter
 
         if lastDirectory != directory {
-            mergeRequests = []
+            issues = []
         }
         lastDirectory = directory
         isLoading = true
         errorMessage = nil
 
         fetchTask = Task { [weak self] in
-            let result: Result<[GitLabMergeRequest], Error>
+            let result: Result<[GitLabIssue], Error>
             do {
-                result = .success(try await fetchGitLabMergeRequests(in: directory))
+                result = .success(try await fetchGitLabIssues(in: directory))
             } catch {
                 result = .failure(error)
             }
@@ -37,11 +38,11 @@ final class MergeRequestsState: ObservableObject {
             }
 
             switch result {
-            case .success(let mrs):
-                self.mergeRequests = mrs
+            case .success(let items):
+                self.issues = items
                 self.errorMessage = nil
             case .failure(let error):
-                self.mergeRequests = []
+                self.issues = []
                 self.errorMessage = self.messageFor(error: error)
             }
             self.isLoading = false
@@ -51,7 +52,7 @@ final class MergeRequestsState: ObservableObject {
     func clear() {
         fetchTask?.cancel()
         requestCounter &+= 1
-        mergeRequests = []
+        issues = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
@@ -59,11 +60,11 @@ final class MergeRequestsState: ObservableObject {
 
     private func messageFor(error: Error) -> String {
         switch error {
-        case GitLabMRFetchError.glabNotFound:
-            return String(localized: "mr.error.glabNotFound", defaultValue: "glab not found")
-        case GitLabMRFetchError.notGitLabRepo:
-            return String(localized: "mr.error.notGitLab", defaultValue: "Not a GitLab repository")
-        case GitLabMRFetchError.processError(let msg):
+        case GitLabIssueFetchError.glabNotFound:
+            return String(localized: "issue.error.glabNotFound", defaultValue: "glab not found")
+        case GitLabIssueFetchError.notGitLabRepo:
+            return String(localized: "issue.error.notGitLab", defaultValue: "Not a GitLab repository")
+        case GitLabIssueFetchError.processError(let msg):
             return msg.trimmingCharacters(in: .whitespacesAndNewlines)
         default:
             return error.localizedDescription
@@ -71,70 +72,73 @@ final class MergeRequestsState: ObservableObject {
     }
 }
 
-// MARK: - MR List View
+// MARK: - Issues List View
 
-struct MergeRequestsListView: View {
+private let kNoMilestoneSentinel = "__none__"
+
+struct IssuesListView: View {
     @ObservedObject var workspace: Workspace
-    @StateObject private var state = MergeRequestsState()
-    @State private var reviewerFilter: String = ""  // empty = all
+    @StateObject private var state = IssuesState()
+    @State private var milestoneFilter: String = ""  // "" = all, kNoMilestoneSentinel = no milestone, else milestone title
 
     var body: some View {
         VStack(spacing: 0) {
-            mrHeader
+            header
             Divider()
-            if !availableReviewers.isEmpty {
-                reviewerFilterBar
+            if !availableMilestones.isEmpty || state.issues.contains(where: { $0.milestone == nil }) {
+                milestoneFilterBar
                 Divider()
             }
-            if state.isLoading && state.mergeRequests.isEmpty {
+            if state.isLoading && state.issues.isEmpty {
                 loadingState
-            } else if let error = state.errorMessage, state.mergeRequests.isEmpty {
+            } else if let error = state.errorMessage, state.issues.isEmpty {
                 errorState(error)
-            } else if filteredMergeRequests.isEmpty {
+            } else if filteredIssues.isEmpty {
                 emptyState
             } else {
-                mrList
+                list
             }
         }
         .onAppear { refreshIfNeeded() }
-        .onChange(of: workspace.id) { _ in
-            state.clear()
-            refreshIfNeeded()
-        }
         .onChange(of: workspace.currentDirectory) { _ in refreshIfNeeded() }
     }
 
-    private var availableReviewers: [GitLabReviewer] {
+    private var availableMilestones: [GitLabMilestone] {
         var seen = Set<String>()
-        var result: [GitLabReviewer] = []
-        for mr in state.mergeRequests {
-            for r in mr.reviewers where !r.username.isEmpty {
-                if seen.insert(r.username).inserted {
-                    result.append(r)
-                }
+        var result: [GitLabMilestone] = []
+        for issue in state.issues {
+            guard let m = issue.milestone, !m.title.isEmpty else { continue }
+            if seen.insert(m.title).inserted {
+                result.append(m)
             }
         }
-        return result.sorted { $0.username.lowercased() < $1.username.lowercased() }
-    }
-
-    private var filteredMergeRequests: [GitLabMergeRequest] {
-        guard !reviewerFilter.isEmpty else { return state.mergeRequests }
-        return state.mergeRequests.filter { mr in
-            mr.reviewers.contains { $0.username == reviewerFilter }
+        return result.sorted { lhs, rhs in
+            switch (lhs.dueDate, rhs.dueDate) {
+            case let (l?, r?): return l < r
+            case (_?, nil): return true
+            case (nil, _?): return false
+            default: return lhs.title.lowercased() < rhs.title.lowercased()
+            }
         }
     }
 
-    private var mrHeader: some View {
+    private var filteredIssues: [GitLabIssue] {
+        if milestoneFilter.isEmpty { return state.issues }
+        if milestoneFilter == kNoMilestoneSentinel {
+            return state.issues.filter { $0.milestone == nil }
+        }
+        return state.issues.filter { $0.milestone?.title == milestoneFilter }
+    }
+
+    private var header: some View {
         HStack {
-            if !state.mergeRequests.isEmpty {
-                Text("\(filteredMergeRequests.count)")
+            if !state.issues.isEmpty {
+                Text("\(filteredIssues.count)")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
-                    .background(
-                        Capsule().fill(.secondary.opacity(0.15))
-                    )
+                    .background(Capsule().fill(.secondary.opacity(0.15)))
             }
             Spacer()
             if state.isLoading {
@@ -156,31 +160,42 @@ struct MergeRequestsListView: View {
         .padding(.vertical, 6)
     }
 
-    private var reviewerFilterBar: some View {
+    private var milestoneFilterBar: some View {
         HStack(spacing: 6) {
-            Image(systemName: "person.crop.circle.badge.checkmark")
+            Image(systemName: "flag.fill")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Menu {
                 Button {
-                    reviewerFilter = ""
+                    milestoneFilter = ""
                 } label: {
                     HStack {
-                        Text(String(localized: "mr.filter.allReviewers", defaultValue: "All reviewers"))
-                        if reviewerFilter.isEmpty {
+                        Text(String(localized: "issue.filter.allMilestones", defaultValue: "All milestones"))
+                        if milestoneFilter.isEmpty {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Button {
+                    milestoneFilter = kNoMilestoneSentinel
+                } label: {
+                    HStack {
+                        Text(String(localized: "issue.filter.noMilestone", defaultValue: "No milestone"))
+                        if milestoneFilter == kNoMilestoneSentinel {
                             Spacer()
                             Image(systemName: "checkmark")
                         }
                     }
                 }
                 Divider()
-                ForEach(availableReviewers, id: \.username) { reviewer in
+                ForEach(availableMilestones, id: \.id) { milestone in
                     Button {
-                        reviewerFilter = reviewer.username
+                        milestoneFilter = milestone.title
                     } label: {
                         HStack {
-                            Text(reviewer.name.isEmpty ? reviewer.username : "\(reviewer.name) (@\(reviewer.username))")
-                            if reviewerFilter == reviewer.username {
+                            Text(milestoneMenuLabel(milestone))
+                            if milestoneFilter == milestone.title {
                                 Spacer()
                                 Image(systemName: "checkmark")
                             }
@@ -213,37 +228,44 @@ struct MergeRequestsListView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: false, vertical: true)
 
-            if !reviewerFilter.isEmpty {
+            if !milestoneFilter.isEmpty {
                 Button {
-                    reviewerFilter = ""
+                    milestoneFilter = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
                 .buttonStyle(.plain)
-                .help(String(localized: "mr.filter.clear", defaultValue: "Clear filter"))
+                .help(String(localized: "issue.filter.clear", defaultValue: "Clear filter"))
             }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
     }
 
+    private func milestoneMenuLabel(_ m: GitLabMilestone) -> String {
+        guard let due = m.dueDate else { return m.title }
+        let df = DateFormatter()
+        df.dateFormat = "MMM d"
+        return "\(m.title) • \(df.string(from: due))"
+    }
+
     private var currentFilterLabel: String {
-        if reviewerFilter.isEmpty {
-            return String(localized: "mr.filter.allReviewers", defaultValue: "All reviewers")
+        if milestoneFilter.isEmpty {
+            return String(localized: "issue.filter.allMilestones", defaultValue: "All milestones")
         }
-        if let match = availableReviewers.first(where: { $0.username == reviewerFilter }) {
-            return match.name.isEmpty ? "@\(match.username)" : match.name
+        if milestoneFilter == kNoMilestoneSentinel {
+            return String(localized: "issue.filter.noMilestone", defaultValue: "No milestone")
         }
-        return "@\(reviewerFilter)"
+        return milestoneFilter
     }
 
     private var loadingState: some View {
         VStack(spacing: 8) {
             Spacer()
             ProgressView()
-            Text(String(localized: "mr.sidebar.loading", defaultValue: "Loading..."))
+            Text(String(localized: "issue.sidebar.loading", defaultValue: "Loading..."))
                 .font(.subheadline)
                 .foregroundStyle(.tertiary)
             Spacer()
@@ -262,7 +284,7 @@ struct MergeRequestsListView: View {
                 .foregroundStyle(.tertiary)
                 .multilineTextAlignment(.center)
                 .padding(.horizontal, 12)
-            Button(String(localized: "mr.sidebar.retry", defaultValue: "Retry")) {
+            Button(String(localized: "issue.sidebar.retry", defaultValue: "Retry")) {
                 refreshIfNeeded()
             }
             .font(.caption)
@@ -276,13 +298,13 @@ struct MergeRequestsListView: View {
     private var emptyState: some View {
         VStack(spacing: 8) {
             Spacer()
-            Image(systemName: "arrow.triangle.merge")
+            Image(systemName: "exclamationmark.bubble")
                 .font(.system(size: 32))
                 .foregroundStyle(.quaternary)
             Text(
-                reviewerFilter.isEmpty
-                    ? String(localized: "mr.sidebar.empty", defaultValue: "No merge requests")
-                    : String(localized: "mr.sidebar.emptyFiltered", defaultValue: "No merge requests match this filter")
+                milestoneFilter.isEmpty
+                    ? String(localized: "issue.sidebar.empty", defaultValue: "No issues")
+                    : String(localized: "issue.sidebar.emptyFiltered", defaultValue: "No issues match this filter")
             )
             .font(.subheadline)
             .foregroundStyle(.tertiary)
@@ -293,11 +315,11 @@ struct MergeRequestsListView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
-    private var mrList: some View {
+    private var list: some View {
         ScrollView {
             LazyVStack(spacing: 0) {
-                ForEach(filteredMergeRequests) { mr in
-                    MRCardView(mr: mr)
+                ForEach(filteredIssues) { issue in
+                    IssueCardView(issue: issue)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                 }
@@ -313,28 +335,28 @@ struct MergeRequestsListView: View {
     }
 }
 
-// MARK: - MR Card
+// MARK: - Issue Card
 
-private struct MRCardView: View {
-    let mr: GitLabMergeRequest
+private struct IssueCardView: View {
+    let issue: GitLabIssue
     @State private var isHovered = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
             topRow
-            Text(mr.title)
+            Text(issue.title)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
                 .lineLimit(3)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if !mr.labels.isEmpty {
-                labelsView
+            if let milestone = issue.milestone {
+                milestoneBadge(milestone)
             }
 
-            Divider().opacity(0.5)
-
-            metadataSection
+            if !issue.labels.isEmpty {
+                labelsView
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(10)
@@ -349,53 +371,35 @@ private struct MRCardView: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture {
-            guard let url = URL(string: mr.webURL) else { return }
+            guard let url = URL(string: issue.webURL) else { return }
             NSWorkspace.shared.open(url)
         }
-        .help(mr.webURL)
+        .help(issue.webURL)
     }
 
     private var topRow: some View {
         HStack(alignment: .center, spacing: 6) {
             stateIcon
                 .font(.system(size: 12, weight: .semibold))
-            Text("!\(mr.iid)")
+            Text("#\(issue.iid)")
                 .font(.system(size: 11, weight: .medium, design: .monospaced))
                 .foregroundStyle(.secondary)
-            if mr.userNotesCount > 0 {
+            if issue.userNotesCount > 0 {
                 HStack(spacing: 3) {
                     Image(systemName: "bubble.left.fill")
                         .font(.system(size: 10, weight: .semibold))
-                    Text("\(mr.userNotesCount)")
+                    Text("\(issue.userNotesCount)")
                         .font(.system(size: 10, weight: .bold))
                 }
                 .foregroundStyle(Color.accentColor)
                 .padding(.horizontal, 5)
                 .padding(.vertical, 1)
-                .background(
-                    Capsule().fill(Color.accentColor.opacity(0.15))
-                )
-                .overlay(
-                    Capsule().strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 0.5)
-                )
-                .help(String(
-                    localized: "mr.card.comments",
-                    defaultValue: "Comments"
-                ))
-            }
-            if mr.isDraft {
-                Text(String(localized: "mr.card.draft", defaultValue: "Draft"))
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.orange)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(.orange.opacity(0.15))
-                    )
+                .background(Capsule().fill(Color.accentColor.opacity(0.15)))
+                .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 0.5))
+                .help(String(localized: "issue.card.comments", defaultValue: "Comments"))
             }
             Spacer()
-            if let updated = mr.updatedAt {
+            if let updated = issue.updatedAt {
                 Text(relativeTime(from: updated))
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
@@ -403,95 +407,47 @@ private struct MRCardView: View {
         }
     }
 
-    private var metadataSection: some View {
-        VStack(alignment: .leading, spacing: 5) {
-            if !mr.authorName.isEmpty || !mr.authorUsername.isEmpty {
-                metaRow(
-                    icon: "person.fill",
-                    label: String(localized: "mr.card.author", defaultValue: "Author"),
-                    content: AnyView(
-                        AvatarLabel(
-                            name: mr.authorName.isEmpty ? mr.authorUsername : mr.authorName,
-                            username: mr.authorUsername
-                        )
-                    )
-                )
-            }
-
-            if !mr.reviewers.isEmpty {
-                metaRow(
-                    icon: "person.2.fill",
-                    label: String(localized: "mr.card.reviewers", defaultValue: "Reviewers"),
-                    content: AnyView(reviewersView)
-                )
-            }
-        }
-    }
-
-    @ViewBuilder
-    private func metaRow(icon: String, label: String, content: AnyView) -> some View {
-        HStack(alignment: .center, spacing: 6) {
-            Image(systemName: icon)
-                .font(.system(size: 9))
-                .foregroundStyle(.tertiary)
-                .frame(width: 12)
-            content
-        }
-    }
-
-    private var reviewersView: some View {
-        HStack(spacing: 4) {
-            ForEach(mr.reviewers.prefix(4), id: \.username) { reviewer in
-                AvatarBadge(name: reviewer.name.isEmpty ? reviewer.username : reviewer.name)
-                    .help(reviewer.name.isEmpty ? "@\(reviewer.username)" : "\(reviewer.name) (@\(reviewer.username))")
-            }
-            if mr.reviewers.count > 4 {
-                Text("+\(mr.reviewers.count - 4)")
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.tertiary)
-            }
-        }
-    }
-
-    private var branchesView: some View {
-        HStack(spacing: 4) {
-            Text(mr.sourceBranch)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Image(systemName: "arrow.right")
-                .font(.system(size: 8))
-                .foregroundStyle(.quaternary)
-            Text(mr.targetBranch)
-                .font(.system(size: 10, design: .monospaced))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-        }
-    }
-
     @ViewBuilder
     private var stateIcon: some View {
-        switch mr.state {
+        switch issue.state {
         case "opened":
-            Image(systemName: "arrow.triangle.merge")
+            Image(systemName: "exclamationmark.circle")
                 .foregroundStyle(.green)
-        case "merged":
+        case "closed":
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.purple)
-        case "closed":
-            Image(systemName: "xmark.circle.fill")
-                .foregroundStyle(.red)
         default:
             Image(systemName: "questionmark.circle")
                 .foregroundStyle(.secondary)
         }
     }
 
+    private func milestoneBadge(_ m: GitLabMilestone) -> some View {
+        HStack(spacing: 4) {
+            Image(systemName: "flag.fill")
+                .font(.system(size: 9))
+            Text(m.title)
+                .font(.system(size: 10, weight: .semibold))
+                .lineLimit(1)
+            if let due = m.dueDate {
+                Text("•")
+                    .font(.system(size: 9))
+                    .opacity(0.6)
+                Text(dueDateString(due))
+                    .font(.system(size: 10))
+                    .opacity(0.85)
+            }
+        }
+        .foregroundStyle(.teal)
+        .padding(.horizontal, 6)
+        .padding(.vertical, 2)
+        .background(Capsule().fill(Color.teal.opacity(0.15)))
+        .overlay(Capsule().strokeBorder(Color.teal.opacity(0.35), lineWidth: 0.5))
+    }
+
     @ViewBuilder
     private var labelsView: some View {
-        let displayed = Array(mr.labels.prefix(4))
+        let displayed = Array(issue.labels.prefix(4))
         HStack(spacing: 4) {
             ForEach(displayed, id: \.self) { label in
                 Text(label)
@@ -505,66 +461,23 @@ private struct MRCardView: View {
                     )
                     .lineLimit(1)
             }
-            if mr.labels.count > 4 {
-                Text("+\(mr.labels.count - 4)")
+            if issue.labels.count > 4 {
+                Text("+\(issue.labels.count - 4)")
                     .font(.system(size: 9))
                     .foregroundStyle(.quaternary)
             }
         }
     }
 
+    private func dueDateString(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateFormat = "MMM d"
+        return df.string(from: date)
+    }
+
     private func relativeTime(from date: Date) -> String {
         let formatter = RelativeDateTimeFormatter()
         formatter.unitsStyle = .abbreviated
         return formatter.localizedString(for: date, relativeTo: Date())
-    }
-}
-
-// MARK: - Avatar components
-
-private struct AvatarBadge: View {
-    let name: String
-
-    private var initials: String {
-        let parts = name.split(separator: " ")
-        if let first = parts.first?.first, let second = parts.dropFirst().first?.first {
-            return "\(first)\(second)".uppercased()
-        }
-        return String(name.prefix(2)).uppercased()
-    }
-
-    private var color: Color {
-        let hash = abs(name.hashValue)
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .mint, .cyan]
-        return palette[hash % palette.count]
-    }
-
-    var body: some View {
-        Text(initials)
-            .font(.system(size: 9, weight: .bold))
-            .foregroundStyle(.white)
-            .frame(width: 18, height: 18)
-            .background(Circle().fill(color.opacity(0.8)))
-    }
-}
-
-private struct AvatarLabel: View {
-    let name: String
-    let username: String
-
-    var body: some View {
-        HStack(spacing: 5) {
-            AvatarBadge(name: name)
-            Text(name)
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            if !username.isEmpty && username != name {
-                Text("@\(username)")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.tertiary)
-                    .lineLimit(1)
-            }
-        }
     }
 }

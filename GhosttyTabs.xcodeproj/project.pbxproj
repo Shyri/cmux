@@ -139,6 +139,11 @@
 			N0TE5003A1B2C3D4E5F60003 /* NotesSidebarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = N0TE5013A1B2C3D4E5F60003 /* NotesSidebarContentView.swift */; };
 			GLAB0001A1B2C3D4E5F60001 /* GitLabMergeRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0011A1B2C3D4E5F60001 /* GitLabMergeRequest.swift */; };
 			GLAB0002A1B2C3D4E5F60002 /* MergeRequestsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0012A1B2C3D4E5F60002 /* MergeRequestsListView.swift */; };
+			GLAB0003A1B2C3D4E5F60003 /* GitLabPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0013A1B2C3D4E5F60003 /* GitLabPipeline.swift */; };
+			GLAB0004A1B2C3D4E5F60004 /* PipelinesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0014A1B2C3D4E5F60004 /* PipelinesListView.swift */; };
+			GLAB0005A1B2C3D4E5F60005 /* GitLabSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */; };
+			GLAB0006A1B2C3D4E5F60006 /* GitLabIssue.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */; };
+			GLAB0007A1B2C3D4E5F60007 /* IssuesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */; };
 		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -342,6 +347,11 @@
 		N0TE5013A1B2C3D4E5F60003 /* NotesSidebarContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = NotesSidebarContentView.swift; sourceTree = "<group>"; };
 		GLAB0011A1B2C3D4E5F60001 /* GitLabMergeRequest.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabMergeRequest.swift; sourceTree = "<group>"; };
 		GLAB0012A1B2C3D4E5F60002 /* MergeRequestsListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MergeRequestsListView.swift; sourceTree = "<group>"; };
+		GLAB0013A1B2C3D4E5F60003 /* GitLabPipeline.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabPipeline.swift; sourceTree = "<group>"; };
+		GLAB0014A1B2C3D4E5F60004 /* PipelinesListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = PipelinesListView.swift; sourceTree = "<group>"; };
+		GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabSidebarView.swift; sourceTree = "<group>"; };
+		GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabIssue.swift; sourceTree = "<group>"; };
+		GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuesListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -484,6 +494,11 @@
 					N0TE5013A1B2C3D4E5F60003 /* NotesSidebarContentView.swift */,
 					GLAB0011A1B2C3D4E5F60001 /* GitLabMergeRequest.swift */,
 					GLAB0012A1B2C3D4E5F60002 /* MergeRequestsListView.swift */,
+					GLAB0013A1B2C3D4E5F60003 /* GitLabPipeline.swift */,
+					GLAB0014A1B2C3D4E5F60004 /* PipelinesListView.swift */,
+					GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */,
+					GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */,
+					GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */,
 				A5001014 /* GhosttyConfig.swift */,
 				A5001015 /* GhosttyTerminalView.swift */,
 				A5001531 /* TerminalWindowPortal.swift */,
@@ -805,6 +820,11 @@
 					N0TE5003A1B2C3D4E5F60003 /* NotesSidebarContentView.swift in Sources */,
 					GLAB0001A1B2C3D4E5F60001 /* GitLabMergeRequest.swift in Sources */,
 					GLAB0002A1B2C3D4E5F60002 /* MergeRequestsListView.swift in Sources */,
+					GLAB0003A1B2C3D4E5F60003 /* GitLabPipeline.swift in Sources */,
+					GLAB0004A1B2C3D4E5F60004 /* PipelinesListView.swift in Sources */,
+					GLAB0005A1B2C3D4E5F60005 /* GitLabSidebarView.swift in Sources */,
+					GLAB0006A1B2C3D4E5F60006 /* GitLabIssue.swift in Sources */,
+					GLAB0007A1B2C3D4E5F60007 /* IssuesListView.swift in Sources */,
 					B9000018A1B2C3D4E5F60719 /* WindowDragHandleView.swift in Sources */,
 					A50012F1 /* Backport.swift in Sources */,
 					A50012F3 /* KeyboardShortcutSettings.swift in Sources */,

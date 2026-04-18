@@ -23,8 +23,8 @@ struct NotesSidebarContentView: View {
                 // Draggable divider
                 splitDivider(totalHeight: totalHeight)
 
-                // Bottom: Merge Requests
-                MergeRequestsListView(workspace: workspace)
+                // Bottom: GitLab (MRs + Pipelines)
+                GitLabSidebarView(workspace: workspace)
                     .id(workspace.id)
                     .frame(height: mrHeight)
             }
