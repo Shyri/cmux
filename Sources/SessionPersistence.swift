@@ -216,6 +216,18 @@ struct SessionProgressSnapshot: Codable, Sendable {
     var label: String?
 }
 
+struct SessionNoteSnapshot: Codable, Sendable {
+    var id: UUID
+    var title: String
+    var content: String
+    var createdAt: TimeInterval
+}
+
+struct SessionNotesSidebarSnapshot: Codable, Sendable {
+    var isVisible: Bool
+    var width: Double?
+}
+
 struct SessionGitBranchSnapshot: Codable, Sendable {
     var branch: String
     var isDirty: Bool
@@ -341,6 +353,7 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var logEntries: [SessionLogEntrySnapshot]
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
+    var notes: [SessionNoteSnapshot]?
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {
@@ -353,6 +366,7 @@ struct SessionWindowSnapshot: Codable, Sendable {
     var display: SessionDisplaySnapshot?
     var tabManager: SessionTabManagerSnapshot
     var sidebar: SessionSidebarSnapshot
+    var notesSidebar: SessionNotesSidebarSnapshot?
 }
 
 struct AppSessionSnapshot: Codable, Sendable {

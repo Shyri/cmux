@@ -1798,8 +1798,13 @@ struct ContentView: View {
     @EnvironmentObject var notificationStore: TerminalNotificationStore
     @EnvironmentObject var sidebarState: SidebarState
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
+    @EnvironmentObject var notesSidebarState: NotesSidebarState
     @EnvironmentObject var cmuxConfigStore: CmuxConfigStore
     @State private var sidebarWidth: CGFloat = 200
+    @State private var notesSidebarWidth: CGFloat = NotesSidebarState.defaultWidth
+    @State private var isNotesSidebarResizerDragging = false
+    @State private var notesSidebarDragStartWidth: CGFloat?
+    @State private var editingNoteId: UUID?
     @State private var hoveredResizerHandles: Set<SidebarResizerHandle> = []
     @State private var isResizerDragging = false
     @State private var sidebarDragStartWidth: CGFloat?
@@ -2602,6 +2607,66 @@ struct ContentView: View {
         .frame(maxHeight: .infinity, alignment: .topLeading)
     }
 
+    // MARK: - Notes Sidebar
+
+    @ViewBuilder
+    private var notesSidebarView: some View {
+        if let workspace = tabManager.selectedWorkspace {
+            NotesSidebarContentView(
+                workspace: workspace,
+                editingNoteId: $editingNoteId
+            )
+            .frame(width: notesSidebarWidth)
+            .frame(maxHeight: .infinity, alignment: .topTrailing)
+            .background(.ultraThinMaterial)
+        }
+    }
+
+    private var notesSidebarResizerOverlay: some View {
+        GeometryReader { proxy in
+            let totalWidth = max(0, proxy.size.width)
+            let resizerX = max(0, totalWidth - notesSidebarWidth)
+            HStack(spacing: 0) {
+                Color.clear
+                    .frame(width: max(0, resizerX - SidebarResizeInteraction.contentSideHitWidth))
+                    .allowsHitTesting(false)
+                Color.clear
+                    .frame(width: SidebarResizeInteraction.totalHitWidth)
+                    .contentShape(Rectangle())
+                    .onHover { hovering in
+                        if hovering {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture(minimumDistance: 0, coordinateSpace: .global)
+                            .onChanged { value in
+                                if !isNotesSidebarResizerDragging {
+                                    isNotesSidebarResizerDragging = true
+                                    notesSidebarDragStartWidth = notesSidebarWidth
+                                }
+                                let startWidth = notesSidebarDragStartWidth ?? notesSidebarWidth
+                                let nextWidth = NotesSidebarState.clampedWidth(startWidth - value.translation.width)
+                                withTransaction(Transaction(animation: nil)) {
+                                    notesSidebarWidth = nextWidth
+                                }
+                            }
+                            .onEnded { _ in
+                                isNotesSidebarResizerDragging = false
+                                notesSidebarDragStartWidth = nil
+                                notesSidebarState.persistedWidth = notesSidebarWidth
+                            }
+                    )
+                Color.clear
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
+            }
+            .frame(width: totalWidth, height: proxy.size.height, alignment: .leading)
+        }
+    }
+
     /// Space at top of content area for the titlebar. This must be at least the actual titlebar
     /// height; otherwise controls like Bonsplit tab dragging can be interpreted as window drags.
     @State private var titlebarPadding: CGFloat = 32
@@ -2881,8 +2946,14 @@ struct ContentView: View {
                 ZStack(alignment: .leading) {
                     terminalContentWithSidebarDropOverlay
                         .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
+                        .padding(.trailing, notesSidebarState.isVisible ? notesSidebarWidth : 0)
                     if sidebarState.isVisible {
                         sidebarView
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if notesSidebarState.isVisible {
+                        notesSidebarView
                     }
                 }
             )
@@ -2894,6 +2965,9 @@ struct ContentView: View {
                         sidebarView
                     }
                     terminalContentWithSidebarDropOverlay
+                    if notesSidebarState.isVisible {
+                        notesSidebarView
+                    }
                 }
             )
         }
@@ -2903,6 +2977,12 @@ struct ContentView: View {
                 .overlay(alignment: .leading) {
                     if sidebarState.isVisible {
                         sidebarResizerOverlay
+                            .zIndex(1000)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if notesSidebarState.isVisible {
+                        notesSidebarResizerOverlay
                             .zIndex(1000)
                     }
                 }
@@ -3506,7 +3586,8 @@ struct ContentView: View {
                 windowId: windowId,
                 tabManager: tabManager,
                 sidebarState: sidebarState,
-                sidebarSelectionState: sidebarSelectionState
+                sidebarSelectionState: sidebarSelectionState,
+                notesSidebarState: notesSidebarState
             )
             installFileDropOverlay(on: window, tabManager: tabManager)
         }))

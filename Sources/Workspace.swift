@@ -291,6 +291,14 @@ extension Workspace {
         let gitBranchSnapshot = gitBranch.map { branch in
             SessionGitBranchSnapshot(branch: branch.branch, isDirty: branch.isDirty)
         }
+        let notesSnapshots = notes.map { note in
+            SessionNoteSnapshot(
+                id: note.id,
+                title: note.title,
+                content: note.content,
+                createdAt: note.createdAt.timeIntervalSince1970
+            )
+        }
 
         return SessionWorkspaceSnapshot(
             processTitle: processTitle,
@@ -305,7 +313,8 @@ extension Workspace {
             statusEntries: statusSnapshots,
             logEntries: logSnapshots,
             progress: progressSnapshot,
-            gitBranch: gitBranchSnapshot
+            gitBranch: gitBranchSnapshot,
+            notes: notesSnapshots.isEmpty ? nil : notesSnapshots
         )
     }
 
@@ -355,6 +364,14 @@ extension Workspace {
         }
         progress = snapshot.progress.map { SidebarProgressState(value: $0.value, label: $0.label) }
         gitBranch = snapshot.gitBranch.map { SidebarGitBranchState(branch: $0.branch, isDirty: $0.isDirty) }
+        notes = (snapshot.notes ?? []).map { snap in
+            WorkspaceNote(
+                id: snap.id,
+                title: snap.title,
+                content: snap.content,
+                createdAt: Date(timeIntervalSince1970: snap.createdAt)
+            )
+        }
 
         recomputeListeningPorts()
 
@@ -6570,6 +6587,7 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var panelGitBranches: [UUID: SidebarGitBranchState] = [:]
     @Published var pullRequest: SidebarPullRequestState?
     @Published var panelPullRequests: [UUID: SidebarPullRequestState] = [:]
+    @Published var notes: [WorkspaceNote] = []
     @Published var surfaceListeningPorts: [UUID: [Int]] = [:]
     var agentListeningPorts: [Int] = []
     @Published var remoteConfiguration: WorkspaceRemoteConfiguration?

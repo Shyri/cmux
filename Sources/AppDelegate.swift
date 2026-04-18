@@ -2223,6 +2223,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let tabManager: TabManager
         let sidebarState: SidebarState
         let sidebarSelectionState: SidebarSelectionState
+        let notesSidebarState: NotesSidebarState
         weak var window: NSWindow?
 
         init(
@@ -2230,12 +2231,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             tabManager: TabManager,
             sidebarState: SidebarState,
             sidebarSelectionState: SidebarSelectionState,
+            notesSidebarState: NotesSidebarState,
             window: NSWindow?
         ) {
             self.windowId = windowId
             self.tabManager = tabManager
             self.sidebarState = sidebarState
             self.sidebarSelectionState = sidebarSelectionState
+            self.notesSidebarState = notesSidebarState
             self.window = window
         }
     }
@@ -3949,6 +3952,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             SessionPersistencePolicy.sanitizedSidebarWidth(snapshot.sidebar.width)
         )
         context.sidebarSelectionState.selection = snapshot.sidebar.selection.sidebarSelection
+        if let notesSidebar = snapshot.notesSidebar {
+            context.notesSidebarState.isVisible = notesSidebar.isVisible
+            if let width = notesSidebar.width {
+                context.notesSidebarState.persistedWidth = CGFloat(width)
+            }
+        }
 
         if let restoredFrame = resolvedWindowFrame(from: snapshot), let window {
             window.setFrame(restoredFrame, display: true)
@@ -4737,6 +4746,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                         isVisible: context.sidebarState.isVisible,
                         selection: SessionSidebarSelection(selection: context.sidebarSelectionState.selection),
                         width: SessionPersistencePolicy.sanitizedSidebarWidth(Double(context.sidebarState.persistedWidth))
+                    ),
+                    notesSidebar: SessionNotesSidebarSnapshot(
+                        isVisible: context.notesSidebarState.isVisible,
+                        width: Double(context.notesSidebarState.persistedWidth)
                     )
                 )
             }
@@ -4808,7 +4821,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         windowId: UUID,
         tabManager: TabManager,
         sidebarState: SidebarState,
-        sidebarSelectionState: SidebarSelectionState
+        sidebarSelectionState: SidebarSelectionState,
+        notesSidebarState: NotesSidebarState
     ) {
         tabManager.window = window
 
@@ -4827,6 +4841,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 tabManager: tabManager,
                 sidebarState: sidebarState,
                 sidebarSelectionState: sidebarSelectionState,
+                notesSidebarState: notesSidebarState,
                 window: window
             )
             NotificationCenter.default.addObserver(
@@ -5652,6 +5667,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         isCommandPaletteEffectivelyVisible(in: window)
     }
 
+    /// Check if the given responder is a notes sidebar text field/view.
+    /// Walks the field editor owner chain and superview chain to detect
+    /// NotesSidebarResponder conformance.
+    private func isNotesSidebarResponder(_ responder: NSResponder) -> Bool {
+        if responder is NotesSidebarResponder { return true }
+        // For NSTextField, the firstResponder is the shared field editor.
+        if let editor = responder as? NSTextView, editor.isFieldEditor {
+            if let owner = cmuxFieldEditorOwnerView(editor), owner is NotesSidebarResponder {
+                return true
+            }
+        }
+        // Walk the superview chain.
+        if let view = responder as? NSView {
+            var current: NSView? = view.superview
+            while let v = current {
+                if v is NotesSidebarResponder { return true }
+                current = v.superview
+            }
+        }
+        return false
+    }
+
     func shouldBlockFirstResponderChangeWhileCommandPaletteVisible(
         window: NSWindow,
         responder: NSResponder?
@@ -5757,6 +5794,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard isMainTerminalWindow(window) else { return }
         guard window.attachedSheet == nil else { return }
         guard !isCommandPaletteEffectivelyVisible(in: window) else { return }
+        // Don't repair focus when a notes sidebar text field owns the responder.
+        if let fr = window.firstResponder, isNotesSidebarResponder(fr) { return }
         guard let context = contextForMainWindow(window) ?? contextForMainTerminalWindow(window),
               let workspace = context.tabManager.selectedWorkspace,
               let panelId = workspace.focusedPanelId,
@@ -7094,6 +7133,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let sidebarSelectionState = SidebarSelectionState(
             selection: sessionWindowSnapshot?.sidebar.selection.sidebarSelection ?? .tabs
         )
+        let notesSidebarState = NotesSidebarState(
+            isVisible: sessionWindowSnapshot?.notesSidebar?.isVisible ?? false,
+            persistedWidth: CGFloat(sessionWindowSnapshot?.notesSidebar?.width ?? Double(NotesSidebarState.defaultWidth))
+        )
         let notificationStore = TerminalNotificationStore.shared
 
         let cmuxConfigStore = CmuxConfigStore()
@@ -7105,6 +7148,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .environmentObject(notificationStore)
             .environmentObject(sidebarState)
             .environmentObject(sidebarSelectionState)
+            .environmentObject(notesSidebarState)
             .environmentObject(cmuxConfigStore)
 
         // Use the current key window's size for new windows so Cmd+Shift+N
@@ -7185,7 +7229,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             windowId: windowId,
             tabManager: tabManager,
             sidebarState: sidebarState,
-            sidebarSelectionState: sidebarSelectionState
+            sidebarSelectionState: sidebarSelectionState,
+            notesSidebarState: notesSidebarState
         )
         installFileDropOverlay(on: window, tabManager: tabManager)
         if TerminalController.shouldSuppressSocketCommandActivation() {

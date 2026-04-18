@@ -10712,6 +10712,13 @@ final class GhosttySurfaceScrollView: NSView {
 #endif
             return
         }
+        // Don't steal focus from the notes sidebar text fields.
+        if let fr = window.firstResponder, isNotesSidebarResponder(fr) {
+#if DEBUG
+            dlog("find.applyFirstResponder SKIP surface=\(surfaceShort) reason=notesSidebarFocused")
+#endif
+            return
+        }
 #if DEBUG
         dlog("find.applyFirstResponder APPLY surface=\(surfaceShort) prevFirstResponder=\(String(describing: window.firstResponder))")
 #endif
@@ -10964,6 +10971,20 @@ final class GhosttySurfaceScrollView: NSView {
             current = v.superview
         }
         return false
+    }
+
+    private func isNotesSidebarResponder(_ responder: NSResponder) -> Bool {
+        // The window's firstResponder for NSTextField is the shared field editor
+        // (NSTextView), not the text field itself. Resolve the actual owner first.
+        if let view = resolvedKeyboardFocusOwnerView(for: responder) {
+            var current: NSView? = view
+            while let v = current {
+                if v is NotesSidebarResponder { return true }
+                current = v.superview
+            }
+        }
+        // Also check if the responder itself conforms (for NoteTextView).
+        return responder is NotesSidebarResponder
     }
 
     private func isCurrentSurfaceSearchResponder(_ responder: NSResponder) -> Bool {
