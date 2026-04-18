@@ -6,8 +6,32 @@ struct NotesSidebarContentView: View {
     @Binding var editingNoteId: UUID?
     @State private var draggedNoteId: UUID?
     @State private var dropTargetNoteId: UUID?
+    @State private var splitRatio: CGFloat = 0.5
+    @State private var isDraggingSplitter: Bool = false
 
     var body: some View {
+        GeometryReader { geometry in
+            let totalHeight = geometry.size.height
+            let notesHeight = max(80, totalHeight * splitRatio)
+            let mrHeight = max(80, totalHeight - notesHeight)
+
+            VStack(spacing: 0) {
+                // Top: Notes
+                notesSection
+                    .frame(height: notesHeight)
+
+                // Draggable divider
+                splitDivider(totalHeight: totalHeight)
+
+                // Bottom: Merge Requests
+                MergeRequestsListView(workspace: workspace)
+                    .id(workspace.id)
+                    .frame(height: mrHeight)
+            }
+        }
+    }
+
+    private var notesSection: some View {
         VStack(spacing: 0) {
             notesSidebarHeader
             Divider()
@@ -17,6 +41,32 @@ struct NotesSidebarContentView: View {
                 notesList
             }
         }
+    }
+
+    private func splitDivider(totalHeight: CGFloat) -> some View {
+        Rectangle()
+            .fill(isDraggingSplitter ? Color.accentColor : Color(nsColor: .separatorColor))
+            .frame(height: isDraggingSplitter ? 2 : 1)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle().inset(by: -4))
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeUpDown.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .local)
+                    .onChanged { value in
+                        isDraggingSplitter = true
+                        let newRatio = (splitRatio * totalHeight + value.translation.height) / totalHeight
+                        splitRatio = min(0.85, max(0.15, newRatio))
+                    }
+                    .onEnded { _ in
+                        isDraggingSplitter = false
+                    }
+            )
     }
 
     private var notesSidebarHeader: some View {
