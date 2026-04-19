@@ -44,15 +44,48 @@ struct GitLabSidebarView: View {
     }
 
     private var tabBar: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 3) {
-                ForEach(GitLabSidebarTab.allCases) { tab in
-                    tabButton(tab)
+        HStack(spacing: 0) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 3) {
+                    ForEach(GitLabSidebarTab.allCases) { tab in
+                        tabButton(tab)
+                    }
                 }
+                .padding(.horizontal, 8)
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 8)
-            .padding(.vertical, 6)
+            Button {
+                showWorkingTreeDiff()
+            } label: {
+                Image(systemName: "text.magnifyingglass")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 5)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(.secondary.opacity(0.08))
+                    )
+            }
+            .buttonStyle(.plain)
+            .disabled(workspace.currentDirectory.isEmpty)
+            .help(String(
+                localized: "gitlab.sidebar.showWorkingTreeDiff",
+                defaultValue: "Show working tree diff"
+            ))
+            .padding(.trailing, 8)
         }
+    }
+
+    private func showWorkingTreeDiff() {
+        guard !workspace.currentDirectory.isEmpty else { return }
+        let spec = GitDiffSpec(
+            base: "HEAD",
+            compare: nil,
+            directory: workspace.currentDirectory,
+            title: String(localized: "diff.workingTree.title", defaultValue: "Working tree")
+        )
+        GitDiffWindowRegistry.show(spec: spec)
     }
 
     private func tabButton(_ tab: GitLabSidebarTab) -> some View {

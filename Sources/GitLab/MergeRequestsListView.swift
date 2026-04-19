@@ -297,7 +297,7 @@ struct MergeRequestsListView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(filteredMergeRequests) { mr in
-                    MRCardView(mr: mr)
+                    MRCardView(mr: mr, directory: workspace.currentDirectory)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                 }
@@ -317,6 +317,7 @@ struct MergeRequestsListView: View {
 
 private struct MRCardView: View {
     let mr: GitLabMergeRequest
+    let directory: String
     @State private var isHovered = false
 
     var body: some View {
@@ -363,6 +364,15 @@ private struct MRCardView: View {
                 )
             }
             Button {
+                showDiff()
+            } label: {
+                Label(
+                    String(localized: "mr.card.showDiff", defaultValue: "Show Diff"),
+                    systemImage: "text.magnifyingglass"
+                )
+            }
+            .disabled(directory.isEmpty || mr.sourceBranch.isEmpty || mr.targetBranch.isEmpty)
+            Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(mr.webURL, forType: .string)
             } label: {
@@ -373,6 +383,19 @@ private struct MRCardView: View {
             }
         }
         .help(mr.webURL)
+    }
+
+    private func showDiff() {
+        guard !directory.isEmpty,
+              !mr.sourceBranch.isEmpty,
+              !mr.targetBranch.isEmpty else { return }
+        let spec = GitDiffSpec(
+            base: mr.targetBranch,
+            compare: mr.sourceBranch,
+            directory: directory,
+            title: "!\(mr.iid) · \(mr.title)"
+        )
+        GitDiffWindowRegistry.show(spec: spec)
     }
 
     private var topRow: some View {
