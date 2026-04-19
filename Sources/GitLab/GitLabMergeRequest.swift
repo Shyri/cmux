@@ -23,6 +23,10 @@ struct GitLabMergeRequest: Identifiable, Equatable, Sendable {
     let updatedAt: Date?
     let reviewers: [GitLabReviewer]
     let userNotesCount: Int
+    /// Raw GitLab `merge_status` (`can_be_merged`, `cannot_be_merged`, …).
+    let mergeStatus: String
+    /// True when the GitLab `has_conflicts` flag is set on the MR.
+    let hasConflicts: Bool
 }
 
 // MARK: - JSON Decoding (glab mr list -F json)
@@ -47,6 +51,8 @@ private struct GLMRResponse: Decodable {
     let updated_at: String?
     let reviewers: [GLMRAuthor]?
     let user_notes_count: Int?
+    let merge_status: String?
+    let has_conflicts: Bool?
 
     func toModel() -> GitLabMergeRequest {
         GitLabMergeRequest(
@@ -66,7 +72,9 @@ private struct GLMRResponse: Decodable {
             reviewers: (reviewers ?? []).map {
                 GitLabReviewer(name: $0.name ?? "", username: $0.username ?? "")
             },
-            userNotesCount: user_notes_count ?? 0
+            userNotesCount: user_notes_count ?? 0,
+            mergeStatus: merge_status ?? "",
+            hasConflicts: has_conflicts ?? false
         )
     }
 

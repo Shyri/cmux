@@ -17,6 +17,7 @@ struct DiffCodeTextView: NSViewRepresentable {
     let leftLineStarts: [Int]
     let rightLineStarts: [Int]
     let collapsedStubs: [DiffCollapsedStub]
+    let inlineComments: [InlineCommentWidget]
     let onExpandBlock: (Int) -> Void
     @Binding var scrollHunkIndex: Int?
 
@@ -43,6 +44,7 @@ struct DiffCodeTextView: NSViewRepresentable {
             leftLineStarts: leftLineStarts,
             rightLineStarts: rightLineStarts,
             collapsedStubs: collapsedStubs,
+            inlineComments: inlineComments,
             onExpandBlock: onExpandBlock
         )
         if let idx = scrollHunkIndex {
@@ -211,6 +213,7 @@ final class DiffCodeContainer: NSView {
         leftLineStarts: [Int],
         rightLineStarts: [Int],
         collapsedStubs: [DiffCollapsedStub],
+        inlineComments: [InlineCommentWidget],
         onExpandBlock: @escaping (Int) -> Void
     ) {
         if leftText.textStorage?.isEqual(to: left) != true {
@@ -225,6 +228,8 @@ final class DiffCodeContainer: NSView {
         rightText.stubRanges = collapsedStubs.map { ($0.rightCharRange, $0.blockId) }
         leftText.onStubClick = onExpandBlock
         rightText.onStubClick = onExpandBlock
+        leftText.inlineWidgets = inlineComments.filter { $0.side == .left }
+        rightText.inlineWidgets = inlineComments.filter { $0.side == .right }
         if let ruler = leftScroll.verticalRulerView as? DiffLineNumberRuler {
             ruler.update(lineNumbers: leftLineNumbers, lineStarts: leftLineStarts)
         }
@@ -255,7 +260,7 @@ final class DiffCodeContainer: NSView {
     }
 
     private func scrollOffset(_ textView: NSTextView, to characterIndex: Int) {
-        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
+        guard let lm = textView.layoutManager, textView.textContainer != nil else { return }
         let length = textView.string.utf16.count
         let clamped = max(0, min(characterIndex, length))
         // Compute the target line's rect in the text view's coordinates, then
@@ -622,6 +627,58 @@ final class DiffTextView: NSTextView {
     /// corresponding block of hidden unchanged lines). The Int is the block id.
     var stubRanges: [(NSRange, Int)] = []
     var onStubClick: ((Int) -> Void)?
+    /// Inline MR discussion cards overlaid on placeholder rows in this side.
+    var inlineWidgets: [InlineCommentWidget] = [] {
+        didSet { rebuildInlineHosts() }
+    }
+    private var inlineHosts: [String: NSHostingView<InlineCommentCard>] = [:]
+
+    private func rebuildInlineHosts() {
+        let wanted = Set(inlineWidgets.map(\.id))
+        // Remove hosts that no longer apply.
+        for (id, host) in inlineHosts where !wanted.contains(id) {
+            host.removeFromSuperview()
+            inlineHosts.removeValue(forKey: id)
+        }
+        // Ensure a host exists for every widget.
+        for widget in inlineWidgets {
+            if inlineHosts[widget.id] == nil {
+                let host = NSHostingView(rootView: InlineCommentCard(discussion: widget.discussion))
+                host.translatesAutoresizingMaskIntoConstraints = true
+                addSubview(host)
+                inlineHosts[widget.id] = host
+            } else if let host = inlineHosts[widget.id] {
+                host.rootView = InlineCommentCard(discussion: widget.discussion)
+            }
+        }
+        needsLayout = true
+    }
+
+    override func layout() {
+        super.layout()
+        positionInlineHosts()
+    }
+
+    private func positionInlineHosts() {
+        guard !inlineWidgets.isEmpty,
+              let lm = layoutManager,
+              let tc = textContainer else { return }
+        lm.ensureLayout(for: tc)
+        let insetY = textContainerInset.height
+        for widget in inlineWidgets {
+            guard let host = inlineHosts[widget.id] else { continue }
+            let textLength = textStorage?.length ?? 0
+            let clamped = max(0, min(widget.anchorCharIndex, textLength))
+            let glyph = lm.glyphIndexForCharacter(at: clamped)
+            let rect = lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+            host.frame = NSRect(
+                x: 0,
+                y: rect.minY + insetY,
+                width: bounds.width,
+                height: widget.reservedHeight
+            )
+        }
+    }
 
     override func mouseDown(with event: NSEvent) {
         // Check if the click lands on a stub row and, if so, fire the

@@ -263,6 +263,7 @@ enum SideBySideLineKind: Sendable, Equatable {
     case deleted
     case empty
     case hunk
+    case commentPlaceholder
 }
 
 struct SideBySideCell: Sendable {

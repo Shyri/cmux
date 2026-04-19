@@ -147,6 +147,7 @@
 			GLAB0008A1B2C3D4E5F60008 /* GitLabProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */; };
 			GLAB0009A1B2C3D4E5F60009 /* GitLabRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */; };
 			GLAB000AA1B2C3D4E5F6000A /* ReleasesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */; };
+			GLAB000BA1B2C3D4E5F6000B /* MRDiscussions.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB001BA1B2C3D4E5F6000B /* MRDiscussions.swift */; };
 			GDIF0001A1B2C3D4E5F60001 /* GitDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0011A1B2C3D4E5F60001 /* GitDiff.swift */; };
 			GDIF0002A1B2C3D4E5F60002 /* GitDiffWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0012A1B2C3D4E5F60002 /* GitDiffWindow.swift */; };
 			GDIF0003A1B2C3D4E5F60003 /* LCSDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */; };
@@ -363,6 +364,7 @@
 		GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLab/GitLabProcessUtils.swift; sourceTree = "<group>"; };
 		GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLab/GitLabRelease.swift; sourceTree = "<group>"; };
 		GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLab/ReleasesListView.swift; sourceTree = "<group>"; };
+		GLAB001BA1B2C3D4E5F6000B /* MRDiscussions.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLab/MRDiscussions.swift; sourceTree = "<group>"; };
 		GDIF0011A1B2C3D4E5F60001 /* GitDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/GitDiff.swift; sourceTree = "<group>"; };
 		GDIF0012A1B2C3D4E5F60002 /* GitDiffWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/GitDiffWindow.swift; sourceTree = "<group>"; };
 		GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/LCSDiff.swift; sourceTree = "<group>"; };
@@ -518,6 +520,7 @@
 					GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */,
 					GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */,
 					GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */,
+					GLAB001BA1B2C3D4E5F6000B /* MRDiscussions.swift */,
 					GDIF0011A1B2C3D4E5F60001 /* GitDiff.swift */,
 					GDIF0012A1B2C3D4E5F60002 /* GitDiffWindow.swift */,
 					GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */,
@@ -852,6 +855,7 @@
 					GLAB0008A1B2C3D4E5F60008 /* GitLabProcessUtils.swift in Sources */,
 					GLAB0009A1B2C3D4E5F60009 /* GitLabRelease.swift in Sources */,
 					GLAB000AA1B2C3D4E5F6000A /* ReleasesListView.swift in Sources */,
+					GLAB000BA1B2C3D4E5F6000B /* MRDiscussions.swift in Sources */,
 					GDIF0001A1B2C3D4E5F60001 /* GitDiff.swift in Sources */,
 					GDIF0002A1B2C3D4E5F60002 /* GitDiffWindow.swift in Sources */,
 					GDIF0003A1B2C3D4E5F60003 /* LCSDiff.swift in Sources */,

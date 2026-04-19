@@ -13,9 +13,13 @@ final class GitDiffViewModel: ObservableObject {
     @Published var isLoadingDiff = false
     @Published var filesError: String?
     @Published var diffError: String?
+    /// Inline discussions fetched via `glab api` when the spec comes from an
+    /// MR. Empty for working-tree diffs.
+    @Published var mrDiscussions: [MRDiscussion] = []
 
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
+    private var discussionsTask: Task<Void, Never>?
 
     init(spec: GitDiffSpec) {
         self.spec = spec
@@ -23,6 +27,31 @@ final class GitDiffViewModel: ObservableObject {
 
     func reload() {
         loadFileList()
+        loadDiscussionsIfNeeded()
+    }
+
+    private func loadDiscussionsIfNeeded() {
+        guard let iid = spec.mergeRequestIID else {
+            NSLog("[cmux-mr-comments] skipped: no mergeRequestIID in spec")
+            mrDiscussions = []
+            return
+        }
+        NSLog("[cmux-mr-comments] fetching discussions for MR !\(iid) in \(spec.directory)")
+        discussionsTask?.cancel()
+        let dir = spec.directory
+        discussionsTask = Task { [weak self] in
+            do {
+                let result = try await fetchMRDiscussions(mrIID: iid, directory: dir)
+                guard !Task.isCancelled else { return }
+                NSLog("[cmux-mr-comments] fetched \(result.count) discussions")
+                for d in result {
+                    NSLog("[cmux-mr-comments]   id=\(d.id) file=\(d.filePath ?? "?") old=\(d.oldLine.map { "\($0)" } ?? "-") new=\(d.newLine.map { "\($0)" } ?? "-") notes=\(d.notes.count)")
+                }
+                self?.mrDiscussions = result
+            } catch {
+                NSLog("[cmux-mr-comments] fetch failed: \(error)")
+            }
+        }
     }
 
     func updateSpec(_ newSpec: GitDiffSpec) {
@@ -150,6 +179,7 @@ struct GitDiffWindowView: View {
         }
         .onAppear { rebuildPrepared() }
         .onChange(of: viewModel.currentDiff) { _ in rebuildPrepared() }
+        .onChange(of: viewModel.mrDiscussions) { _ in rebuildPrepared() }
         .onChange(of: viewModel.selectedFile?.path) { _ in
             // Reset expansion state per file so a fresh file starts collapsed.
             expandedBlocks = []
@@ -162,8 +192,10 @@ struct GitDiffWindowView: View {
         prepared = SideBySidePrepared.from(
             diffText: viewModel.currentDiff,
             filePath: viewModel.selectedFile?.path,
-            expandedBlocks: expandedBlocks
+            expandedBlocks: expandedBlocks,
+            discussions: viewModel.mrDiscussions
         )
+        NSLog("[cmux-mr-comments] rebuild file=\(viewModel.selectedFile?.path ?? "?") discussions=\(viewModel.mrDiscussions.count) widgets=\(prepared.inlineComments.count)")
         activeHunk = 0
         // Auto-scroll to the first change so opening a file lands the user
         // on the relevant lines instead of the top of a large file. Deferred
@@ -967,6 +999,20 @@ struct DiffCollapsedStub: Equatable {
     let hiddenLines: Int
 }
 
+enum DiffCommentSide: Equatable, Sendable { case left, right }
+
+/// Metadata describing an inline MR-discussion card to be drawn underneath
+/// a specific anchor line in one of the two text views. The builder reserves
+/// `reservedHeight` of vertical space via placeholder rows at
+/// `anchorCharIndex`; `DiffTextView` overlays an NSHostingView at that spot.
+struct InlineCommentWidget: Identifiable, Equatable {
+    let id: String
+    let side: DiffCommentSide
+    let anchorCharIndex: Int
+    let reservedHeight: CGFloat
+    let discussion: MRDiscussion
+}
+
 struct SideBySidePrepared: Equatable {
     var leftAttr: NSAttributedString
     var rightAttr: NSAttributedString
@@ -978,6 +1024,9 @@ struct SideBySidePrepared: Equatable {
     var rightRowBackgrounds: [DiffRowBackground]
     /// Clickable stubs that replaced long runs of unchanged lines.
     var collapsedStubs: [DiffCollapsedStub] = []
+    /// Overlay widgets drawn by the text view underneath anchor lines, one
+    /// per MR discussion (read-only for now).
+    var inlineComments: [InlineCommentWidget] = []
     /// Line numbers for the line number gutter (nil = no number shown).
     var leftLineNumbers: [Int?]
     var rightLineNumbers: [Int?]
@@ -1015,7 +1064,8 @@ struct SideBySidePrepared: Equatable {
     static func from(
         diffText: String,
         filePath: String?,
-        expandedBlocks: Set<Int> = []
+        expandedBlocks: Set<Int> = [],
+        discussions: [MRDiscussion] = []
     ) -> SideBySidePrepared {
         let rows = parseSideBySideRows(from: diffText)
         if rows.isEmpty { return .empty }
@@ -1187,6 +1237,52 @@ struct SideBySidePrepared: Equatable {
             ))
         }
 
+        // Filter discussions to the current file, then bucket by anchor
+        // (left for old_line, right for new_line).
+        let fileRelevantDiscussions: [MRDiscussion] = {
+            guard let fp = filePath else { return [] }
+            let name = (fp as NSString).lastPathComponent
+            return discussions.filter { d in
+                guard let dp = d.filePath else { return false }
+                return dp == fp || dp == name || fp.hasSuffix("/" + dp) || dp.hasSuffix("/" + (fp as NSString).lastPathComponent)
+            }
+        }()
+        var anchorsByRightLine: [Int: [MRDiscussion]] = [:]
+        var anchorsByLeftLine: [Int: [MRDiscussion]] = [:]
+        for d in fileRelevantDiscussions {
+            if let n = d.newLine {
+                anchorsByRightLine[n, default: []].append(d)
+            } else if let n = d.oldLine {
+                anchorsByLeftLine[n, default: []].append(d)
+            }
+        }
+
+        // Placeholder "phantom" rows reserve vertical space under an anchor
+        // line; the overlay NSHostingView is drawn on top of them.
+        let commentRowsPerCard = 7
+        let reservedHeight = lineHeight * CGFloat(commentRowsPerCard)
+        var collectedWidgets: [InlineCommentWidget] = []
+
+        func appendPlaceholderRows(count: Int) {
+            for _ in 0..<count {
+                let ls = left.length
+                let rs = right.length
+                let attrs: [NSAttributedString.Key: Any] = [
+                    .font: font,
+                    .foregroundColor: NSColor.clear,
+                    .paragraphStyle: paragraph,
+                ]
+                left.append(NSAttributedString(string: "\n", attributes: attrs))
+                right.append(NSAttributedString(string: "\n", attributes: attrs))
+                leftLineKinds.append(.commentPlaceholder)
+                rightLineKinds.append(.commentPlaceholder)
+                leftLineNumbers.append(nil)
+                rightLineNumbers.append(nil)
+                leftLineStarts.append(ls)
+                rightLineStarts.append(rs)
+            }
+        }
+
         for (rowIndex, (l, r)) in pairs.enumerated() {
             if let blockId = stubAnchorRow[rowIndex] {
                 let range = collapseRanges[blockId]
@@ -1211,6 +1307,28 @@ struct SideBySidePrepared: Equatable {
                 rowBackgrounds: &rightRowBackgrounds,
                 intraRanges: &rightIntraRanges
             )
+
+            // If this row anchors any inline discussion, emit the placeholder
+            // rows right after it on both sides and record widget metadata.
+            var matched: [(side: DiffCommentSide, discussion: MRDiscussion)] = []
+            if let ln = r.lineNumber, let list = anchorsByRightLine[ln] {
+                matched.append(contentsOf: list.map { (.right, $0) })
+            }
+            if let ln = l.lineNumber, let list = anchorsByLeftLine[ln] {
+                matched.append(contentsOf: list.map { (.left, $0) })
+            }
+            for (side, discussion) in matched {
+                let anchorLeft = left.length
+                let anchorRight = right.length
+                appendPlaceholderRows(count: commentRowsPerCard)
+                collectedWidgets.append(InlineCommentWidget(
+                    id: discussion.id,
+                    side: side,
+                    anchorCharIndex: side == .left ? anchorLeft : anchorRight,
+                    reservedHeight: reservedHeight,
+                    discussion: discussion
+                ))
+            }
         }
 
         // Derive change groups from the assembled line kinds: every run of
@@ -1263,6 +1381,7 @@ struct SideBySidePrepared: Equatable {
             leftRowBackgrounds: leftRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
             rightRowBackgrounds: rightRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
             collapsedStubs: stubs,
+            inlineComments: collectedWidgets,
             leftLineNumbers: leftLineNumbers,
             rightLineNumbers: rightLineNumbers,
             leftLineStarts: leftLineStarts,
@@ -1291,7 +1410,7 @@ struct SideBySidePrepared: Equatable {
         case .added: return NSColor(srgbRed: 0x37/255, green: 0x3D/255, blue: 0x29/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x4B/255, green: 0x18/255, blue: 0x18/255, alpha: 1)
         case .hunk: return NSColor(srgbRed: 0x23/255, green: 0x2D/255, blue: 0x3C/255, alpha: 1)
-        case .context, .empty: return nil
+        case .context, .empty, .commentPlaceholder: return nil
         }
     }
 
@@ -1299,7 +1418,7 @@ struct SideBySidePrepared: Equatable {
         switch kind {
         case .added: return NSColor(srgbRed: 0x55/255, green: 0x62/255, blue: 0x2E/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x6F/255, green: 0x1E/255, blue: 0x1E/255, alpha: 1)
-        case .context, .empty, .hunk: return nil
+        case .context, .empty, .hunk, .commentPlaceholder: return nil
         }
     }
 
@@ -1370,6 +1489,7 @@ struct SideBySideDiffView: View {
             leftLineStarts: prepared.leftLineStarts,
             rightLineStarts: prepared.rightLineStarts,
             collapsedStubs: prepared.collapsedStubs,
+            inlineComments: prepared.inlineComments,
             onExpandBlock: onExpandBlock,
             scrollHunkIndex: $scrollHunkIndex
         )

@@ -549,8 +549,16 @@ private struct MRCardView: View {
     private var stateIcon: some View {
         switch mr.state {
         case "opened":
-            Image(systemName: "arrow.triangle.merge")
-                .foregroundStyle(.green)
+            if mrHasMergeProblem {
+                // Conflict / can't merge: warning triangle in orange.
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                    .help(mergeProblemTooltip)
+            } else {
+                // Always-green arrow when opened without a known conflict.
+                Image(systemName: "arrow.triangle.merge")
+                    .foregroundStyle(.green)
+            }
         case "merged":
             Image(systemName: "checkmark.circle.fill")
                 .foregroundStyle(.purple)
@@ -561,6 +569,19 @@ private struct MRCardView: View {
             Image(systemName: "questionmark.circle")
                 .foregroundStyle(.secondary)
         }
+    }
+
+    private var mrHasMergeProblem: Bool {
+        if mr.hasConflicts { return true }
+        return mr.mergeStatus == "cannot_be_merged"
+            || mr.mergeStatus == "cannot_be_merged_recheck"
+    }
+
+    private var mergeProblemTooltip: String {
+        if mr.hasConflicts {
+            return String(localized: "mr.card.hasConflicts", defaultValue: "Has conflicts")
+        }
+        return String(localized: "mr.card.cannotBeMerged", defaultValue: "Cannot be merged")
     }
 
     @ViewBuilder
