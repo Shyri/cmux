@@ -16,6 +16,8 @@ struct DiffCodeTextView: NSViewRepresentable {
     let rightLineNumbers: [Int?]
     let leftLineStarts: [Int]
     let rightLineStarts: [Int]
+    let collapsedStubs: [DiffCollapsedStub]
+    let onExpandBlock: (Int) -> Void
     @Binding var scrollHunkIndex: Int?
 
     func makeNSView(context: Context) -> DiffCodeContainer {
@@ -39,7 +41,9 @@ struct DiffCodeTextView: NSViewRepresentable {
             leftLineNumbers: leftLineNumbers,
             rightLineNumbers: rightLineNumbers,
             leftLineStarts: leftLineStarts,
-            rightLineStarts: rightLineStarts
+            rightLineStarts: rightLineStarts,
+            collapsedStubs: collapsedStubs,
+            onExpandBlock: onExpandBlock
         )
         if let idx = scrollHunkIndex {
             container.scrollToHunk(at: idx)
@@ -205,7 +209,9 @@ final class DiffCodeContainer: NSView {
         leftLineNumbers: [Int?],
         rightLineNumbers: [Int?],
         leftLineStarts: [Int],
-        rightLineStarts: [Int]
+        rightLineStarts: [Int],
+        collapsedStubs: [DiffCollapsedStub],
+        onExpandBlock: @escaping (Int) -> Void
     ) {
         if leftText.textStorage?.isEqual(to: left) != true {
             leftText.textStorage?.setAttributedString(left)
@@ -215,6 +221,10 @@ final class DiffCodeContainer: NSView {
         }
         leftText.rowBackgrounds = leftRowBackgrounds.map { ($0.range, $0.color) }
         rightText.rowBackgrounds = rightRowBackgrounds.map { ($0.range, $0.color) }
+        leftText.stubRanges = collapsedStubs.map { ($0.leftCharRange, $0.blockId) }
+        rightText.stubRanges = collapsedStubs.map { ($0.rightCharRange, $0.blockId) }
+        leftText.onStubClick = onExpandBlock
+        rightText.onStubClick = onExpandBlock
         if let ruler = leftScroll.verticalRulerView as? DiffLineNumberRuler {
             ruler.update(lineNumbers: leftLineNumbers, lineStarts: leftLineStarts)
         }
@@ -233,15 +243,29 @@ final class DiffCodeContainer: NSView {
         guard index >= 0, index < leftHunkOffsets.count, index < rightHunkOffsets.count else { return }
         let leftOffset = leftHunkOffsets[index]
         let rightOffset = rightHunkOffsets[index]
+        ensureLayout(on: leftText)
+        ensureLayout(on: rightText)
         scrollOffset(leftText, to: leftOffset)
         scrollOffset(rightText, to: rightOffset)
     }
 
+    private func ensureLayout(on textView: NSTextView) {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
+        lm.ensureLayout(for: tc)
+    }
+
     private func scrollOffset(_ textView: NSTextView, to characterIndex: Int) {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer else { return }
         let length = textView.string.utf16.count
         let clamped = max(0, min(characterIndex, length))
-        let range = NSRange(location: clamped, length: 0)
-        textView.scrollRangeToVisible(range)
+        // Compute the target line's rect in the text view's coordinates, then
+        // position the scroll view so that line sits a bit below the top (so
+        // users see some context before the first change).
+        let glyphIndex = lm.glyphIndexForCharacter(at: clamped)
+        let lineRect = lm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let insetY = textView.textContainerInset.height
+        let targetY = max(0, lineRect.minY + insetY - 8)
+        textView.scroll(NSPoint(x: 0, y: targetY))
     }
 
     private func scrollToFraction(leftText: Bool, fraction: CGFloat) {
@@ -318,30 +342,19 @@ private final class DiffSplitterView: NSView {
 /// rest of its content.
 final class SyncedScrollView: NSScrollView {
     weak var partner: SyncedScrollView?
+    fileprivate var isSyncingFromPartner: Bool = false
 
     override func scrollWheel(with event: NSEvent) {
-        // Apply the scroll delta manually to both self and partner in the
-        // same pass — skipping `super.scrollWheel` avoids the animation /
-        // rubber-band timing mismatch that desyncs the two sides. Each side
-        // clamps to its own document size independently, so a narrower
-        // content still pins while the other continues.
-        let dx = -event.scrollingDeltaX
-        let dy = -event.scrollingDeltaY
-        guard dx != 0 || dy != 0 else { return }
-        applyScrollDelta(dx: dx, dy: dy)
-        partner?.applyScrollDelta(dx: dx, dy: dy)
-    }
-
-    private func applyScrollDelta(dx: CGFloat, dy: CGFloat) {
-        guard let doc = documentView else { return }
-        let visible = contentView.bounds.size
-        let maxX = max(0, doc.frame.width - visible.width)
-        let maxY = max(0, doc.frame.height - visible.height)
-        var origin = contentView.bounds.origin
-        origin.x = max(0, min(maxX, origin.x + dx))
-        origin.y = max(0, min(maxY, origin.y + dy))
-        contentView.scroll(to: origin)
-        reflectScrolledClipView(contentView)
+        // Let the native scroll view handle this event (including momentum,
+        // rubber-band and proper clamping against `documentRect`). Then
+        // re-dispatch the very same event to the partner so it performs
+        // the exact same scroll through its own pipeline. A re-entry flag
+        // prevents infinite recursion between the two partners.
+        super.scrollWheel(with: event)
+        guard !isSyncingFromPartner, let partner else { return }
+        partner.isSyncingFromPartner = true
+        partner.scrollWheel(with: event)
+        partner.isSyncingFromPartner = false
     }
 }
 
@@ -604,6 +617,33 @@ final class DiffLineNumberRuler: NSRulerView {
 final class DiffTextView: NSTextView {
     var rowBackgrounds: [(NSRange, NSColor)] = [] {
         didSet { needsDisplay = true }
+    }
+    /// Character ranges that are "collapse stubs" (clickable to expand the
+    /// corresponding block of hidden unchanged lines). The Int is the block id.
+    var stubRanges: [(NSRange, Int)] = []
+    var onStubClick: ((Int) -> Void)?
+
+    override func mouseDown(with event: NSEvent) {
+        // Check if the click lands on a stub row and, if so, fire the
+        // expansion callback instead of forwarding to the default selection.
+        if let lm = layoutManager, let tc = textContainer {
+            let localInset = NSPoint(
+                x: textContainerInset.width,
+                y: textContainerInset.height
+            )
+            var point = convert(event.locationInWindow, from: nil)
+            point.x -= localInset.x
+            point.y -= localInset.y
+            if lm.numberOfGlyphs > 0 {
+                let glyph = lm.glyphIndex(for: point, in: tc)
+                let charIndex = lm.characterIndexForGlyph(at: glyph)
+                for (range, blockId) in stubRanges where NSLocationInRange(charIndex, range) {
+                    onStubClick?(blockId)
+                    return
+                }
+            }
+        }
+        super.mouseDown(with: event)
     }
 
     override func drawBackground(in rect: NSRect) {

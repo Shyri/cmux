@@ -132,6 +132,60 @@ func fetchGitLabMergeRequests(
     return responses.map { $0.toModel() }
 }
 
+/// Runs `glab mr approve <iid>` in `directory`. Returns glab's stdout+stderr
+/// concatenated on success, throws `GitLabMRFetchError.processError` with the
+/// captured error output otherwise.
+func approveGitLabMergeRequest(iid: Int, directory: String) async throws -> String {
+    try await withCheckedThrowingContinuation { continuation in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let output = try runGlabApprove(iid: iid, directory: directory)
+                continuation.resume(returning: output)
+            } catch {
+                continuation.resume(throwing: error)
+            }
+        }
+    }
+}
+
+private func runGlabApprove(iid: Int, directory: String) throws -> String {
+    guard let glabPath = findExecutable("glab") else {
+        throw GitLabMRFetchError.glabNotFound
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = ["mr", "approve", "\(iid)"]
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    let outStr = String(data: outData, encoding: .utf8) ?? ""
+    let errStr = String(data: errData, encoding: .utf8) ?? ""
+
+    if process.terminationStatus != 0 {
+        let combined = [errStr, outStr]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        throw GitLabMRFetchError.processError(combined.isEmpty ? "glab mr approve failed" : combined)
+    }
+    return [outStr, errStr]
+        .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        .filter { !$0.isEmpty }
+        .joined(separator: "\n")
+}
+
 /// Search common paths for an executable.
 private func findExecutable(_ name: String) -> String? {
     let searchPaths = [

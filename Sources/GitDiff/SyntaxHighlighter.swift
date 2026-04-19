@@ -16,6 +16,8 @@ enum HighlightLanguage: String, Sendable {
     case go
     case rust
     case ruby
+    case java
+    case kotlin
     case plaintext
 
     static func detect(fromFilePath path: String) -> HighlightLanguage {
@@ -33,6 +35,8 @@ enum HighlightLanguage: String, Sendable {
         case "go": return .go
         case "rs": return .rust
         case "rb": return .ruby
+        case "java": return .java
+        case "kt", "kts": return .kotlin
         default: return .plaintext
         }
     }
@@ -110,6 +114,8 @@ private enum LanguageDefinitions {
         .go: go,
         .rust: rust,
         .ruby: ruby,
+        .java: java,
+        .kotlin: kotlin,
     ]
 
     // Order matters: comments and strings should be matched before keywords so
@@ -234,6 +240,33 @@ private enum LanguageDefinitions {
         TokenPattern(.keyword, #"\b(?:def|end|class|module|if|elsif|else|unless|case|when|then|while|until|do|begin|rescue|ensure|return|yield|lambda|proc|true|false|nil|self|super|require|require_relative|attr_accessor|attr_reader|attr_writer)\b"#),
         TokenPattern(.type, #"\b[A-Z][A-Za-z0-9_]*\b"#),
         TokenPattern(.function, #"\b[a-z_][A-Za-z0-9_!?]*(?=\s*[\(\s])"#),
+    ]
+
+    private static let java: [TokenPattern] = [
+        TokenPattern(.comment, #"//[^\n]*"#),
+        TokenPattern(.comment, #"/\*[\s\S]*?\*/"#),
+        TokenPattern(.string, #""(?:\\.|[^"\\\n])*""#),
+        TokenPattern(.string, #"'(?:\\.|[^'\\\n])'"#),  // char literal
+        TokenPattern(.attribute, #"@[A-Z][A-Za-z0-9_]*(?:\s*\([^)]*\))?"#),
+        TokenPattern(.number, #"\b(?:0x[0-9a-fA-F_]+[lL]?|0b[01_]+[lL]?|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?[fFdDlL]?)\b"#),
+        TokenPattern(.keyword, #"\b(?:abstract|assert|break|case|catch|class|const|continue|default|do|else|enum|extends|final|finally|for|goto|if|implements|import|instanceof|interface|native|new|package|private|protected|public|record|return|sealed|static|strictfp|super|switch|synchronized|this|throw|throws|transient|try|var|void|volatile|while|yield|true|false|null|non-sealed|permits)\b"#),
+        TokenPattern(.type, #"\b(?:boolean|byte|char|double|float|int|long|short|String|Integer|Long|Float|Double|Boolean|Byte|Short|Character|Object|List|Map|Set|Collection|Iterator|Iterable|Optional|Stream|Void)\b"#),
+        TokenPattern(.type, #"\b[A-Z][A-Za-z0-9_]*\b"#),
+        TokenPattern(.function, #"\b[a-z_][A-Za-z0-9_]*(?=\s*\()"#),
+    ]
+
+    private static let kotlin: [TokenPattern] = [
+        TokenPattern(.comment, #"//[^\n]*"#),
+        TokenPattern(.comment, #"/\*[\s\S]*?\*/"#),
+        TokenPattern(.string, #""""[\s\S]*?""""#),  // raw/triple-quoted string
+        TokenPattern(.string, #""(?:\\.|[^"\\\n])*""#),
+        TokenPattern(.string, #"'(?:\\.|[^'\\\n])'"#),
+        TokenPattern(.attribute, #"@[A-Za-z_][A-Za-z0-9_]*(?::[A-Za-z_][A-Za-z0-9_]*)?(?:\s*\([^)]*\))?"#),
+        TokenPattern(.number, #"\b(?:0x[0-9a-fA-F_]+[uUlL]*|0b[01_]+[uUlL]*|\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?[fFLuU]?)\b"#),
+        TokenPattern(.keyword, #"\b(?:abstract|actual|annotation|as|break|by|catch|class|companion|const|constructor|continue|crossinline|data|delegate|do|dynamic|else|enum|expect|external|false|field|file|final|finally|for|fun|get|if|import|in|infix|init|inline|inner|interface|internal|is|lateinit|noinline|null|object|open|operator|out|override|package|param|private|property|protected|public|receiver|reified|return|sealed|set|super|suspend|tailrec|this|throw|true|try|typealias|typeof|val|var|vararg|when|where|while)\b"#),
+        TokenPattern(.type, #"\b(?:Int|Long|Short|Byte|Double|Float|Boolean|Char|String|Unit|Nothing|Any|Array|List|Map|Set|MutableList|MutableMap|MutableSet|Sequence|Pair|Triple)\b"#),
+        TokenPattern(.type, #"\b[A-Z][A-Za-z0-9_]*\b"#),
+        TokenPattern(.function, #"\b[a-z_][A-Za-z0-9_]*(?=\s*\()"#),
     ]
 }
 

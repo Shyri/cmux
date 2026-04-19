@@ -350,19 +350,9 @@ private struct MRCardView: View {
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
         .onTapGesture {
-            guard let url = URL(string: mr.webURL) else { return }
-            NSWorkspace.shared.open(url)
+            showDiff()
         }
         .contextMenu {
-            Button {
-                guard let url = URL(string: mr.webURL) else { return }
-                NSWorkspace.shared.open(url)
-            } label: {
-                Label(
-                    String(localized: "mr.card.openBrowser", defaultValue: "Open in Browser"),
-                    systemImage: "safari"
-                )
-            }
             Button {
                 showDiff()
             } label: {
@@ -372,6 +362,15 @@ private struct MRCardView: View {
                 )
             }
             .disabled(directory.isEmpty || mr.sourceBranch.isEmpty || mr.targetBranch.isEmpty)
+            Button {
+                guard let url = URL(string: mr.webURL) else { return }
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label(
+                    String(localized: "mr.card.openBrowser", defaultValue: "Open in Browser"),
+                    systemImage: "safari"
+                )
+            }
             Button {
                 NSPasteboard.general.clearContents()
                 NSPasteboard.general.setString(mr.webURL, forType: .string)
@@ -388,12 +387,21 @@ private struct MRCardView: View {
     private func showDiff() {
         guard !directory.isEmpty,
               !mr.sourceBranch.isEmpty,
-              !mr.targetBranch.isEmpty else { return }
+              !mr.targetBranch.isEmpty else {
+            // Fallback when we can't compute a git diff (e.g. directory or
+            // branches missing): open the MR in the browser.
+            if let url = URL(string: mr.webURL) {
+                NSWorkspace.shared.open(url)
+            }
+            return
+        }
         let spec = GitDiffSpec(
             base: mr.targetBranch,
             compare: mr.sourceBranch,
             directory: directory,
-            title: "!\(mr.iid) · \(mr.title)"
+            title: "!\(mr.iid) · \(mr.title)",
+            mergeRequestIID: mr.iid,
+            mergeRequestURL: mr.webURL
         )
         GitDiffWindowRegistry.show(spec: spec)
     }

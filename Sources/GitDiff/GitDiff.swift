@@ -52,6 +52,10 @@ struct GitDiffSpec: Equatable, Sendable {
     let compare: String?
     let directory: String
     let title: String
+    /// Set when the diff was opened from a GitLab merge request. Enables the
+    /// "Approve" button in the window toolbar.
+    var mergeRequestIID: Int? = nil
+    var mergeRequestURL: String? = nil
 
     var gitRangeArgs: [String] {
         if let compare {
@@ -103,11 +107,15 @@ func fetchChangedFiles(spec: GitDiffSpec) async throws -> [GitDiffFile] {
 }
 
 func fetchUnifiedDiff(spec: GitDiffSpec, file: String) async throws -> String {
+    // `-U999999` asks git to include every unchanged line as context, so the
+    // renderer shows the whole file with additions/deletions interleaved —
+    // matching VS Code's behaviour instead of only the ±3 lines around hunks.
     let args: [String] = [
         "-c", "color.ui=never",
         "diff",
         "--no-color",
         "--no-ext-diff",
+        "-U999999",
     ] + spec.gitRangeArgs + ["--", file]
     return try await runGit(args: args, directory: spec.directory, stringOutput: true)
 }

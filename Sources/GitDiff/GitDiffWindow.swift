@@ -121,6 +121,9 @@ struct GitDiffWindowView: View {
     @State private var scrollHunkIndex: Int? = nil
     @State private var activeHunk: Int = 0
     @State private var collapsedFolders: Set<String> = []
+    @State private var isApproving: Bool = false
+    @State private var approveMessage: String? = nil
+    @State private var expandedBlocks: Set<Int> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -134,18 +137,43 @@ struct GitDiffWindowView: View {
             }
         }
         .frame(minWidth: 900, minHeight: 500)
+        .alert(
+            String(localized: "diff.approve.result", defaultValue: "Approval"),
+            isPresented: Binding(
+                get: { approveMessage != nil },
+                set: { if !$0 { approveMessage = nil } }
+            )
+        ) {
+            Button("OK", role: .cancel) { approveMessage = nil }
+        } message: {
+            Text(approveMessage ?? "")
+        }
         .onAppear { rebuildPrepared() }
         .onChange(of: viewModel.currentDiff) { _ in rebuildPrepared() }
-        .onChange(of: viewModel.selectedFile?.path) { _ in rebuildPrepared() }
+        .onChange(of: viewModel.selectedFile?.path) { _ in
+            // Reset expansion state per file so a fresh file starts collapsed.
+            expandedBlocks = []
+            rebuildPrepared()
+        }
         .background(HunkNavKeyMonitor(onPrev: goToPrevHunk, onNext: goToNextHunk))
     }
 
     private func rebuildPrepared() {
         prepared = SideBySidePrepared.from(
             diffText: viewModel.currentDiff,
-            filePath: viewModel.selectedFile?.path
+            filePath: viewModel.selectedFile?.path,
+            expandedBlocks: expandedBlocks
         )
         activeHunk = 0
+        // Auto-scroll to the first change so opening a file lands the user
+        // on the relevant lines instead of the top of a large file. Deferred
+        // a little so SwiftUI has pushed the new attributed string down to
+        // the NSTextView and its layout manager has computed glyph frames.
+        if !prepared.leftHunkOffsets.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                self.scrollHunkIndex = 0
+            }
+        }
     }
 
     private var hunkCount: Int { prepared.leftHunkOffsets.count }
@@ -160,6 +188,52 @@ struct GitDiffWindowView: View {
         guard hunkCount > 0 else { return }
         activeHunk = min(hunkCount - 1, activeHunk + 1)
         scrollHunkIndex = activeHunk
+    }
+
+    @ViewBuilder
+    private func approveButton(iid: Int) -> some View {
+        Button {
+            approve(iid: iid)
+        } label: {
+            HStack(spacing: 4) {
+                if isApproving {
+                    ProgressView().scaleEffect(0.5).frame(width: 12, height: 12)
+                } else {
+                    Image(systemName: "checkmark.circle")
+                }
+                Text(String(localized: "diff.approve", defaultValue: "Approve"))
+                    .fontWeight(.medium)
+            }
+        }
+        .disabled(isApproving)
+        .help(String(
+            localized: "diff.approve.tooltip",
+            defaultValue: "Approve MR !\(iid) with glab"
+        ))
+    }
+
+    private func approve(iid: Int) {
+        isApproving = true
+        let directory = viewModel.spec.directory
+        Task {
+            do {
+                let result = try await approveGitLabMergeRequest(iid: iid, directory: directory)
+                await MainActor.run {
+                    isApproving = false
+                    approveMessage = result.isEmpty ? "Approved !\(iid)." : result
+                }
+            } catch {
+                await MainActor.run {
+                    isApproving = false
+                    if let err = error as? GitLabMRFetchError,
+                       case let .processError(msg) = err {
+                        approveMessage = msg
+                    } else {
+                        approveMessage = error.localizedDescription
+                    }
+                }
+            }
+        }
     }
 
     private var header: some View {
@@ -208,6 +282,9 @@ struct GitDiffWindowView: View {
             .pickerStyle(.segmented)
             .labelsHidden()
             .frame(width: 92)
+            if let iid = viewModel.spec.mergeRequestIID {
+                approveButton(iid: iid)
+            }
             Button {
                 viewModel.reload()
             } label: {
@@ -426,7 +503,11 @@ struct GitDiffWindowView: View {
                     case .sideBySide:
                         SideBySideDiffView(
                             prepared: prepared,
-                            scrollHunkIndex: $scrollHunkIndex
+                            scrollHunkIndex: $scrollHunkIndex,
+                            onExpandBlock: { blockId in
+                                expandedBlocks.insert(blockId)
+                                rebuildPrepared()
+                            }
                         )
                     case .unified:
                         UnifiedDiffTextView(
@@ -708,18 +789,6 @@ private struct GitDiffFolderRow: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
                 Spacer(minLength: 4)
-                HStack(spacing: 2) {
-                    if node.additions > 0 {
-                        Text("+\(node.additions)")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.green.opacity(0.75))
-                    }
-                    if node.deletions > 0 {
-                        Text("-\(node.deletions)")
-                            .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(.red.opacity(0.75))
-                    }
-                }
             }
             .padding(.vertical, DiffTreeMetrics.rowVerticalPadding)
         }
@@ -890,6 +959,14 @@ struct DiffRowBackground {
     let color: NSColor
 }
 
+struct DiffCollapsedStub: Equatable {
+    let blockId: Int
+    /// Character ranges of the stub row in the left/right attributed strings.
+    let leftCharRange: NSRange
+    let rightCharRange: NSRange
+    let hiddenLines: Int
+}
+
 struct SideBySidePrepared: Equatable {
     var leftAttr: NSAttributedString
     var rightAttr: NSAttributedString
@@ -899,6 +976,8 @@ struct SideBySidePrepared: Equatable {
     var rightLineKinds: [SideBySideLineKind]
     var leftRowBackgrounds: [DiffRowBackground]
     var rightRowBackgrounds: [DiffRowBackground]
+    /// Clickable stubs that replaced long runs of unchanged lines.
+    var collapsedStubs: [DiffCollapsedStub] = []
     /// Line numbers for the line number gutter (nil = no number shown).
     var leftLineNumbers: [Int?]
     var rightLineNumbers: [Int?]
@@ -933,7 +1012,11 @@ struct SideBySidePrepared: Equatable {
             && lhs.rightLineNumbers == rhs.rightLineNumbers
     }
 
-    static func from(diffText: String, filePath: String?) -> SideBySidePrepared {
+    static func from(
+        diffText: String,
+        filePath: String?,
+        expandedBlocks: Set<Int> = []
+    ) -> SideBySidePrepared {
         let rows = parseSideBySideRows(from: diffText)
         if rows.isEmpty { return .empty }
         let font = codeFont()
@@ -1011,36 +1094,138 @@ struct SideBySidePrepared: Equatable {
             lineNumbers.append(cell.kind == .empty ? nil : cell.lineNumber)
         }
 
-        for row in rows {
+        // Extract pair rows (the ones that render as lines) so we can detect
+        // long runs of unchanged context and collapse them. Hunk headers are
+        // already skipped.
+        let pairs: [(SideBySideCell, SideBySideCell)] = rows.compactMap { row in
             switch row {
-            case .hunkHeader:
-                // Hunk headers (`@@ -N,M +A,B @@ context`) are not rendered:
-                // VS Code only shows the line-number jump on either side. We
-                // still record the insertion point for F7 navigation.
-                leftHunks.append(left.length)
-                rightHunks.append(right.length)
-            case .pair(_, let l, let r):
-                appendLine(
-                    into: left,
-                    cell: l,
-                    kinds: &leftLineKinds,
-                    lineNumbers: &leftLineNumbers,
-                    lineStarts: &leftLineStarts,
-                    contentRanges: &leftContentRanges,
-                    rowBackgrounds: &leftRowBackgrounds,
-                    intraRanges: &leftIntraRanges
-                )
-                appendLine(
-                    into: right,
-                    cell: r,
-                    kinds: &rightLineKinds,
-                    lineNumbers: &rightLineNumbers,
-                    lineStarts: &rightLineStarts,
-                    contentRanges: &rightContentRanges,
-                    rowBackgrounds: &rightRowBackgrounds,
-                    intraRanges: &rightIntraRanges
-                )
+            case .pair(_, let l, let r): return (l, r)
+            default: return nil
             }
+        }
+
+        // Detect collapsible runs of "both-sides-context" rows. Keep
+        // `contextMargin` lines on each side of a change visible.
+        let contextMargin = 3
+        let collapseThreshold = 8
+        var collapseRanges: [(start: Int, end: Int)] = []
+        var runStart: Int? = nil
+        func bothContext(_ i: Int) -> Bool {
+            let l = pairs[i].0.kind
+            let r = pairs[i].1.kind
+            return l == .context && r == .context
+        }
+        func closeRun(at end: Int) {
+            guard let s = runStart else { return }
+            let atTop = (s == 0)
+            let atBottom = (end == pairs.count)
+            let hideStart = atTop ? s : s + contextMargin
+            let hideEnd = atBottom ? end : end - contextMargin
+            if hideEnd - hideStart >= collapseThreshold {
+                collapseRanges.append((hideStart, hideEnd))
+            }
+            runStart = nil
+        }
+        for i in 0..<pairs.count {
+            if bothContext(i) {
+                if runStart == nil { runStart = i }
+            } else if runStart != nil {
+                closeRun(at: i)
+            }
+        }
+        closeRun(at: pairs.count)
+
+        // Mark which rows are inside a collapsed (non-expanded) range.
+        var collapsedRowToBlock: [Int: Int] = [:]
+        var stubAnchorRow: [Int: Int] = [:]
+        for (blockId, range) in collapseRanges.enumerated() where !expandedBlocks.contains(blockId) {
+            stubAnchorRow[range.start] = blockId
+            for i in range.start..<range.end {
+                collapsedRowToBlock[i] = blockId
+            }
+        }
+
+        var stubs: [DiffCollapsedStub] = []
+        let stubParagraph = NSMutableParagraphStyle()
+        stubParagraph.minimumLineHeight = paragraph.minimumLineHeight
+        stubParagraph.maximumLineHeight = paragraph.maximumLineHeight
+        stubParagraph.alignment = .center
+
+        func appendStub(blockId: Int, hiddenLines: Int) {
+            let leftStart = left.length
+            let rightStart = right.length
+            let label = "⋮ \(hiddenLines) unchanged lines"
+            let stubText = label + "\n"
+            let color = NSColor(srgbRed: 120/255, green: 155/255, blue: 210/255, alpha: 1)
+            let attrs: [NSAttributedString.Key: Any] = [
+                .font: font,
+                .foregroundColor: color,
+                .paragraphStyle: stubParagraph,
+            ]
+            left.append(NSAttributedString(string: stubText, attributes: attrs))
+            right.append(NSAttributedString(string: stubText, attributes: attrs))
+            let stubLen = (stubText as NSString).length
+            let leftRange = NSRange(location: leftStart, length: stubLen)
+            let rightRange = NSRange(location: rightStart, length: stubLen)
+            // Background tint so the stub stands out from context.
+            let stubBg = NSColor(srgbRed: 0x25/255, green: 0x30/255, blue: 0x3E/255, alpha: 1)
+            leftRowBackgrounds.append((leftRange, stubBg))
+            rightRowBackgrounds.append((rightRange, stubBg))
+            // Track kinds / line numbers / starts with placeholder entries so
+            // the gutter ruler and overview ruler stay in sync.
+            leftLineKinds.append(.context)
+            rightLineKinds.append(.context)
+            leftLineNumbers.append(nil)
+            rightLineNumbers.append(nil)
+            leftLineStarts.append(leftStart)
+            rightLineStarts.append(rightStart)
+            stubs.append(DiffCollapsedStub(
+                blockId: blockId,
+                leftCharRange: leftRange,
+                rightCharRange: rightRange,
+                hiddenLines: hiddenLines
+            ))
+        }
+
+        for (rowIndex, (l, r)) in pairs.enumerated() {
+            if let blockId = stubAnchorRow[rowIndex] {
+                let range = collapseRanges[blockId]
+                appendStub(blockId: blockId, hiddenLines: range.end - range.start)
+            }
+            if collapsedRowToBlock[rowIndex] != nil { continue }
+            appendLine(
+                into: left, cell: l,
+                kinds: &leftLineKinds,
+                lineNumbers: &leftLineNumbers,
+                lineStarts: &leftLineStarts,
+                contentRanges: &leftContentRanges,
+                rowBackgrounds: &leftRowBackgrounds,
+                intraRanges: &leftIntraRanges
+            )
+            appendLine(
+                into: right, cell: r,
+                kinds: &rightLineKinds,
+                lineNumbers: &rightLineNumbers,
+                lineStarts: &rightLineStarts,
+                contentRanges: &rightContentRanges,
+                rowBackgrounds: &rightRowBackgrounds,
+                intraRanges: &rightIntraRanges
+            )
+        }
+
+        // Derive change groups from the assembled line kinds: every run of
+        // consecutive rows where either side is added/deleted becomes one
+        // hunk for navigation and auto-scroll purposes.
+        var prevIsChange = false
+        for i in 0..<leftLineKinds.count {
+            let lk = leftLineKinds[i]
+            let rk = i < rightLineKinds.count ? rightLineKinds[i] : .context
+            let isChange = lk == .added || lk == .deleted || rk == .added || rk == .deleted
+            if isChange && !prevIsChange {
+                leftHunks.append(leftLineStarts[i])
+                rightHunks.append(i < rightLineStarts.count ? rightLineStarts[i] : 0)
+            }
+            prevIsChange = isChange
         }
 
         // Syntax highlighting: extract pure code substring per side, highlight,
@@ -1077,6 +1262,7 @@ struct SideBySidePrepared: Equatable {
             rightLineKinds: rightLineKinds,
             leftRowBackgrounds: leftRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
             rightRowBackgrounds: rightRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
+            collapsedStubs: stubs,
             leftLineNumbers: leftLineNumbers,
             rightLineNumbers: rightLineNumbers,
             leftLineStarts: leftLineStarts,
@@ -1167,6 +1353,7 @@ struct SideBySidePrepared: Equatable {
 struct SideBySideDiffView: View {
     let prepared: SideBySidePrepared
     @Binding var scrollHunkIndex: Int?
+    let onExpandBlock: (Int) -> Void
 
     var body: some View {
         DiffCodeTextView(
@@ -1182,6 +1369,8 @@ struct SideBySideDiffView: View {
             rightLineNumbers: prepared.rightLineNumbers,
             leftLineStarts: prepared.leftLineStarts,
             rightLineStarts: prepared.rightLineStarts,
+            collapsedStubs: prepared.collapsedStubs,
+            onExpandBlock: onExpandBlock,
             scrollHunkIndex: $scrollHunkIndex
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity)
