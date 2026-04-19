@@ -128,9 +128,9 @@ struct GitDiffWindowView: View {
             Divider()
             HSplitView {
                 fileListPane
-                    .frame(minWidth: 160, idealWidth: 200)
+                    .frame(minWidth: 60, idealWidth: 300, maxWidth: 300)
                 diffPane
-                    .frame(minWidth: 400)
+                    .frame(minWidth: 400, maxWidth: .infinity)
             }
         }
         .frame(minWidth: 900, minHeight: 500)
@@ -277,6 +277,8 @@ struct GitDiffWindowView: View {
             ForEach(viewModel.files) { file in
                 GitDiffFileRow(file: file)
                     .tag(file.id)
+                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+                    .listRowSeparator(.hidden)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         viewModel.select(file)
@@ -293,6 +295,8 @@ struct GitDiffWindowView: View {
                 if let file = entry.node.file {
                     GitDiffFileRow(file: file, depth: entry.depth)
                         .tag(file.id)
+                        .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+                        .listRowSeparator(.hidden)
                         .contentShape(Rectangle())
                         .onTapGesture {
                             viewModel.select(file)
@@ -303,6 +307,8 @@ struct GitDiffWindowView: View {
                         depth: entry.depth,
                         isExpanded: !collapsedFolders.contains(entry.node.id)
                     )
+                    .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+                    .listRowSeparator(.hidden)
                     .contentShape(Rectangle())
                     .onTapGesture {
                         toggleFolder(entry.node.id)
@@ -445,30 +451,47 @@ struct GitDiffWindowView: View {
 
 // MARK: - File Row
 
+private enum DiffTreeMetrics {
+    static let indentWidth: CGFloat = 5
+    static let chevronWidth: CGFloat = 11
+    static let rowVerticalPadding: CGFloat = 1
+}
+
+private struct DiffTreeIndentGuides: View {
+    let depth: Int
+
+    var body: some View {
+        HStack(spacing: 0) {
+            ForEach(0..<depth, id: \.self) { _ in
+                ZStack(alignment: .leading) {
+                    Color.clear
+                    Rectangle()
+                        .fill(Color.secondary.opacity(0.22))
+                        .frame(width: 1)
+                }
+                .frame(width: DiffTreeMetrics.indentWidth)
+            }
+        }
+    }
+}
+
 private struct GitDiffFileRow: View {
     let file: GitDiffFile
     var depth: Int = 0
 
     var body: some View {
-        HStack(spacing: 6) {
-            if depth > 0 {
-                Spacer().frame(width: CGFloat(depth) * 12)
-            }
-            Text(file.changeType.symbol)
-                .font(.system(size: 10, weight: .bold, design: .monospaced))
-                .frame(width: 14, height: 14)
-                .foregroundStyle(statusColor)
-                .background(
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(statusColor.opacity(0.15))
-                )
-            VStack(alignment: .leading, spacing: 1) {
+        HStack(spacing: 4) {
+            DiffTreeIndentGuides(depth: depth)
+            HStack(spacing: 4) {
+                // Empty slot where a sibling folder's chevron would sit, so
+                // file names stay aligned with folders above.
+                Spacer().frame(width: DiffTreeMetrics.chevronWidth)
                 Text((file.path as NSString).lastPathComponent)
-                    .font(.system(size: 12, weight: .medium))
+                    .font(.system(size: 12))
+                    .foregroundStyle(statusColor)
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if depth == 0 {
-                    // Flat view: show parent directory beneath filename.
                     let parent = (file.path as NSString).deletingLastPathComponent
                     if !parent.isEmpty {
                         Text(parent)
@@ -478,38 +501,48 @@ private struct GitDiffFileRow: View {
                             .truncationMode(.head)
                     }
                 }
-            }
-            Spacer()
-            if file.isBinary {
-                Text("BIN")
-                    .font(.system(size: 9, weight: .semibold))
-                    .foregroundStyle(.secondary)
-            } else {
-                HStack(spacing: 3) {
-                    if file.additions > 0 {
-                        Text("+\(file.additions)")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.green)
-                    }
-                    if file.deletions > 0 {
-                        Text("-\(file.deletions)")
-                            .font(.system(size: 10, weight: .medium, design: .monospaced))
-                            .foregroundStyle(.red)
+                Spacer(minLength: 4)
+                if file.isBinary {
+                    Text("BIN")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                } else {
+                    HStack(spacing: 2) {
+                        if file.additions > 0 {
+                            Text("+\(file.additions)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.green)
+                        }
+                        if file.deletions > 0 {
+                            Text("-\(file.deletions)")
+                                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                                .foregroundStyle(.red)
+                        }
                     }
                 }
             }
+            .padding(.vertical, DiffTreeMetrics.rowVerticalPadding)
         }
-        .padding(.vertical, 2)
         .help(file.path)
     }
 
+    /// VS Code `gitDecoration.*ResourceForeground` palette — soft, easy on the eyes.
     private var statusColor: Color {
         switch file.changeType {
-        case .added: return .green
-        case .modified: return .blue
-        case .deleted: return .red
-        case .renamed, .copied: return .orange
-        default: return .gray
+        case .added:
+            // #81B88B
+            return Color(nsColor: NSColor(srgbRed: 0x81/255, green: 0xB8/255, blue: 0x8B/255, alpha: 1))
+        case .modified:
+            // #E2C08D — VS Code uses amber, not blue, for modified files.
+            return Color(nsColor: NSColor(srgbRed: 0xE2/255, green: 0xC0/255, blue: 0x8D/255, alpha: 1))
+        case .deleted:
+            // #C74E39
+            return Color(nsColor: NSColor(srgbRed: 0xC7/255, green: 0x4E/255, blue: 0x39/255, alpha: 1))
+        case .renamed, .copied:
+            // #73C991
+            return Color(nsColor: NSColor(srgbRed: 0x73/255, green: 0xC9/255, blue: 0x91/255, alpha: 1))
+        default:
+            return Color(nsColor: .labelColor).opacity(0.85)
         }
     }
 }
@@ -662,40 +695,34 @@ private struct GitDiffFolderRow: View {
     let isExpanded: Bool
 
     var body: some View {
-        HStack(spacing: 6) {
-            if depth > 0 {
-                Spacer().frame(width: CGFloat(depth) * 12)
-            }
-            Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
-                .font(.system(size: 9, weight: .semibold))
-                .foregroundStyle(.secondary)
-                .frame(width: 10)
-            Image(systemName: isExpanded ? "folder" : "folder.fill")
-                .font(.system(size: 11))
-                .foregroundStyle(.secondary)
-            Text(node.displayName)
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(.primary)
-                .lineLimit(1)
-                .truncationMode(.middle)
-            Text("\(node.fileCount)")
-                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                .foregroundStyle(.tertiary)
-            Spacer()
-            HStack(spacing: 3) {
-                if node.additions > 0 {
-                    Text("+\(node.additions)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.green.opacity(0.8))
-                }
-                if node.deletions > 0 {
-                    Text("-\(node.deletions)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundStyle(.red.opacity(0.8))
+        HStack(spacing: 4) {
+            DiffTreeIndentGuides(depth: depth)
+            HStack(spacing: 4) {
+                Image(systemName: isExpanded ? "chevron.down" : "chevron.right")
+                    .font(.system(size: 9, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: DiffTreeMetrics.chevronWidth)
+                Text(node.displayName)
+                    .font(.system(size: 12))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer(minLength: 4)
+                HStack(spacing: 2) {
+                    if node.additions > 0 {
+                        Text("+\(node.additions)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.green.opacity(0.75))
+                    }
+                    if node.deletions > 0 {
+                        Text("-\(node.deletions)")
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(.red.opacity(0.75))
+                    }
                 }
             }
+            .padding(.vertical, DiffTreeMetrics.rowVerticalPadding)
         }
-        .padding(.vertical, 2)
     }
 }
 
@@ -1231,14 +1258,11 @@ final class GitDiffWindowController: NSWindowController {
         let hosting = NSHostingController(rootView: GitDiffWindowView(viewModel: viewModel))
         let window = NSWindow(contentViewController: hosting)
         let screen = NSScreen.main?.visibleFrame ?? NSRect(x: 0, y: 0, width: 1600, height: 1000)
-        let width = min(1600, screen.width * 0.85)
-        let height = min(1000, screen.height * 0.85)
-        window.setContentSize(NSSize(width: width, height: height))
+        window.setFrame(screen, display: true)
         window.styleMask = [.titled, .closable, .miniaturizable, .resizable, .fullSizeContentView]
         window.titlebarAppearsTransparent = false
         window.title = spec.title
         super.init(window: window)
-        window.center()
     }
 
     @available(*, unavailable)
