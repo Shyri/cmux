@@ -352,6 +352,26 @@ private struct MRCardView: View {
             guard let url = URL(string: mr.webURL) else { return }
             NSWorkspace.shared.open(url)
         }
+        .contextMenu {
+            Button {
+                guard let url = URL(string: mr.webURL) else { return }
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label(
+                    String(localized: "mr.card.openBrowser", defaultValue: "Open in Browser"),
+                    systemImage: "safari"
+                )
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(mr.webURL, forType: .string)
+            } label: {
+                Label(
+                    String(localized: "mr.card.copyLink", defaultValue: "Copy Link"),
+                    systemImage: "link"
+                )
+            }
+        }
         .help(mr.webURL)
     }
 
@@ -395,12 +415,20 @@ private struct MRCardView: View {
                     )
             }
             Spacer()
-            if let updated = mr.updatedAt {
-                Text(relativeTime(from: updated))
+            if let created = mr.createdAt {
+                Text(relativeTime(from: created))
                     .font(.system(size: 10))
                     .foregroundStyle(.tertiary)
+                    .help(fullDate(created))
             }
         }
+    }
+
+    private func fullDate(_ date: Date) -> String {
+        let df = DateFormatter()
+        df.dateStyle = .medium
+        df.timeStyle = .short
+        return df.string(from: date)
     }
 
     private var metadataSection: some View {
@@ -430,25 +458,40 @@ private struct MRCardView: View {
 
     @ViewBuilder
     private func metaRow(icon: String, label: String, content: AnyView) -> some View {
-        HStack(alignment: .center, spacing: 6) {
+        HStack(alignment: .top, spacing: 6) {
             Image(systemName: icon)
                 .font(.system(size: 9))
                 .foregroundStyle(.tertiary)
-                .frame(width: 12)
+                .frame(width: 12, height: 18, alignment: .center)
             content
         }
     }
 
     private var reviewersView: some View {
-        HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: 3) {
             ForEach(mr.reviewers.prefix(4), id: \.username) { reviewer in
-                AvatarBadge(name: reviewer.name.isEmpty ? reviewer.username : reviewer.name)
-                    .help(reviewer.name.isEmpty ? "@\(reviewer.username)" : "\(reviewer.name) (@\(reviewer.username))")
+                HStack(spacing: 5) {
+                    AvatarBadge(name: reviewer.name.isEmpty ? reviewer.username : reviewer.name)
+                    Text(reviewer.name.isEmpty ? reviewer.username : reviewer.name)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    if !reviewer.username.isEmpty && reviewer.username != reviewer.name {
+                        Text("@\(reviewer.username)")
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
+                .help(reviewer.name.isEmpty ? "@\(reviewer.username)" : "\(reviewer.name) (@\(reviewer.username))")
             }
             if mr.reviewers.count > 4 {
-                Text("+\(mr.reviewers.count - 4)")
-                    .font(.system(size: 9, weight: .medium))
+                Text("+\(mr.reviewers.count - 4) \(String(localized: "mr.card.moreReviewers", defaultValue: "more"))")
+                    .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.tertiary)
+                    .padding(.leading, 23)
             }
         }
     }

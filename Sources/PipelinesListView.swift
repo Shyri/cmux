@@ -178,7 +178,7 @@ struct PipelinesListView: View {
         ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(state.pipelines) { p in
-                    PipelineCardView(pipeline: p)
+                    PipelineCardView(pipeline: p, directory: workspace.currentDirectory)
                         .padding(.horizontal, 8)
                         .padding(.vertical, 4)
                 }
@@ -198,7 +198,13 @@ struct PipelinesListView: View {
 
 private struct PipelineCardView: View {
     let pipeline: GitLabPipeline
+    let directory: String
     @State private var isHovered = false
+    @State private var showingJobsPopover = false
+    @State private var jobs: [GitLabJob] = []
+    @State private var jobsLoading = false
+    @State private var jobsError: String?
+    @State private var downloadingJob: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -210,6 +216,7 @@ private struct PipelineCardView: View {
                         .foregroundStyle(.secondary)
                 }
                 Spacer()
+                artifactsButton
                 if let updated = pipeline.updatedAt ?? pipeline.createdAt {
                     Text(relativeTime(from: updated))
                         .font(.system(size: 10))
@@ -262,6 +269,182 @@ private struct PipelineCardView: View {
             NSWorkspace.shared.open(url)
         }
         .help(pipeline.webURL)
+    }
+
+    private var artifactsButton: some View {
+        Button {
+            showingJobsPopover.toggle()
+            if showingJobsPopover && jobs.isEmpty && !jobsLoading {
+                loadJobs()
+            }
+        } label: {
+            Image(systemName: "arrow.down.circle")
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(String(localized: "pipeline.artifacts.download", defaultValue: "Download artifacts"))
+        .popover(isPresented: $showingJobsPopover, arrowEdge: .bottom) {
+            jobsPopover
+        }
+    }
+
+    @ViewBuilder
+    private var jobsPopover: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text(String(localized: "pipeline.artifacts.title", defaultValue: "Artifacts"))
+                    .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Button {
+                    jobs = []
+                    jobsError = nil
+                    loadJobs()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 11))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .disabled(jobsLoading)
+            }
+            .padding(.horizontal, 12)
+            .padding(.top, 10)
+            .padding(.bottom, 8)
+            Divider()
+
+            if jobsLoading {
+                HStack {
+                    ProgressView().scaleEffect(0.6)
+                    Text(String(localized: "pipeline.artifacts.loading", defaultValue: "Loading jobs..."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .padding(12)
+            } else if let err = jobsError {
+                Text(err)
+                    .font(.caption)
+                    .foregroundStyle(.red)
+                    .padding(12)
+                    .frame(maxWidth: 280, alignment: .leading)
+            } else {
+                let withArtifacts = jobs.filter { $0.hasArtifacts }
+                if withArtifacts.isEmpty {
+                    Text(String(
+                        localized: "pipeline.artifacts.none",
+                        defaultValue: "No jobs with artifacts"
+                    ))
+                    .font(.caption)
+                    .foregroundStyle(.tertiary)
+                    .padding(12)
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 1) {
+                            ForEach(withArtifacts) { job in
+                                jobRow(job)
+                            }
+                        }
+                        .padding(.vertical, 4)
+                    }
+                    .frame(maxHeight: 240)
+                }
+            }
+        }
+        .frame(minWidth: 240)
+    }
+
+    private func jobRow(_ job: GitLabJob) -> some View {
+        Button {
+            triggerDownload(job: job)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "shippingbox")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(job.name)
+                        .font(.system(size: 12, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                    if !job.stage.isEmpty {
+                        Text(job.stage)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                }
+                Spacer()
+                if downloadingJob == job.name {
+                    ProgressView().scaleEffect(0.5)
+                } else {
+                    Image(systemName: "arrow.down.circle")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(downloadingJob != nil)
+    }
+
+    private func loadJobs() {
+        jobsLoading = true
+        jobsError = nil
+        Task {
+            do {
+                let fetched = try await fetchJobsForPipeline(pipelineID: pipeline.id, in: directory)
+                await MainActor.run {
+                    jobs = fetched
+                    jobsLoading = false
+                }
+            } catch {
+                await MainActor.run {
+                    jobsError = (error as? GitLabPipelineFetchError).map { err in
+                        if case let .processError(m) = err { return m.trimmingCharacters(in: .whitespacesAndNewlines) }
+                        return error.localizedDescription
+                    } ?? error.localizedDescription
+                    jobsLoading = false
+                }
+            }
+        }
+    }
+
+    private func triggerDownload(job: GitLabJob) {
+        downloadingJob = job.name
+        Task {
+            do {
+                let dest = try await downloadArtifacts(
+                    ref: pipeline.ref,
+                    jobName: job.name,
+                    in: directory
+                )
+                await MainActor.run {
+                    downloadingJob = nil
+                    showingJobsPopover = false
+                    NSWorkspace.shared.activateFileViewerSelecting([dest])
+                }
+            } catch {
+                await MainActor.run {
+                    downloadingJob = nil
+                    let msg: String
+                    if let err = error as? GitLabPipelineFetchError, case let .processError(m) = err {
+                        msg = m.trimmingCharacters(in: .whitespacesAndNewlines)
+                    } else {
+                        msg = error.localizedDescription
+                    }
+                    let alert = NSAlert()
+                    alert.messageText = String(
+                        localized: "pipeline.artifacts.downloadFailed",
+                        defaultValue: "Failed to download artifacts"
+                    )
+                    alert.informativeText = msg
+                    alert.alertStyle = .warning
+                    alert.runModal()
+                }
+            }
+        }
     }
 
     private var statusBadge: some View {

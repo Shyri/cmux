@@ -4,6 +4,7 @@ enum GitLabSidebarTab: String, CaseIterable, Identifiable {
     case mergeRequests
     case pipelines
     case issues
+    case releases
 
     var id: String { rawValue }
 
@@ -15,6 +16,8 @@ enum GitLabSidebarTab: String, CaseIterable, Identifiable {
             return String(localized: "gitlab.tab.pipelines", defaultValue: "Pipelines")
         case .issues:
             return String(localized: "gitlab.tab.issues", defaultValue: "Issues")
+        case .releases:
+            return String(localized: "gitlab.tab.releases", defaultValue: "Releases")
         }
     }
 
@@ -23,6 +26,7 @@ enum GitLabSidebarTab: String, CaseIterable, Identifiable {
         case .mergeRequests: return "arrow.triangle.merge"
         case .pipelines: return "circle.dashed"
         case .issues: return "exclamationmark.circle"
+        case .releases: return "tag"
         }
     }
 }
@@ -90,6 +94,8 @@ struct GitLabSidebarView: View {
             PipelinesListView(workspace: workspace)
         case .issues:
             IssuesListView(workspace: workspace)
+        case .releases:
+            ReleasesListView(workspace: workspace)
         }
     }
 }

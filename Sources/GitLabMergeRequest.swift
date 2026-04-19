@@ -114,12 +114,11 @@ func fetchGitLabMergeRequests(
     process.standardError = stderr
 
     try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
     process.waitUntilExit()
 
-    let outData = stdout.fileHandleForReading.readDataToEndOfFile()
-
     guard process.terminationStatus == 0 else {
-        let errStr = String(data: stderr.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
         if errStr.contains("None of the git remotes") || errStr.contains("not a git repository") {
             throw GitLabMRFetchError.notGitLabRepo
         }

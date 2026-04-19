@@ -144,6 +144,9 @@
 			GLAB0005A1B2C3D4E5F60005 /* GitLabSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */; };
 			GLAB0006A1B2C3D4E5F60006 /* GitLabIssue.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */; };
 			GLAB0007A1B2C3D4E5F60007 /* IssuesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */; };
+			GLAB0008A1B2C3D4E5F60008 /* GitLabProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */; };
+			GLAB0009A1B2C3D4E5F60009 /* GitLabRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */; };
+			GLAB000AA1B2C3D4E5F6000A /* ReleasesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */; };
 		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -352,6 +355,9 @@
 		GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabSidebarView.swift; sourceTree = "<group>"; };
 		GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabIssue.swift; sourceTree = "<group>"; };
 		GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = IssuesListView.swift; sourceTree = "<group>"; };
+		GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabProcessUtils.swift; sourceTree = "<group>"; };
+		GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabRelease.swift; sourceTree = "<group>"; };
+		GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ReleasesListView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -499,6 +505,9 @@
 					GLAB0015A1B2C3D4E5F60005 /* GitLabSidebarView.swift */,
 					GLAB0016A1B2C3D4E5F60006 /* GitLabIssue.swift */,
 					GLAB0017A1B2C3D4E5F60007 /* IssuesListView.swift */,
+					GLAB0018A1B2C3D4E5F60008 /* GitLabProcessUtils.swift */,
+					GLAB0019A1B2C3D4E5F60009 /* GitLabRelease.swift */,
+					GLAB001AA1B2C3D4E5F6000A /* ReleasesListView.swift */,
 				A5001014 /* GhosttyConfig.swift */,
 				A5001015 /* GhosttyTerminalView.swift */,
 				A5001531 /* TerminalWindowPortal.swift */,
@@ -825,6 +834,9 @@
 					GLAB0005A1B2C3D4E5F60005 /* GitLabSidebarView.swift in Sources */,
 					GLAB0006A1B2C3D4E5F60006 /* GitLabIssue.swift in Sources */,
 					GLAB0007A1B2C3D4E5F60007 /* IssuesListView.swift in Sources */,
+					GLAB0008A1B2C3D4E5F60008 /* GitLabProcessUtils.swift in Sources */,
+					GLAB0009A1B2C3D4E5F60009 /* GitLabRelease.swift in Sources */,
+					GLAB000AA1B2C3D4E5F6000A /* ReleasesListView.swift in Sources */,
 					B9000018A1B2C3D4E5F60719 /* WindowDragHandleView.swift in Sources */,
 					A50012F1 /* Backport.swift in Sources */,
 					A50012F3 /* KeyboardShortcutSettings.swift in Sources */,
