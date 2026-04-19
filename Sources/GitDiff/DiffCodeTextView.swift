@@ -261,10 +261,12 @@ final class DiffCodeContainer: NSView {
 
     @objc private func leftBoundsChanged(_ note: Notification) {
         updateThumbs()
+        leftScroll.verticalRulerView?.needsDisplay = true
     }
 
     @objc private func rightBoundsChanged(_ note: Notification) {
         updateThumbs()
+        rightScroll.verticalRulerView?.needsDisplay = true
     }
 
     override func layout() {
@@ -316,25 +318,30 @@ private final class DiffSplitterView: NSView {
 /// rest of its content.
 final class SyncedScrollView: NSScrollView {
     weak var partner: SyncedScrollView?
-    fileprivate var suspendPartnerSync: Bool = false
 
     override func scrollWheel(with event: NSEvent) {
-        super.scrollWheel(with: event)
-        guard !suspendPartnerSync, let partner else { return }
-        partner.suspendPartnerSync = true
-        defer { partner.suspendPartnerSync = false }
+        // Apply the scroll delta manually to both self and partner in the
+        // same pass — skipping `super.scrollWheel` avoids the animation /
+        // rubber-band timing mismatch that desyncs the two sides. Each side
+        // clamps to its own document size independently, so a narrower
+        // content still pins while the other continues.
         let dx = -event.scrollingDeltaX
         let dy = -event.scrollingDeltaY
         guard dx != 0 || dy != 0 else { return }
-        guard let doc = partner.documentView else { return }
-        let visible = partner.contentView.bounds.size
+        applyScrollDelta(dx: dx, dy: dy)
+        partner?.applyScrollDelta(dx: dx, dy: dy)
+    }
+
+    private func applyScrollDelta(dx: CGFloat, dy: CGFloat) {
+        guard let doc = documentView else { return }
+        let visible = contentView.bounds.size
         let maxX = max(0, doc.frame.width - visible.width)
         let maxY = max(0, doc.frame.height - visible.height)
-        var origin = partner.contentView.bounds.origin
+        var origin = contentView.bounds.origin
         origin.x = max(0, min(maxX, origin.x + dx))
         origin.y = max(0, min(maxY, origin.y + dy))
-        partner.contentView.scroll(to: origin)
-        partner.reflectScrolledClipView(partner.contentView)
+        contentView.scroll(to: origin)
+        reflectScrolledClipView(contentView)
     }
 }
 
