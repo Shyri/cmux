@@ -13,6 +13,12 @@ final class GitDiffViewModel: ObservableObject {
     @Published var isLoadingDiff = false
     @Published var filesError: String?
     @Published var diffError: String?
+    /// When non-nil, the previous file-list load failed because one or more
+    /// refs couldn't be resolved locally or on the remote-tracking branch.
+    /// Drives the "Fetch and retry" affordance in the error UI.
+    @Published var missingRefs: [String] = []
+    @Published var missingRefsRemote: String = gitDiffDefaultRemote
+    @Published var isFetchingRefs = false
     /// Inline discussions fetched via `glab api` when the spec comes from an
     /// MR. Empty for working-tree diffs.
     @Published var mrDiscussions: [MRDiscussion] = []
@@ -79,6 +85,7 @@ final class GitDiffViewModel: ObservableObject {
         fileListTask?.cancel()
         isLoadingFiles = true
         filesError = nil
+        missingRefs = []
 
         fileListTask = Task { [weak self] in
             guard let self else { return }
@@ -94,9 +101,32 @@ final class GitDiffViewModel: ObservableObject {
             } catch {
                 guard !Task.isCancelled else { return }
                 self.files = []
+                if let e = error as? GitDiffError,
+                   case let .missingRefs(branches, remote) = e {
+                    self.missingRefs = branches
+                    self.missingRefsRemote = remote
+                }
                 self.filesError = Self.message(for: error)
                 self.isLoadingFiles = false
             }
+        }
+    }
+
+    func fetchMissingRefs() async {
+        guard !missingRefs.isEmpty, !isFetchingRefs else { return }
+        let refs = missingRefs
+        let remote = missingRefsRemote
+        let directory = spec.directory
+        isFetchingRefs = true
+        do {
+            try await fetchGitBranches(refs, remote: remote, directory: directory)
+            isFetchingRefs = false
+            missingRefs = []
+            filesError = nil
+            reload()
+        } catch {
+            isFetchingRefs = false
+            filesError = Self.message(for: error)
         }
     }
 
@@ -136,6 +166,12 @@ final class GitDiffViewModel: ObservableObject {
             case .gitNotFound: return String(localized: "diff.error.gitNotFound", defaultValue: "git not found")
             case .notAGitRepo: return String(localized: "diff.error.notGit", defaultValue: "Not a git repository")
             case .processError(let m): return m.isEmpty ? "git error" : m
+            case .missingRefs(let branches, let remote):
+                let list = branches.joined(separator: ", ")
+                return String(
+                    localized: "diff.error.missingRefs",
+                    defaultValue: "Branch not available locally or on \(remote): \(list)"
+                )
             }
         }
         return error.localizedDescription
@@ -380,6 +416,31 @@ struct GitDiffWindowView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
+                    if !viewModel.missingRefs.isEmpty {
+                        Button {
+                            Task { await viewModel.fetchMissingRefs() }
+                        } label: {
+                            if viewModel.isFetchingRefs {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text(String(
+                                        localized: "diff.error.fetching",
+                                        defaultValue: "Fetching…"
+                                    ))
+                                }
+                            } else {
+                                Label(
+                                    String(
+                                        localized: "diff.error.fetchAndRetry",
+                                        defaultValue: "Fetch from \(viewModel.missingRefsRemote) and retry"
+                                    ),
+                                    systemImage: "arrow.clockwise"
+                                )
+                            }
+                        }
+                        .disabled(viewModel.isFetchingRefs)
+                        .padding(.top, 4)
+                    }
                     Spacer()
                 }
                 .frame(maxWidth: .infinity)

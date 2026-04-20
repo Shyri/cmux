@@ -354,6 +354,10 @@ private struct IssueCardView: View {
                 milestoneBadge(milestone)
             }
 
+            if !issue.assignees.isEmpty {
+                assigneesView
+            }
+
             if !issue.labels.isEmpty {
                 labelsView
             }
@@ -443,6 +447,42 @@ private struct IssueCardView: View {
         .padding(.vertical, 2)
         .background(Capsule().fill(Color.teal.opacity(0.15)))
         .overlay(Capsule().strokeBorder(Color.teal.opacity(0.35), lineWidth: 0.5))
+    }
+
+    private var assigneesView: some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: "person.2.fill")
+                .font(.system(size: 9))
+                .foregroundStyle(.tertiary)
+                .frame(width: 12, height: 18, alignment: .center)
+            VStack(alignment: .leading, spacing: 3) {
+                ForEach(issue.assignees.prefix(4), id: \.username) { assignee in
+                    let displayName = assignee.name.isEmpty ? assignee.username : assignee.name
+                    HStack(spacing: 5) {
+                        AvatarBadge(name: displayName)
+                        Text(displayName)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        if !assignee.username.isEmpty && assignee.username != assignee.name {
+                            Text("@\(assignee.username)")
+                                .font(.system(size: 10))
+                                .foregroundStyle(.tertiary)
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                        }
+                    }
+                    .help(assignee.name.isEmpty ? "@\(assignee.username)" : "\(assignee.name) (@\(assignee.username))")
+                }
+                if issue.assignees.count > 4 {
+                    Text("+\(issue.assignees.count - 4) \(String(localized: "issue.card.moreAssignees", defaultValue: "more"))")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundStyle(.tertiary)
+                        .padding(.leading, 23)
+                }
+            }
+        }
     }
 
     @ViewBuilder

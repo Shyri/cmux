@@ -56,13 +56,6 @@ struct GitDiffSpec: Equatable, Sendable {
     /// "Approve" button in the window toolbar.
     var mergeRequestIID: Int? = nil
     var mergeRequestURL: String? = nil
-
-    var gitRangeArgs: [String] {
-        if let compare {
-            return ["\(base)...\(compare)"]
-        }
-        return [base]
-    }
 }
 
 // MARK: - Errors
@@ -71,17 +64,81 @@ enum GitDiffError: Error, Sendable {
     case gitNotFound
     case notAGitRepo
     case processError(String)
+    /// One or both sides of the diff couldn't be resolved to a local or
+    /// remote-tracking ref. The payload lists the original branch names so
+    /// the UI can offer a fetch-and-retry action.
+    case missingRefs(branches: [String], remote: String)
+}
+
+// MARK: - Ref resolution
+
+/// For each branch, prefer the remote-tracking ref so the diff matches what
+/// GitLab sees even when the user's local branch is stale or absent. Falls
+/// back to the local name; returns nil if neither exists.
+private func resolveRef(
+    _ branch: String,
+    directory: String,
+    remote: String
+) async -> String? {
+    for candidate in ["\(remote)/\(branch)", branch] {
+        do {
+            _ = try await runGit(
+                args: ["rev-parse", "--verify", "--quiet", "\(candidate)^{commit}"],
+                directory: directory
+            )
+            return candidate
+        } catch {
+            continue
+        }
+    }
+    return nil
+}
+
+/// Default remote used when resolving or fetching MR refs.
+let gitDiffDefaultRemote = "origin"
+
+/// Resolve the `spec`'s refs to ones that exist locally, preferring the
+/// remote-tracking branch. Throws `missingRefs` if any side can't be resolved
+/// so the UI can surface a fetch-and-retry action.
+private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
+    let remote = gitDiffDefaultRemote
+    let resolvedBase = await resolveRef(spec.base, directory: spec.directory, remote: remote)
+    var resolvedCompare: String? = nil
+    if let compare = spec.compare {
+        resolvedCompare = await resolveRef(compare, directory: spec.directory, remote: remote)
+    }
+
+    var missing: [String] = []
+    if resolvedBase == nil { missing.append(spec.base) }
+    if let compare = spec.compare, resolvedCompare == nil { missing.append(compare) }
+    if !missing.isEmpty {
+        throw GitDiffError.missingRefs(branches: missing, remote: remote)
+    }
+
+    if let resolvedCompare {
+        return ["\(resolvedBase!)...\(resolvedCompare)"]
+    }
+    return [resolvedBase!]
+}
+
+func fetchGitBranches(_ branches: [String], remote: String, directory: String) async throws {
+    guard !branches.isEmpty else { return }
+    _ = try await runGit(
+        args: ["fetch", "--no-tags", remote] + branches,
+        directory: directory
+    )
 }
 
 // MARK: - Fetchers
 
 func fetchChangedFiles(spec: GitDiffSpec) async throws -> [GitDiffFile] {
+    let rangeArgs = try await resolvedRangeArgs(for: spec)
     let numstat = try await runGit(
-        args: ["diff", "--numstat", "-z"] + spec.gitRangeArgs,
+        args: ["diff", "--numstat", "-z"] + rangeArgs,
         directory: spec.directory
     )
     let nameStatus = try await runGit(
-        args: ["diff", "--name-status", "-z"] + spec.gitRangeArgs,
+        args: ["diff", "--name-status", "-z"] + rangeArgs,
         directory: spec.directory
     )
 
@@ -110,13 +167,14 @@ func fetchUnifiedDiff(spec: GitDiffSpec, file: String) async throws -> String {
     // `-U999999` asks git to include every unchanged line as context, so the
     // renderer shows the whole file with additions/deletions interleaved —
     // matching VS Code's behaviour instead of only the ±3 lines around hunks.
+    let rangeArgs = try await resolvedRangeArgs(for: spec)
     let args: [String] = [
         "-c", "color.ui=never",
         "diff",
         "--no-color",
         "--no-ext-diff",
         "-U999999",
-    ] + spec.gitRangeArgs + ["--", file]
+    ] + rangeArgs + ["--", file]
     return try await runGit(args: args, directory: spec.directory, stringOutput: true)
 }
 

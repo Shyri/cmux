@@ -9,6 +9,11 @@ struct GitLabMilestone: Equatable, Hashable, Sendable {
     let dueDate: Date?
 }
 
+struct GitLabAssignee: Equatable, Hashable, Sendable {
+    let name: String
+    let username: String
+}
+
 struct GitLabIssue: Identifiable, Equatable, Sendable {
     let id: Int
     let iid: Int
@@ -19,7 +24,7 @@ struct GitLabIssue: Identifiable, Equatable, Sendable {
     let webURL: String
     let labels: [String]
     let milestone: GitLabMilestone?
-    let assigneeUsernames: [String]
+    let assignees: [GitLabAssignee]
     let userNotesCount: Int
     let createdAt: Date?
     let updatedAt: Date?
@@ -76,7 +81,12 @@ private struct GLIssueResponse: Decodable {
             webURL: web_url ?? "",
             labels: labels ?? [],
             milestone: ms,
-            assigneeUsernames: (assignees ?? []).compactMap { $0.username },
+            assignees: (assignees ?? []).compactMap { a in
+                let username = a.username ?? ""
+                let name = a.name ?? ""
+                guard !username.isEmpty || !name.isEmpty else { return nil }
+                return GitLabAssignee(name: name, username: username)
+            },
             userNotesCount: user_notes_count ?? 0,
             createdAt: Self.parseDate(created_at),
             updatedAt: Self.parseDate(updated_at)

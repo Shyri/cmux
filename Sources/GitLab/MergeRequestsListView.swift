@@ -617,7 +617,7 @@ private struct MRCardView: View {
 
 // MARK: - Avatar components
 
-private struct AvatarBadge: View {
+struct AvatarBadge: View {
     let name: String
 
     private var initials: String {
@@ -643,7 +643,7 @@ private struct AvatarBadge: View {
     }
 }
 
-private struct AvatarLabel: View {
+struct AvatarLabel: View {
     let name: String
     let username: String
 
