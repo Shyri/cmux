@@ -27,6 +27,8 @@ struct MRDiscussion: Identifiable, Equatable, Sendable {
     var resolved: Bool {
         notes.allSatisfy { !$0.resolvable || $0.resolved }
     }
+
+    var isPositioned: Bool { oldLine != nil || newLine != nil }
 }
 
 // MARK: - JSON decoding (glab api ... /discussions)
@@ -51,6 +53,7 @@ private struct GLDiscussionNote: Decodable {
     let resolvable: Bool?
     let resolved: Bool?
     let position: GLDiscussionPosition?
+    let system: Bool?
 }
 
 private struct GLDiscussion: Decodable {
@@ -135,10 +138,14 @@ private func runGlabDiscussions(mrIID: Int, directory: String) throws -> [MRDisc
 
 private func convert(_ d: GLDiscussion) -> MRDiscussion? {
     let rawNotes = d.notes ?? []
-    guard let first = rawNotes.first, let pos = first.position else { return nil }
-    let filePath = pos.new_path ?? pos.old_path
-    let notes: [MRNote] = rawNotes.map { n in
-        MRNote(
+    guard let first = rawNotes.first else { return nil }
+    // Skip fully system-generated discussions ("assigned to", "approved", …).
+    if rawNotes.allSatisfy({ $0.system == true }) { return nil }
+    let pos = first.position
+    let notes: [MRNote] = rawNotes.compactMap { n in
+        // Drop individual system notes that may be mixed in with user replies.
+        guard n.system != true else { return nil }
+        return MRNote(
             id: n.id,
             authorName: n.author?.name ?? "",
             authorUsername: n.author?.username ?? "",
@@ -148,12 +155,13 @@ private func convert(_ d: GLDiscussion) -> MRDiscussion? {
             resolved: n.resolved ?? false
         )
     }
+    guard !notes.isEmpty else { return nil }
     return MRDiscussion(
         id: d.id,
         notes: notes,
-        filePath: filePath,
-        oldLine: pos.old_line,
-        newLine: pos.new_line
+        filePath: pos?.new_path ?? pos?.old_path,
+        oldLine: pos?.old_line,
+        newLine: pos?.new_line
     )
 }
 

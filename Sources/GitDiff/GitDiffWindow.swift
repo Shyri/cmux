@@ -16,10 +16,23 @@ final class GitDiffViewModel: ObservableObject {
     /// Inline discussions fetched via `glab api` when the spec comes from an
     /// MR. Empty for working-tree diffs.
     @Published var mrDiscussions: [MRDiscussion] = []
+    /// Whether the user is viewing the MR overview (general discussions) in
+    /// lieu of a file diff.
+    @Published var overviewSelected: Bool = false
 
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
     private var discussionsTask: Task<Void, Never>?
+
+    var positionedDiscussions: [MRDiscussion] {
+        mrDiscussions.filter { $0.isPositioned }
+    }
+    var generalDiscussions: [MRDiscussion] {
+        mrDiscussions.filter { !$0.isPositioned }
+    }
+    var hasOverview: Bool {
+        spec.mergeRequestIID != nil && !generalDiscussions.isEmpty
+    }
 
     init(spec: GitDiffSpec) {
         self.spec = spec
@@ -88,6 +101,7 @@ final class GitDiffViewModel: ObservableObject {
     }
 
     func select(_ file: GitDiffFile) {
+        overviewSelected = false
         if selectedFile?.path == file.path { return }
         selectedFile = file
         loadDiff(for: file)
@@ -185,7 +199,11 @@ struct GitDiffWindowView: View {
             expandedBlocks = []
             rebuildPrepared()
         }
-        .background(HunkNavKeyMonitor(onPrev: goToPrevHunk, onNext: goToNextHunk))
+        .background(HunkNavKeyMonitor(
+            onPrev: goToPrevHunk,
+            onNext: goToNextHunk,
+            onEscape: closeWindow
+        ))
     }
 
     private func rebuildPrepared() {
@@ -193,7 +211,7 @@ struct GitDiffWindowView: View {
             diffText: viewModel.currentDiff,
             filePath: viewModel.selectedFile?.path,
             expandedBlocks: expandedBlocks,
-            discussions: viewModel.mrDiscussions
+            discussions: viewModel.positionedDiscussions
         )
         NSLog("[cmux-mr-comments] rebuild file=\(viewModel.selectedFile?.path ?? "?") discussions=\(viewModel.mrDiscussions.count) widgets=\(prepared.inlineComments.count)")
         activeHunk = 0
@@ -220,6 +238,10 @@ struct GitDiffWindowView: View {
         guard hunkCount > 0 else { return }
         activeHunk = min(hunkCount - 1, activeHunk + 1)
         scrollHunkIndex = activeHunk
+    }
+
+    private func closeWindow() {
+        NSApp.keyWindow?.performClose(nil)
     }
 
     @ViewBuilder
@@ -381,8 +403,25 @@ struct GitDiffWindowView: View {
         }
     }
 
+    @ViewBuilder
+    private var overviewRow: some View {
+        if viewModel.hasOverview {
+            GitDiffOverviewRow(
+                count: viewModel.generalDiscussions.count,
+                isSelected: viewModel.overviewSelected
+            )
+            .listRowInsets(EdgeInsets(top: 0, leading: 6, bottom: 0, trailing: 6))
+            .listRowSeparator(.hidden)
+            .contentShape(Rectangle())
+            .onTapGesture {
+                viewModel.overviewSelected = true
+            }
+        }
+    }
+
     private var flatFileList: some View {
         List(selection: selectionBinding) {
+            overviewRow
             ForEach(viewModel.files) { file in
                 GitDiffFileRow(file: file)
                     .tag(file.id)
@@ -400,6 +439,7 @@ struct GitDiffWindowView: View {
     private var treeFileList: some View {
         let root = FileTreeBuilder.build(from: viewModel.files)
         return List(selection: selectionBinding) {
+            overviewRow
             ForEach(flattenVisible(root, depth: 0), id: \.node.id) { entry in
                 if let file = entry.node.file {
                     GitDiffFileRow(file: file, depth: entry.depth)
@@ -491,7 +531,9 @@ struct GitDiffWindowView: View {
 
     @ViewBuilder
     private var diffPane: some View {
-        if let file = viewModel.selectedFile {
+        if viewModel.overviewSelected {
+            OverviewDiscussionsPane(discussions: viewModel.generalDiscussions)
+        } else if let file = viewModel.selectedFile {
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
                     Image(systemName: "doc.text")
@@ -799,6 +841,82 @@ enum FileTreeBuilder {
             }
         }
         return node
+    }
+}
+
+private struct GitDiffOverviewRow: View {
+    let count: Int
+    let isSelected: Bool
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Spacer().frame(width: DiffTreeMetrics.chevronWidth)
+            Image(systemName: "bubble.left.and.bubble.right.fill")
+                .font(.system(size: 10))
+                .foregroundStyle(Color.accentColor)
+            Text("Overview")
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(.primary)
+            Spacer(minLength: 4)
+            Text("\(count)")
+                .font(.system(size: 9, weight: .medium, design: .monospaced))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.vertical, DiffTreeMetrics.rowVerticalPadding)
+        .background(
+            isSelected
+                ? Color.accentColor.opacity(0.15)
+                : Color.clear
+        )
+    }
+}
+
+private struct OverviewDiscussionsPane: View {
+    let discussions: [MRDiscussion]
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "bubble.left.and.bubble.right.fill")
+                    .font(.system(size: 11))
+                    .foregroundStyle(Color.accentColor)
+                Text(String(
+                    localized: "diff.overview.title",
+                    defaultValue: "General discussion"
+                ))
+                .font(.system(size: 12, weight: .semibold))
+                Spacer()
+                Text("\(discussions.count)")
+                    .font(.system(size: 10, design: .monospaced))
+                    .foregroundStyle(.tertiary)
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+            Divider()
+            if discussions.isEmpty {
+                VStack {
+                    Spacer()
+                    Text(String(
+                        localized: "diff.overview.empty",
+                        defaultValue: "No general comments"
+                    ))
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    Spacer()
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 6) {
+                        ForEach(discussions) { d in
+                            InlineCommentCard(discussion: d)
+                        }
+                    }
+                    .padding(.vertical, 6)
+                }
+            }
+        }
+        .background(Color(nsColor: DiffCodeContainer.editorBackground))
     }
 }
 
@@ -1506,11 +1624,13 @@ struct SideBySideDiffView: View {
 struct HunkNavKeyMonitor: NSViewRepresentable {
     let onPrev: () -> Void
     let onNext: () -> Void
+    let onEscape: () -> Void
 
     func makeNSView(context: Context) -> NSView {
         let view = KeyMonitorView()
         view.onPrev = onPrev
         view.onNext = onNext
+        view.onEscape = onEscape
         return view
     }
 
@@ -1518,11 +1638,13 @@ struct HunkNavKeyMonitor: NSViewRepresentable {
         guard let view = nsView as? KeyMonitorView else { return }
         view.onPrev = onPrev
         view.onNext = onNext
+        view.onEscape = onEscape
     }
 
     private final class KeyMonitorView: NSView {
         var onPrev: (() -> Void)?
         var onNext: (() -> Void)?
+        var onEscape: (() -> Void)?
         private var monitor: Any?
 
         override func viewDidMoveToWindow() {
@@ -1535,13 +1657,18 @@ struct HunkNavKeyMonitor: NSViewRepresentable {
             monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
                 guard let self else { return event }
                 guard event.window === self.window else { return event }
-                // F7 has keyCode 98. Shift+F7 combines with shift mask.
+                // F7 → next hunk, Shift+F7 → previous hunk.
                 if event.keyCode == 98 {
                     if event.modifierFlags.contains(.shift) {
                         self.onPrev?()
                     } else {
                         self.onNext?()
                     }
+                    return nil
+                }
+                // Escape → close the diff window.
+                if event.keyCode == 53 {
+                    self.onEscape?()
                     return nil
                 }
                 return event
