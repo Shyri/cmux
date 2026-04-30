@@ -149,7 +149,7 @@ private func mergeContiguous(_ ranges: [NSRange]) -> [NSRange] {
 
 // MARK: - LCS-based edit script
 
-private enum EditOp {
+enum LCSEditOp: Equatable, Sendable {
     case deleteLeft(Int)
     case insertRight(Int)
     case keep
@@ -157,7 +157,7 @@ private enum EditOp {
 
 /// Builds an edit script from an LCS table. Cheaper than a full Myers diff
 /// for the token counts we deal with (a single line). Complexity O(n*m).
-private func lcsScript<T: Hashable>(a: [T], b: [T]) -> [EditOp] {
+func lcsScript<T: Hashable>(a: [T], b: [T]) -> [LCSEditOp] {
     let n = a.count
     let m = b.count
     if n == 0 { return (0..<m).map { .insertRight($0) } }
@@ -179,7 +179,7 @@ private func lcsScript<T: Hashable>(a: [T], b: [T]) -> [EditOp] {
         }
     }
 
-    var ops: [EditOp] = []
+    var ops: [LCSEditOp] = []
     var i = n
     var j = m
     while i > 0 && j > 0 {

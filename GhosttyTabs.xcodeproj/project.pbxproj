@@ -153,6 +153,7 @@
 			GDIF0003A1B2C3D4E5F60003 /* LCSDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */; };
 			GDIF0004A1B2C3D4E5F60004 /* SyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0014A1B2C3D4E5F60004 /* SyntaxHighlighter.swift */; };
 			GDIF0005A1B2C3D4E5F60005 /* DiffCodeTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0015A1B2C3D4E5F60005 /* DiffCodeTextView.swift */; };
+			GDIF0006A1B2C3D4E5F60006 /* DiffThreeWayCodeTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = GDIF0016A1B2C3D4E5F60006 /* DiffThreeWayCodeTextView.swift */; };
 		/* End PBXBuildFile section */
 
 /* Begin PBXCopyFilesBuildPhase section */
@@ -370,6 +371,7 @@
 		GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/LCSDiff.swift; sourceTree = "<group>"; };
 		GDIF0014A1B2C3D4E5F60004 /* SyntaxHighlighter.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/SyntaxHighlighter.swift; sourceTree = "<group>"; };
 		GDIF0015A1B2C3D4E5F60005 /* DiffCodeTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/DiffCodeTextView.swift; sourceTree = "<group>"; };
+		GDIF0016A1B2C3D4E5F60006 /* DiffThreeWayCodeTextView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitDiff/DiffThreeWayCodeTextView.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -526,6 +528,7 @@
 					GDIF0013A1B2C3D4E5F60003 /* LCSDiff.swift */,
 					GDIF0014A1B2C3D4E5F60004 /* SyntaxHighlighter.swift */,
 					GDIF0015A1B2C3D4E5F60005 /* DiffCodeTextView.swift */,
+					GDIF0016A1B2C3D4E5F60006 /* DiffThreeWayCodeTextView.swift */,
 				A5001014 /* GhosttyConfig.swift */,
 				A5001015 /* GhosttyTerminalView.swift */,
 				A5001531 /* TerminalWindowPortal.swift */,
@@ -861,6 +864,7 @@
 					GDIF0003A1B2C3D4E5F60003 /* LCSDiff.swift in Sources */,
 					GDIF0004A1B2C3D4E5F60004 /* SyntaxHighlighter.swift in Sources */,
 					GDIF0005A1B2C3D4E5F60005 /* DiffCodeTextView.swift in Sources */,
+					GDIF0006A1B2C3D4E5F60006 /* DiffThreeWayCodeTextView.swift in Sources */,
 					B9000018A1B2C3D4E5F60719 /* WindowDragHandleView.swift in Sources */,
 					A50012F1 /* Backport.swift in Sources */,
 					A50012F3 /* KeyboardShortcutSettings.swift in Sources */,

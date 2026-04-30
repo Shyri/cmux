@@ -18,6 +18,9 @@ struct DiffCodeTextView: NSViewRepresentable {
     let rightLineStarts: [Int]
     let collapsedStubs: [DiffCollapsedStub]
     let inlineComments: [InlineCommentWidget]
+    let connectorSegments: [DiffConnectorSegment]
+    let leftRowToRightRow: [Int]
+    let rightRowToLeftRow: [Int]
     let onExpandBlock: (Int) -> Void
     @Binding var scrollHunkIndex: Int?
 
@@ -45,6 +48,9 @@ struct DiffCodeTextView: NSViewRepresentable {
             rightLineStarts: rightLineStarts,
             collapsedStubs: collapsedStubs,
             inlineComments: inlineComments,
+            connectorSegments: connectorSegments,
+            leftRowToRightRow: leftRowToRightRow,
+            rightRowToLeftRow: rightRowToLeftRow,
             onExpandBlock: onExpandBlock
         )
         if let idx = scrollHunkIndex {
@@ -67,19 +73,27 @@ struct DiffCodeTextView: NSViewRepresentable {
 final class DiffCodeContainer: NSView {
     weak var coordinator: DiffCodeTextView.Coordinator?
 
-    private let leftScroll = SyncedScrollView()
-    private let rightScroll = SyncedScrollView()
+    private let leftScroll = DiffCodeScrollView()
+    private let rightScroll = DiffCodeScrollView()
     /// Custom NSTextView that draws per-line background fills across the full
     /// view width, matching VS Code's diff block bands.
     private let leftText: DiffTextView = DiffCodeContainer.makeCodeTextView()
     private let rightText: DiffTextView = DiffCodeContainer.makeCodeTextView()
-    private let splitter = DiffSplitterView()
+    private let connector: DiffConnectorView = DiffConnectorView()
     /// Single overview ruler on the far right of the whole diff (scrollbar +
     /// change minimap in one strip, matching VS Code).
     private let overviewRuler = DiffOverviewRuler()
 
     private var leftHunkOffsets: [Int] = []
     private var rightHunkOffsets: [Int] = []
+    /// Side-specific line-start char indices, used by the row-mapped scroll
+    /// sync to translate a viewport position on one side to the corresponding
+    /// row index on the other side via `leftRowToRightRow`.
+    private var leftLineStarts: [Int] = []
+    private var rightLineStarts: [Int] = []
+    private var leftRowToRightRow: [Int] = []
+    private var rightRowToLeftRow: [Int] = []
+    private var isSyncingScroll = false
 
     private let rulerWidth: CGFloat = 24
 
@@ -88,16 +102,20 @@ final class DiffCodeContainer: NSView {
         layer?.backgroundColor = DiffCodeContainer.editorBackground.cgColor
 
         for (scroll, text) in [(leftScroll, leftText), (rightScroll, rightText)] {
-            configure(scrollView: scroll, textView: text)
+            DiffCodeContainer.configureCodePane(scrollView: scroll, textView: text)
             addSubview(scroll)
         }
-        addSubview(splitter)
+        connector.bind(leftText: leftText, rightText: rightText)
+        addSubview(connector)
         addSubview(overviewRuler)
 
-        // Forward scroll-wheel deltas bi-directionally so both sides move
-        // together, each clamping to its own content width independently.
-        leftScroll.partner = rightScroll
-        rightScroll.partner = leftScroll
+        // Horizontal scroll wheel deltas still need bidirectional forwarding
+        // (so the user can scroll long lines on either side without them
+        // diverging). Vertical sync is handled separately by the row-mapped
+        // pipeline below — pixel forwarding doesn't work when each side has
+        // a different total height (the IntelliJ-style asymmetric layout).
+        leftScroll.horizontalPartner = rightScroll
+        rightScroll.horizontalPartner = leftScroll
 
         NotificationCenter.default.addObserver(
             self,
@@ -110,6 +128,12 @@ final class DiffCodeContainer: NSView {
             selector: #selector(rightBoundsChanged(_:)),
             name: NSView.boundsDidChangeNotification,
             object: rightScroll.contentView
+        )
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(connectorPrefsChanged(_:)),
+            name: UserDefaults.didChangeNotification,
+            object: nil
         )
 
         overviewRuler.onClickFraction = { [weak self] fraction in
@@ -140,7 +164,7 @@ final class DiffCodeContainer: NSView {
         srgbRed: 0x1E / 255, green: 0x1E / 255, blue: 0x1E / 255, alpha: 1
     )
 
-    private static func makeCodeTextView() -> DiffTextView {
+    static func makeCodeTextView() -> DiffTextView {
         let storage = NSTextStorage()
         let layoutManager = NSLayoutManager()
         storage.addLayoutManager(layoutManager)
@@ -153,7 +177,7 @@ final class DiffCodeContainer: NSView {
         return DiffTextView(frame: .zero, textContainer: container)
     }
 
-    private func configure(scrollView: NSScrollView, textView: NSTextView) {
+    static func configureCodePane(scrollView: NSScrollView, textView: NSTextView) {
         // Vertical scroller is hidden: the overview ruler on the right of each
         // side doubles as the scrollbar (shows a translucent viewport thumb),
         // matching VS Code's diff editor.
@@ -214,6 +238,9 @@ final class DiffCodeContainer: NSView {
         rightLineStarts: [Int],
         collapsedStubs: [DiffCollapsedStub],
         inlineComments: [InlineCommentWidget],
+        connectorSegments: [DiffConnectorSegment],
+        leftRowToRightRow: [Int],
+        rightRowToLeftRow: [Int],
         onExpandBlock: @escaping (Int) -> Void
     ) {
         if leftText.textStorage?.isEqual(to: left) != true {
@@ -238,10 +265,20 @@ final class DiffCodeContainer: NSView {
         }
         self.leftHunkOffsets = leftHunkOffsets
         self.rightHunkOffsets = rightHunkOffsets
+        self.leftLineStarts = leftLineStarts
+        self.rightLineStarts = rightLineStarts
+        self.leftRowToRightRow = leftRowToRightRow
+        self.rightRowToLeftRow = rightRowToLeftRow
         overviewRuler.update(
             leftKinds: leftLineKinds,
             rightKinds: rightLineKinds
         )
+        connector.update(
+            segments: connectorSegments,
+            leftLineStarts: leftLineStarts,
+            rightLineStarts: rightLineStarts
+        )
+        needsLayout = true
     }
 
     func scrollToHunk(at index: Int) {
@@ -289,28 +326,124 @@ final class DiffCodeContainer: NSView {
     // MARK: Scroll sync
 
     @objc private func leftBoundsChanged(_ note: Notification) {
+        if !isSyncingScroll {
+            syncScroll(driver: .left)
+        }
         updateThumbs()
         leftScroll.verticalRulerView?.needsDisplay = true
+        connector.needsDisplay = true
     }
 
     @objc private func rightBoundsChanged(_ note: Notification) {
+        if !isSyncingScroll {
+            syncScroll(driver: .right)
+        }
         updateThumbs()
         rightScroll.verticalRulerView?.needsDisplay = true
+        connector.needsDisplay = true
+    }
+
+    private enum ScrollSide { case left, right }
+
+    private func syncScroll(driver: ScrollSide) {
+        guard !leftRowToRightRow.isEmpty, !rightRowToLeftRow.isEmpty else { return }
+        let driverScroll: NSScrollView = driver == .left ? leftScroll : rightScroll
+        let followerScroll: NSScrollView = driver == .left ? rightScroll : leftScroll
+        let driverText: NSTextView = driver == .left ? leftText : rightText
+        let followerText: NSTextView = driver == .left ? rightText : leftText
+        let driverStarts: [Int] = driver == .left ? leftLineStarts : rightLineStarts
+        let followerStarts: [Int] = driver == .left ? rightLineStarts : leftLineStarts
+        let map: [Int] = driver == .left ? leftRowToRightRow : rightRowToLeftRow
+
+        guard !driverStarts.isEmpty, !followerStarts.isEmpty,
+              let dlm = driverText.layoutManager, let dtc = driverText.textContainer,
+              let flm = followerText.layoutManager else { return }
+        let driverInsetY = driverText.textContainerInset.height
+        let followerInsetY = followerText.textContainerInset.height
+
+        let driverClipY = driverScroll.contentView.bounds.origin.y
+        // Translate to text-view coordinates (clipView and document share origin).
+        let probeY = max(0, driverClipY - driverInsetY)
+        let probePoint = NSPoint(x: 0, y: probeY)
+        let glyphIndex = dlm.glyphIndex(for: probePoint, in: dtc)
+        let charIndex = dlm.characterIndexForGlyph(at: glyphIndex)
+
+        // Binary search the line index from the line-starts array.
+        var lo = 0
+        var hi = driverStarts.count - 1
+        var driverRow = 0
+        while lo <= hi {
+            let mid = (lo + hi) / 2
+            if driverStarts[mid] <= charIndex {
+                driverRow = mid
+                lo = mid + 1
+            } else {
+                hi = mid - 1
+            }
+        }
+
+        // Look up the corresponding follower row and compute its top Y in
+        // follower text-view coordinates.
+        guard driverRow < map.count else { return }
+        let mapped = map[driverRow]
+        let followerRow = max(0, min(mapped, followerStarts.count - 1))
+        let followerCharIndex = followerStarts[followerRow]
+        let followerLength = followerText.textStorage?.length ?? 0
+        let clamped = max(0, min(followerCharIndex, max(0, followerLength - 1)))
+        guard flm.numberOfGlyphs > 0 else { return }
+        let followerGlyph = flm.glyphIndexForCharacter(at: clamped)
+        let followerRect = flm.lineFragmentRect(forGlyphAt: followerGlyph, effectiveRange: nil)
+        let followerTextY = followerRect.minY + followerInsetY
+
+        // Preserve the within-row pixel offset so partial-row scrolling on the
+        // driver side carries over to the follower (smooth feel; without this,
+        // the follower's viewport would snap on every row boundary).
+        let driverRect = dlm.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
+        let driverTextY = driverRect.minY + driverInsetY
+        let intraRowOffset = driverClipY - driverTextY
+
+        let followerHeight = (followerScroll.documentView?.frame.height ?? 0)
+        let followerVisible = followerScroll.contentView.bounds.height
+        let maxFollowerY = max(0, followerHeight - followerVisible)
+        let targetY = max(0, min(maxFollowerY, followerTextY + intraRowOffset))
+
+        let currentX = followerScroll.contentView.bounds.origin.x
+        if abs(followerScroll.contentView.bounds.origin.y - targetY) < 0.5 { return }
+        isSyncingScroll = true
+        followerScroll.contentView.scroll(to: NSPoint(x: currentX, y: targetY))
+        followerScroll.reflectScrolledClipView(followerScroll.contentView)
+        isSyncingScroll = false
+    }
+
+    @objc private func connectorPrefsChanged(_ note: Notification) {
+        // Pick up `diff.connector.enabled` / `diff.connector.width` flips
+        // without requiring a window reload.
+        DispatchQueue.main.async { [weak self] in
+            self?.needsLayout = true
+            self?.connector.needsDisplay = true
+        }
     }
 
     override func layout() {
         let previousBounds = bounds
         super.layout()
-        let splitterWidth: CGFloat = 2
+        let connectorEnabled = UserDefaults.standard.object(forKey: "diff.connector.enabled") as? Bool ?? true
+        let configuredWidthRaw = UserDefaults.standard.object(forKey: "diff.connector.width") as? Double
+        let configuredWidth = CGFloat(configuredWidthRaw ?? 36)
+        let connectorWidth: CGFloat = connectorEnabled
+            ? max(8, min(120, configuredWidth))
+            : 2
+        connector.isHidden = false
+        connector.connectorEnabled = connectorEnabled
         // Whole-panel layout: each side splits equally in the horizontal
         // space left after reserving rulerWidth on the far right.
         let usableWidth = max(1, bounds.width - rulerWidth)
-        let halfWidth = max(1, (usableWidth - splitterWidth) / 2)
+        let halfWidth = max(1, (usableWidth - connectorWidth) / 2)
         leftScroll.frame = NSRect(x: 0, y: 0, width: halfWidth, height: bounds.height)
-        splitter.frame = NSRect(x: halfWidth, y: 0, width: splitterWidth, height: bounds.height)
-        let rightScrollWidth = max(1, usableWidth - halfWidth - splitterWidth)
+        connector.frame = NSRect(x: halfWidth, y: 0, width: connectorWidth, height: bounds.height)
+        let rightScrollWidth = max(1, usableWidth - halfWidth - connectorWidth)
         rightScroll.frame = NSRect(
-            x: halfWidth + splitterWidth,
+            x: halfWidth + connectorWidth,
             y: 0,
             width: rightScrollWidth,
             height: bounds.height
@@ -321,6 +454,7 @@ final class DiffCodeContainer: NSView {
             width: rulerWidth,
             height: bounds.height
         )
+        connector.needsDisplay = true
         if previousBounds.size != bounds.size {
             updateThumbs()
         }
@@ -331,35 +465,271 @@ final class DiffCodeContainer: NSView {
     }
 }
 
-private final class DiffSplitterView: NSView {
+// MARK: - Diff Connector (IntelliJ-style ribbons)
+
+/// Draws curved ribbons in the gutter between the left and right diff panes,
+/// linking each hunk on the left with its destination on the right. Visually
+/// echoes the IntelliJ side-by-side diff: filled bezier shapes coloured per
+/// kind (added / deleted / changed / moved), with pure insertions / deletions
+/// collapsing one endpoint to a point so the shape becomes a funnel.
+final class DiffConnectorView: NSView {
+    private weak var leftText: DiffTextView?
+    private weak var rightText: DiffTextView?
+    private var segments: [DiffConnectorSegment] = []
+    private var leftLineStarts: [Int] = []
+    private var rightLineStarts: [Int] = []
+    /// When false the view shrinks to a 2pt divider strip and skips ribbon
+    /// drawing — used by the Debug toggle to fall back to the classic look.
+    var connectorEnabled: Bool = true {
+        didSet { if connectorEnabled != oldValue { needsDisplay = true } }
+    }
+
+    override var isFlipped: Bool { true }
+
+    func bind(leftText: DiffTextView, rightText: DiffTextView) {
+        self.leftText = leftText
+        self.rightText = rightText
+    }
+
+    func update(
+        segments: [DiffConnectorSegment],
+        leftLineStarts: [Int],
+        rightLineStarts: [Int]
+    ) {
+        self.segments = segments
+        self.leftLineStarts = leftLineStarts
+        self.rightLineStarts = rightLineStarts
+        needsDisplay = true
+    }
+
+    private static let dividerColor = NSColor(
+        srgbRed: 0x45/255, green: 0x45/255, blue: 0x45/255, alpha: 1
+    )
+
+    private struct RibbonStyle {
+        let fill: NSColor
+        let stroke: NSColor
+        let dashed: Bool
+    }
+
+    private static let addedStyle = RibbonStyle(
+        fill: NSColor(srgbRed: 0x6E/255, green: 0x9F/255, blue: 0x36/255, alpha: 0.22),
+        stroke: NSColor(srgbRed: 0x6E/255, green: 0x9F/255, blue: 0x36/255, alpha: 0.65),
+        dashed: false
+    )
+    private static let deletedStyle = RibbonStyle(
+        fill: NSColor(srgbRed: 0xC4/255, green: 0x35/255, blue: 0x35/255, alpha: 0.22),
+        stroke: NSColor(srgbRed: 0xC4/255, green: 0x35/255, blue: 0x35/255, alpha: 0.65),
+        dashed: false
+    )
+    private static let changedStyle = RibbonStyle(
+        fill: NSColor(srgbRed: 0xD0/255, green: 0xA8/255, blue: 0x35/255, alpha: 0.22),
+        stroke: NSColor(srgbRed: 0xD0/255, green: 0xA8/255, blue: 0x35/255, alpha: 0.65),
+        dashed: false
+    )
+    private static let movedStyle = RibbonStyle(
+        fill: NSColor(srgbRed: 0x4D/255, green: 0x9D/255, blue: 0xE0/255, alpha: 0.18),
+        stroke: NSColor(srgbRed: 0x4D/255, green: 0x9D/255, blue: 0xE0/255, alpha: 0.85),
+        dashed: true
+    )
+
+    private static func style(for kind: DiffConnectorSegment.Kind) -> RibbonStyle {
+        switch kind {
+        case .added: return addedStyle
+        case .deleted: return deletedStyle
+        case .changed: return changedStyle
+        case .moved: return movedStyle
+        }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
-        NSColor(srgbRed: 0x45/255, green: 0x45/255, blue: 0x45/255, alpha: 1).setFill()
+        let backgroundColor = DiffCodeContainer.editorBackground
+        backgroundColor.setFill()
         bounds.fill()
+
+        // Vertical divider preserved on each edge so the gutter still reads
+        // as a separator even when no segments cross it.
+        Self.dividerColor.setStroke()
+        let leftEdge = NSBezierPath()
+        leftEdge.move(to: NSPoint(x: 0.5, y: 0))
+        leftEdge.line(to: NSPoint(x: 0.5, y: bounds.height))
+        leftEdge.lineWidth = 1
+        leftEdge.stroke()
+        let rightEdge = NSBezierPath()
+        rightEdge.move(to: NSPoint(x: bounds.width - 0.5, y: 0))
+        rightEdge.line(to: NSPoint(x: bounds.width - 0.5, y: bounds.height))
+        rightEdge.lineWidth = 1
+        rightEdge.stroke()
+
+        guard connectorEnabled else { return }
+        guard !segments.isEmpty,
+              let leftText = leftText,
+              let rightText = rightText else { return }
+        guard bounds.width >= 8 else { return }
+
+        // Sort moved segments to the back so ordinary adds/deletes/changes
+        // render first; moved ribbons (dashed) overlay them.
+        let ordered = segments.sorted { lhs, rhs in
+            if (lhs.kind == .moved) != (rhs.kind == .moved) {
+                return lhs.kind != .moved
+            }
+            return lhs.leftAnchorRow + lhs.rightAnchorRow
+                < rhs.leftAnchorRow + rhs.rightAnchorRow
+        }
+
+        for segment in ordered {
+            guard let leftRange = self.yRange(
+                in: leftText,
+                lineRange: segment.leftLineRange,
+                anchorRow: segment.leftAnchorRow,
+                lineStarts: leftLineStarts
+            ) else { continue }
+            guard let rightRange = self.yRange(
+                in: rightText,
+                lineRange: segment.rightLineRange,
+                anchorRow: segment.rightAnchorRow,
+                lineStarts: rightLineStarts
+            ) else { continue }
+
+            // Cull ribbons fully above or below the visible gutter.
+            let minY = min(leftRange.top, rightRange.top)
+            let maxY = max(leftRange.bottom, rightRange.bottom)
+            if maxY < dirtyRect.minY - 4 { continue }
+            if minY > dirtyRect.maxY + 4 { continue }
+
+            drawRibbon(
+                leftTopY: leftRange.top,
+                leftBottomY: leftRange.bottom,
+                rightTopY: rightRange.top,
+                rightBottomY: rightRange.bottom,
+                style: Self.style(for: segment.kind)
+            )
+        }
+    }
+
+    private struct YRange { let top: CGFloat; let bottom: CGFloat }
+
+    private func yRange(
+        in textView: DiffTextView,
+        lineRange: Range<Int>,
+        anchorRow: Int,
+        lineStarts: [Int]
+    ) -> YRange? {
+        guard let lm = textView.layoutManager,
+              let tc = textView.textContainer else { return nil }
+        guard !lineStarts.isEmpty else { return nil }
+        lm.ensureLayout(for: tc)
+        let inset = textView.textContainerInset.height
+        let textLength = textView.textStorage?.length ?? 0
+        guard textLength > 0, lm.numberOfGlyphs > 0 else { return nil }
+
+        func glyphRectForRow(_ row: Int) -> NSRect {
+            let r = max(0, min(row, lineStarts.count - 1))
+            let charIndex = lineStarts[r]
+            let clamped = max(0, min(charIndex, textLength - 1))
+            let glyph = lm.glyphIndexForCharacter(at: clamped)
+            return lm.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+        }
+
+        if lineRange.isEmpty {
+            // Funnel apex on this side. If the gap is past the last row, pin
+            // to the bottom of the file instead of the top of a missing row.
+            let pinY: CGFloat
+            if anchorRow >= lineStarts.count {
+                let last = glyphRectForRow(lineStarts.count - 1)
+                pinY = last.maxY + inset
+            } else {
+                let rect = glyphRectForRow(anchorRow)
+                pinY = rect.minY + inset
+            }
+            let local = textView.convert(NSPoint(x: 0, y: pinY), to: self).y
+            return YRange(top: local, bottom: local)
+        }
+
+        let topRect = glyphRectForRow(lineRange.lowerBound)
+        let bottomRect = glyphRectForRow(lineRange.upperBound - 1)
+        let topInText = topRect.minY + inset
+        let bottomInText = bottomRect.maxY + inset
+        let topLocal = textView.convert(NSPoint(x: 0, y: topInText), to: self).y
+        let bottomLocal = textView.convert(NSPoint(x: 0, y: bottomInText), to: self).y
+        let lo = min(topLocal, bottomLocal)
+        let hi = max(topLocal, bottomLocal)
+        return YRange(top: lo, bottom: hi)
+    }
+
+    private func drawRibbon(
+        leftTopY: CGFloat,
+        leftBottomY: CGFloat,
+        rightTopY: CGFloat,
+        rightBottomY: CGFloat,
+        style: RibbonStyle
+    ) {
+        let width = bounds.width
+        let cx = width * 0.5
+        let path = NSBezierPath()
+        path.move(to: NSPoint(x: 0, y: leftTopY))
+        path.curve(
+            to: NSPoint(x: width, y: rightTopY),
+            controlPoint1: NSPoint(x: cx, y: leftTopY),
+            controlPoint2: NSPoint(x: cx, y: rightTopY)
+        )
+        path.line(to: NSPoint(x: width, y: rightBottomY))
+        path.curve(
+            to: NSPoint(x: 0, y: leftBottomY),
+            controlPoint1: NSPoint(x: cx, y: rightBottomY),
+            controlPoint2: NSPoint(x: cx, y: leftBottomY)
+        )
+        path.close()
+        style.fill.setFill()
+        path.fill()
+
+        // Stroke only the top + bottom curves (skip the vertical edges so the
+        // ribbon reads as connected to each pane rather than a closed shape).
+        let topCurve = NSBezierPath()
+        topCurve.move(to: NSPoint(x: 0, y: leftTopY))
+        topCurve.curve(
+            to: NSPoint(x: width, y: rightTopY),
+            controlPoint1: NSPoint(x: cx, y: leftTopY),
+            controlPoint2: NSPoint(x: cx, y: rightTopY)
+        )
+        let bottomCurve = NSBezierPath()
+        bottomCurve.move(to: NSPoint(x: 0, y: leftBottomY))
+        bottomCurve.curve(
+            to: NSPoint(x: width, y: rightBottomY),
+            controlPoint1: NSPoint(x: cx, y: leftBottomY),
+            controlPoint2: NSPoint(x: cx, y: rightBottomY)
+        )
+        topCurve.lineWidth = 1
+        bottomCurve.lineWidth = 1
+        if style.dashed {
+            topCurve.setLineDash([4, 3], count: 2, phase: 0)
+            bottomCurve.setLineDash([4, 3], count: 2, phase: 0)
+        }
+        style.stroke.setStroke()
+        topCurve.stroke()
+        bottomCurve.stroke()
     }
 }
 
-// MARK: - SyncedScrollView
+// MARK: - DiffCodeScrollView
 
-/// Forwards the scroll-wheel delta to a paired scroll view so both move
-/// together. Unlike mirroring absolute positions, the paired view clamps to
-/// its own content width independently — if one side's content is shorter,
-/// it stops at its max while the partner continues scrolling through the
-/// rest of its content.
-final class SyncedScrollView: NSScrollView {
-    weak var partner: SyncedScrollView?
-    fileprivate var isSyncingFromPartner: Bool = false
+/// Pane scroll view used by the side-by-side diff. Vertical sync is handled
+/// at the container level via row-mapped translation (so the IntelliJ-style
+/// asymmetric layout works without one side getting clamped). The wheel
+/// pipeline only forwards the horizontal delta to its partner so long lines
+/// stay in sync horizontally.
+final class DiffCodeScrollView: NSScrollView {
+    weak var horizontalPartner: DiffCodeScrollView?
+    fileprivate var isMirroringPartner: Bool = false
 
     override func scrollWheel(with event: NSEvent) {
-        // Let the native scroll view handle this event (including momentum,
-        // rubber-band and proper clamping against `documentRect`). Then
-        // re-dispatch the very same event to the partner so it performs
-        // the exact same scroll through its own pipeline. A re-entry flag
-        // prevents infinite recursion between the two partners.
         super.scrollWheel(with: event)
-        guard !isSyncingFromPartner, let partner else { return }
-        partner.isSyncingFromPartner = true
+        guard !isMirroringPartner, let partner = horizontalPartner else { return }
+        // Only mirror horizontal deltas; vertical handled by row-mapped sync.
+        if abs(event.scrollingDeltaX) <= 0.001 { return }
+        partner.isMirroringPartner = true
         partner.scrollWheel(with: event)
-        partner.isSyncingFromPartner = false
+        partner.isMirroringPartner = false
     }
 }
 
@@ -370,6 +740,9 @@ final class SyncedScrollView: NSScrollView {
 final class DiffOverviewRuler: NSView {
     private var leftKinds: [SideBySideLineKind] = []
     private var rightKinds: [SideBySideLineKind] = []
+    /// When set, the ruler renders three lanes (ours | base | theirs) instead
+    /// of the default two. Used by the 3-way conflict viewer.
+    private var baseKinds: [SideBySideLineKind]? = nil
     private var thumbFraction: CGFloat = 0
     private var thumbVisibleFraction: CGFloat = 1
     private var isHovered: Bool = false
@@ -381,6 +754,18 @@ final class DiffOverviewRuler: NSView {
     func update(leftKinds: [SideBySideLineKind], rightKinds: [SideBySideLineKind]) {
         self.leftKinds = leftKinds
         self.rightKinds = rightKinds
+        self.baseKinds = nil
+        needsDisplay = true
+    }
+
+    func update(
+        oursKinds: [SideBySideLineKind],
+        baseKinds: [SideBySideLineKind],
+        theirsKinds: [SideBySideLineKind]
+    ) {
+        self.leftKinds = oursKinds
+        self.baseKinds = baseKinds
+        self.rightKinds = theirsKinds
         needsDisplay = true
     }
 
@@ -419,38 +804,80 @@ final class DiffOverviewRuler: NSView {
         NSColor(srgbRed: 0x1E/255, green: 0x1E/255, blue: 0x1E/255, alpha: 1).setFill()
         bounds.fill()
 
-        let count = max(leftKinds.count, rightKinds.count)
-        guard count > 0 else { return }
-        let pixelsPerLine = bounds.height / CGFloat(count)
-        let minBlockHeight: CGFloat = max(2, pixelsPerLine)
-        let midX = bounds.width / 2
-
-        // Left half: markers for the left side (deletions). Right half:
-        // markers for the right side (additions). Hunk headers get a faint
-        // full-width tint so they're still visible as "there's a change here".
-        // Conflict markers get a strong magenta band on both halves so they're
-        // unmissable in the overview.
         let conflictColor = NSColor(srgbRed: 220/255, green: 90/255, blue: 200/255, alpha: 0.95)
-        drawMarkers(
-            kinds: leftKinds,
-            xRange: 1..<(midX - 0.5),
-            pixelsPerLine: pixelsPerLine,
-            minBlockHeight: minBlockHeight,
-            addedColor: nil,
-            deletedColor: NSColor(srgbRed: 255/255, green: 75/255, blue: 75/255, alpha: 0.9),
-            hunkColor: nil,
-            conflictColor: conflictColor
-        )
-        drawMarkers(
-            kinds: rightKinds,
-            xRange: (midX + 0.5)..<(bounds.width - 1),
-            pixelsPerLine: pixelsPerLine,
-            minBlockHeight: minBlockHeight,
-            addedColor: NSColor(srgbRed: 155/255, green: 185/255, blue: 85/255, alpha: 0.9),
-            deletedColor: nil,
-            hunkColor: nil,
-            conflictColor: conflictColor
-        )
+        let deletedColor = NSColor(srgbRed: 255/255, green: 75/255, blue: 75/255, alpha: 0.9)
+        let addedColor = NSColor(srgbRed: 155/255, green: 185/255, blue: 85/255, alpha: 0.9)
+        let minBlockHeight: CGFloat = 2
+
+        if let baseKinds {
+            // 3-lane: ours | base | theirs.
+            let totalCount = max(leftKinds.count, max(baseKinds.count, rightKinds.count))
+            guard totalCount > 0 else { return }
+            let oursPx = leftKinds.isEmpty ? 0 : bounds.height / CGFloat(leftKinds.count)
+            let basePx = baseKinds.isEmpty ? 0 : bounds.height / CGFloat(baseKinds.count)
+            let theirsPx = rightKinds.isEmpty ? 0 : bounds.height / CGFloat(rightKinds.count)
+            let third = bounds.width / 3
+            drawMarkers(
+                kinds: leftKinds,
+                xRange: 1..<(third - 0.5),
+                pixelsPerLine: oursPx,
+                minBlockHeight: minBlockHeight,
+                addedColor: addedColor,
+                deletedColor: deletedColor,
+                hunkColor: nil,
+                conflictColor: conflictColor
+            )
+            drawMarkers(
+                kinds: baseKinds,
+                xRange: (third + 0.5)..<(2 * third - 0.5),
+                pixelsPerLine: basePx,
+                minBlockHeight: minBlockHeight,
+                addedColor: nil,
+                deletedColor: nil,
+                hunkColor: nil,
+                conflictColor: conflictColor
+            )
+            drawMarkers(
+                kinds: rightKinds,
+                xRange: (2 * third + 0.5)..<(bounds.width - 1),
+                pixelsPerLine: theirsPx,
+                minBlockHeight: minBlockHeight,
+                addedColor: addedColor,
+                deletedColor: deletedColor,
+                hunkColor: nil,
+                conflictColor: conflictColor
+            )
+        } else {
+            let totalCount = max(leftKinds.count, rightKinds.count)
+            guard totalCount > 0 else { return }
+            let leftPxPerLine = leftKinds.isEmpty ? 0 : bounds.height / CGFloat(leftKinds.count)
+            let rightPxPerLine = rightKinds.isEmpty ? 0 : bounds.height / CGFloat(rightKinds.count)
+            let midX = bounds.width / 2
+            // Left half: markers for the left side (deletions). Right half:
+            // markers for the right side (additions). Each side uses its own
+            // pixels-per-line because the IntelliJ-style asymmetric layout means
+            // left and right have different row counts.
+            drawMarkers(
+                kinds: leftKinds,
+                xRange: 1..<(midX - 0.5),
+                pixelsPerLine: leftPxPerLine,
+                minBlockHeight: minBlockHeight,
+                addedColor: nil,
+                deletedColor: deletedColor,
+                hunkColor: nil,
+                conflictColor: conflictColor
+            )
+            drawMarkers(
+                kinds: rightKinds,
+                xRange: (midX + 0.5)..<(bounds.width - 1),
+                pixelsPerLine: rightPxPerLine,
+                minBlockHeight: minBlockHeight,
+                addedColor: addedColor,
+                deletedColor: nil,
+                hunkColor: nil,
+                conflictColor: conflictColor
+            )
+        }
         // Viewport thumb, drawn last.
         if thumbVisibleFraction < 1 {
             let thumbHeight = max(24, bounds.height * thumbVisibleFraction)

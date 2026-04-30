@@ -34,11 +34,18 @@ final class GitDiffViewModel: ObservableObject {
     @Published var currentConflict: GitDiffFileConflict?
     @Published var isLoadingConflict: Bool = false
 
+    /// Three blobs (ours/base/theirs) for the currently selected conflicting
+    /// file. Populated when the file has conflicts and `spec.compare` is set;
+    /// drives the 3-pane viewer.
+    @Published var threeWayBlobs: ThreeWayBlobs?
+    @Published var isLoadingThreeWay: Bool = false
+
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
     private var discussionsTask: Task<Void, Never>?
     private var overviewTask: Task<Void, Never>?
     private var conflictTask: Task<Void, Never>?
+    private var threeWayTask: Task<Void, Never>?
 
     var positionedDiscussions: [MRDiscussion] {
         mrDiscussions.filter { $0.isPositioned }
@@ -211,6 +218,30 @@ final class GitDiffViewModel: ObservableObject {
         }
 
         loadConflictRegions(for: file)
+        loadThreeWayBlobs(for: file)
+    }
+
+    private func loadThreeWayBlobs(for file: GitDiffFile) {
+        threeWayTask?.cancel()
+        threeWayBlobs = nil
+        guard file.hasConflict, spec.compare != nil, !file.isBinary else {
+            isLoadingThreeWay = false
+            return
+        }
+        isLoadingThreeWay = true
+        let spec = self.spec
+        threeWayTask = Task { [weak self] in
+            guard let self else { return }
+            let blobs: ThreeWayBlobs?
+            do {
+                blobs = try await fetchOursBaseTheirs(spec: spec, file: file)
+            } catch {
+                blobs = nil
+            }
+            guard !Task.isCancelled, self.selectedFile?.path == file.path else { return }
+            self.threeWayBlobs = blobs
+            self.isLoadingThreeWay = false
+        }
     }
 
     private func loadConflictRegions(for file: GitDiffFile) {
@@ -268,6 +299,7 @@ struct GitDiffWindowView: View {
     @State private var displayMode: GitDiffDisplayMode = .sideBySide
     @State private var fileListMode: FileListMode = .flat
     @State private var prepared: SideBySidePrepared = .empty
+    @State private var threeWayPrepared: ThreeWayPrepared = .empty
     @State private var scrollHunkIndex: Int? = nil
     @State private var activeHunk: Int = 0
     @State private var collapsedFolders: Set<String> = []
@@ -305,7 +337,9 @@ struct GitDiffWindowView: View {
             // Reset expansion state per file so a fresh file starts collapsed.
             expandedBlocks = []
             rebuildPrepared()
+            rebuildThreeWayPrepared()
         }
+        .onChange(of: viewModel.threeWayBlobs) { _ in rebuildThreeWayPrepared() }
         .background(HunkNavKeyMonitor(
             onPrev: goToPrevHunk,
             onNext: goToNextHunk,
@@ -333,7 +367,35 @@ struct GitDiffWindowView: View {
         }
     }
 
-    private var hunkCount: Int { prepared.leftHunkOffsets.count }
+    private func rebuildThreeWayPrepared() {
+        guard let blobs = viewModel.threeWayBlobs,
+              let file = viewModel.selectedFile else {
+            threeWayPrepared = .empty
+            return
+        }
+        threeWayPrepared = ThreeWayPrepared.from(
+            blobs: blobs,
+            filePath: file.path,
+            conflict: viewModel.currentConflict
+        )
+        if !threeWayPrepared.hunkOffsetsBase.isEmpty {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) {
+                self.scrollHunkIndex = 0
+            }
+        }
+    }
+
+    private var isThreeWayActive: Bool {
+        guard let file = viewModel.selectedFile else { return false }
+        return file.hasConflict
+            && viewModel.spec.compare != nil
+            && !file.isBinary
+            && (viewModel.threeWayBlobs?.base != nil)
+    }
+
+    private var hunkCount: Int {
+        isThreeWayActive ? threeWayPrepared.hunkOffsetsBase.count : prepared.leftHunkOffsets.count
+    }
 
     private func goToPrevHunk() {
         guard hunkCount > 0 else { return }
@@ -705,6 +767,28 @@ struct GitDiffWindowView: View {
                         Text(String(localized: "diff.binaryOrEmpty", defaultValue: "Binary or empty diff"))
                             .font(.subheadline)
                             .foregroundStyle(.secondary)
+                        Spacer()
+                    }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                } else if isThreeWayActive {
+                    DiffThreeWayCodeTextView(
+                        prepared: threeWayPrepared,
+                        scrollHunkIndex: $scrollHunkIndex
+                    )
+                } else if file.hasConflict
+                            && viewModel.spec.compare != nil
+                            && !file.isBinary
+                            && viewModel.isLoadingThreeWay {
+                    VStack {
+                        Spacer()
+                        ProgressView()
+                        Text(String(
+                            localized: "diff.threeWay.loading",
+                            defaultValue: "Loading 3-way conflict view…"
+                        ))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .padding(.top, 6)
                         Spacer()
                     }
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -1548,6 +1632,15 @@ struct SideBySidePrepared: Equatable {
     /// `*LineNumbers`. Used by the gutter ruler to map glyph → line index.
     var leftLineStarts: [Int]
     var rightLineStarts: [Int]
+    /// IntelliJ-style ribbon segments connecting matching hunks across the
+    /// two panes. Computed once per rebuild and consumed by `DiffConnectorView`.
+    var connectorSegments: [DiffConnectorSegment] = []
+    /// For each row index in the left side's arrays, the right row that should
+    /// be aligned with it in the viewport. Drives the row-mapped scroll sync
+    /// (replaces the old wheel-1:1 forwarding so the two panes can have
+    /// different total heights without one getting "stuck").
+    var leftRowToRightRow: [Int] = []
+    var rightRowToLeftRow: [Int] = []
 
     static let empty = SideBySidePrepared(
         leftAttr: NSAttributedString(),
@@ -1561,7 +1654,10 @@ struct SideBySidePrepared: Equatable {
         leftLineNumbers: [],
         rightLineNumbers: [],
         leftLineStarts: [],
-        rightLineStarts: []
+        rightLineStarts: [],
+        connectorSegments: [],
+        leftRowToRightRow: [],
+        rightRowToLeftRow: []
     )
 
     static func == (lhs: SideBySidePrepared, rhs: SideBySidePrepared) -> Bool {
@@ -1573,6 +1669,9 @@ struct SideBySidePrepared: Equatable {
             && lhs.rightLineKinds == rhs.rightLineKinds
             && lhs.leftLineNumbers == rhs.leftLineNumbers
             && lhs.rightLineNumbers == rhs.rightLineNumbers
+            && lhs.connectorSegments == rhs.connectorSegments
+            && lhs.leftRowToRightRow == rhs.leftRowToRightRow
+            && lhs.rightRowToLeftRow == rhs.rightRowToLeftRow
     }
 
     static func from(
@@ -1611,6 +1710,10 @@ struct SideBySidePrepared: Equatable {
         var leftIntraRanges: [(NSRange, NSColor)] = []
         var rightIntraRanges: [(NSRange, NSColor)] = []
 
+        // Returns the row index just appended on this side, or nil for empty
+        // cells (which contribute no row in the IntelliJ-style asymmetric
+        // layout — the empty band is rendered by the connector view's funnel
+        // shape, not by a placeholder row taking vertical space).
         func appendLine(
             into attr: NSMutableAttributedString,
             cell: SideBySideCell,
@@ -1620,10 +1723,12 @@ struct SideBySidePrepared: Equatable {
             contentRanges: inout [NSRange],
             rowBackgrounds: inout [(NSRange, NSColor)],
             intraRanges: inout [(NSRange, NSColor)]
-        ) {
+        ) -> Int? {
+            if cell.kind == .empty { return nil }
+            let rowIndex = kinds.count
             let start = attr.length
             lineStarts.append(start)
-            let content = cell.kind == .empty ? "" : cell.content
+            let content = cell.content
             let rendered = content + "\n"
             attr.append(NSAttributedString(
                 string: rendered,
@@ -1635,17 +1740,11 @@ struct SideBySidePrepared: Equatable {
             ))
             let contentUTF16Len = (content as NSString).length
             let renderedUTF16Len = (rendered as NSString).length
-            // Row background for the whole line.
             if let rowBg = rowBackgroundColor(for: cell.kind) {
                 let range = NSRange(location: start, length: renderedUTF16Len)
                 rowBackgrounds.append((range, rowBg))
             }
-            if cell.kind == .empty {
-                let range = NSRange(location: start, length: renderedUTF16Len)
-                rowBackgrounds.append((range, Self.diagonalHatchColor))
-            }
-            // Content range for syntax highlighting.
-            if cell.kind != .empty, contentUTF16Len > 0 {
+            if contentUTF16Len > 0 {
                 contentRanges.append(NSRange(location: start, length: contentUTF16Len))
             }
             if !cell.intraLineRanges.isEmpty, let stronger = intraLineColor(for: cell.kind) {
@@ -1655,7 +1754,8 @@ struct SideBySidePrepared: Equatable {
                 }
             }
             kinds.append(cell.kind)
-            lineNumbers.append(cell.kind == .empty ? nil : cell.lineNumber)
+            lineNumbers.append(cell.lineNumber)
+            return rowIndex
         }
 
         // Extract pair rows (the ones that render as lines) so we can detect
@@ -1802,13 +1902,51 @@ struct SideBySidePrepared: Equatable {
             }
         }
 
+        // Pair-level (parallel) kinds + cross-side row maps. Drive the
+        // connector ribbons and the row-mapped scroll sync that replaces
+        // the old wheel-1:1 forwarding.
+        var pairLeftKinds: [SideBySideLineKind] = []
+        var pairRightKinds: [SideBySideLineKind] = []
+        // For each left-side row, the right row that should be aligned with
+        // it in the viewport. For deletions on the left, this stays at the
+        // last context row on the right (so the right viewport "pauses"
+        // while the user scrolls through the deletion on the left).
+        var leftRowToRightRow: [Int] = []
+        var rightRowToLeftRow: [Int] = []
+        var lastAlignedRight = 0
+        var lastAlignedLeft = 0
+
+        func recordPair(left lRow: Int?, right rRow: Int?) {
+            if let lRow {
+                leftRowToRightRow.append(rRow ?? lastAlignedRight)
+            }
+            if let rRow {
+                rightRowToLeftRow.append(lRow ?? lastAlignedLeft)
+            }
+            if let lRow, let rRow {
+                lastAlignedLeft = lRow
+                lastAlignedRight = rRow
+            }
+        }
+
+        // Reuse a single appendStub closure that keeps the maps and pair
+        // arrays in sync.
+        func appendStubAndRecord(blockId: Int, hiddenLines: Int) {
+            let leftRow = leftLineKinds.count
+            let rightRow = rightLineKinds.count
+            appendStub(blockId: blockId, hiddenLines: hiddenLines)
+            pairLeftKinds.append(.context)
+            pairRightKinds.append(.context)
+            recordPair(left: leftRow, right: rightRow)
+        }
+
         for (rowIndex, (l, r)) in pairs.enumerated() {
             if let blockId = stubAnchorRow[rowIndex] {
                 let range = collapseRanges[blockId]
-                appendStub(blockId: blockId, hiddenLines: range.end - range.start)
+                appendStubAndRecord(blockId: blockId, hiddenLines: range.end - range.start)
             }
             if collapsedRowToBlock[rowIndex] != nil { continue }
-            appendLine(
+            let leftRow = appendLine(
                 into: left, cell: l,
                 kinds: &leftLineKinds,
                 lineNumbers: &leftLineNumbers,
@@ -1817,7 +1955,7 @@ struct SideBySidePrepared: Equatable {
                 rowBackgrounds: &leftRowBackgrounds,
                 intraRanges: &leftIntraRanges
             )
-            appendLine(
+            let rightRow = appendLine(
                 into: right, cell: r,
                 kinds: &rightLineKinds,
                 lineNumbers: &rightLineNumbers,
@@ -1826,6 +1964,9 @@ struct SideBySidePrepared: Equatable {
                 rowBackgrounds: &rightRowBackgrounds,
                 intraRanges: &rightIntraRanges
             )
+            pairLeftKinds.append(l.kind)
+            pairRightKinds.append(r.kind)
+            recordPair(left: leftRow, right: rightRow)
 
             // If this row anchors any inline discussion, emit the placeholder
             // rows right after it on both sides and record widget metadata.
@@ -1847,7 +1988,14 @@ struct SideBySidePrepared: Equatable {
                 let needsScroll = estimatedRows > commentRowsCap
                 let rowsToReserve = needsScroll ? commentRowsCap : estimatedRows
                 let reservedHeight = lineHeight * CGFloat(rowsToReserve)
+                let preLeftRow = leftLineKinds.count
+                let preRightRow = rightLineKinds.count
                 appendPlaceholderRows(count: rowsToReserve)
+                for i in 0..<rowsToReserve {
+                    pairLeftKinds.append(.commentPlaceholder)
+                    pairRightKinds.append(.commentPlaceholder)
+                    recordPair(left: preLeftRow + i, right: preRightRow + i)
+                }
                 collectedWidgets.append(InlineCommentWidget(
                     id: discussion.id,
                     side: side,
@@ -1859,10 +2007,10 @@ struct SideBySidePrepared: Equatable {
             }
         }
 
-        // Derive change groups from the assembled line kinds: every run of
-        // consecutive rows where either side is added/deleted becomes one
-        // hunk for navigation and auto-scroll purposes.
-        var prevIsChange = false
+        // Derive change groups from the pair-level kinds (parallel run): every
+        // run of consecutive pairs where either side is added/deleted becomes
+        // one hunk. Hunk char offsets resolve to the first non-empty row on
+        // each side within the run.
         func isChangeKind(_ k: SideBySideLineKind) -> Bool {
             switch k {
             case .added, .deleted,
@@ -1872,13 +2020,42 @@ struct SideBySidePrepared: Equatable {
                 return false
             }
         }
-        for i in 0..<leftLineKinds.count {
-            let lk = leftLineKinds[i]
-            let rk = i < rightLineKinds.count ? rightLineKinds[i] : .context
-            let isChange = isChangeKind(lk) || isChangeKind(rk)
+        var pairLeftRows: [Int?] = []
+        var pairRightRows: [Int?] = []
+        var leftCounter = 0
+        var rightCounter = 0
+        for i in 0..<pairLeftKinds.count {
+            if pairLeftKinds[i] == .empty {
+                pairLeftRows.append(nil)
+            } else {
+                pairLeftRows.append(leftCounter)
+                leftCounter += 1
+            }
+            if pairRightKinds[i] == .empty {
+                pairRightRows.append(nil)
+            } else {
+                pairRightRows.append(rightCounter)
+                rightCounter += 1
+            }
+        }
+        var prevIsChange = false
+        for i in 0..<pairLeftKinds.count {
+            let isChange = isChangeKind(pairLeftKinds[i]) || isChangeKind(pairRightKinds[i])
             if isChange && !prevIsChange {
-                leftHunks.append(leftLineStarts[i])
-                rightHunks.append(i < rightLineStarts.count ? rightLineStarts[i] : 0)
+                // Find first non-empty row on each side at or after i.
+                var leftStart: Int? = nil
+                var rightStart: Int? = nil
+                for j in i..<pairLeftKinds.count {
+                    if leftStart == nil, let r = pairLeftRows[j] { leftStart = r }
+                    if rightStart == nil, let r = pairRightRows[j] { rightStart = r }
+                    if leftStart != nil && rightStart != nil { break }
+                }
+                if let lr = leftStart, lr < leftLineStarts.count {
+                    leftHunks.append(leftLineStarts[lr])
+                }
+                if let rr = rightStart, rr < rightLineStarts.count {
+                    rightHunks.append(rightLineStarts[rr])
+                }
             }
             prevIsChange = isChange
         }
@@ -1908,6 +2085,19 @@ struct SideBySidePrepared: Equatable {
             right.addAttribute(.backgroundColor, value: color, range: range)
         }
 
+        let detectMoves = UserDefaults.standard.object(forKey: "diff.connector.detectMoves") as? Bool ?? true
+        let connectorSegments = buildConnectorSegments(
+            pairLeftKinds: pairLeftKinds,
+            pairRightKinds: pairRightKinds,
+            pairLeftRows: pairLeftRows,
+            pairRightRows: pairRightRows,
+            leftAttr: left,
+            rightAttr: right,
+            leftLineStarts: leftLineStarts,
+            rightLineStarts: rightLineStarts,
+            detectMoves: detectMoves
+        )
+
         return SideBySidePrepared(
             leftAttr: left,
             rightAttr: right,
@@ -1922,7 +2112,10 @@ struct SideBySidePrepared: Equatable {
             leftLineNumbers: leftLineNumbers,
             rightLineNumbers: rightLineNumbers,
             leftLineStarts: leftLineStarts,
-            rightLineStarts: rightLineStarts
+            rightLineStarts: rightLineStarts,
+            connectorSegments: connectorSegments,
+            leftRowToRightRow: leftRowToRightRow,
+            rightRowToLeftRow: rightRowToLeftRow
         )
     }
 
@@ -1942,7 +2135,7 @@ struct SideBySidePrepared: Equatable {
     // Solid colors (pre-composited against the VS Code editor background
     // `#1E1E1E`) so they land exactly like VS Code no matter what
     // macOS decides for `.textBackgroundColor`.
-    private static func rowBackgroundColor(for kind: SideBySideLineKind) -> NSColor? {
+    static func rowBackgroundColor(for kind: SideBySideLineKind) -> NSColor? {
         switch kind {
         case .added: return NSColor(srgbRed: 0x37/255, green: 0x3D/255, blue: 0x29/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x4B/255, green: 0x18/255, blue: 0x18/255, alpha: 1)
@@ -1956,7 +2149,7 @@ struct SideBySidePrepared: Equatable {
         }
     }
 
-    private static func intraLineColor(for kind: SideBySideLineKind) -> NSColor? {
+    static func intraLineColor(for kind: SideBySideLineKind) -> NSColor? {
         switch kind {
         case .added: return NSColor(srgbRed: 0x55/255, green: 0x62/255, blue: 0x2E/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x6F/255, green: 0x1E/255, blue: 0x1E/255, alpha: 1)
@@ -1966,7 +2159,7 @@ struct SideBySidePrepared: Equatable {
         }
     }
 
-    private static func applySyntax(
+    static func applySyntax(
         to attr: NSMutableAttributedString,
         contentRanges: [NSRange],
         language: HighlightLanguage,
@@ -2013,6 +2206,518 @@ struct SideBySidePrepared: Equatable {
     }
 }
 
+// MARK: - 3-way (ours | base | theirs) prepared model
+
+/// Render-ready 3-pane representation of a conflicting file. Each side carries
+/// its own `NSAttributedString`, line kinds, line numbers, line starts, and
+/// row backgrounds. Sync is driven via `*ToBaseRow` maps with `base` as pivot.
+struct ThreeWayPrepared: Equatable {
+    var oursAttr: NSAttributedString
+    var baseAttr: NSAttributedString
+    var theirsAttr: NSAttributedString
+    var oursLineKinds: [SideBySideLineKind]
+    var baseLineKinds: [SideBySideLineKind]
+    var theirsLineKinds: [SideBySideLineKind]
+    var oursLineNumbers: [Int?]
+    var baseLineNumbers: [Int?]
+    var theirsLineNumbers: [Int?]
+    var oursLineStarts: [Int]
+    var baseLineStarts: [Int]
+    var theirsLineStarts: [Int]
+    var oursRowBackgrounds: [DiffRowBackground]
+    var baseRowBackgrounds: [DiffRowBackground]
+    var theirsRowBackgrounds: [DiffRowBackground]
+    var oursToBaseRow: [Int]
+    var baseToOursRow: [Int]
+    var baseToTheirsRow: [Int]
+    var theirsToBaseRow: [Int]
+    var oursBaseConnectorSegments: [DiffConnectorSegment]
+    var baseTheirsConnectorSegments: [DiffConnectorSegment]
+    /// Char offsets in `baseAttr` for next/prev change navigation.
+    var hunkOffsetsBase: [Int]
+    var oursLabel: String
+    var baseLabel: String
+    var theirsLabel: String
+
+    static let empty = ThreeWayPrepared(
+        oursAttr: NSAttributedString(),
+        baseAttr: NSAttributedString(),
+        theirsAttr: NSAttributedString(),
+        oursLineKinds: [],
+        baseLineKinds: [],
+        theirsLineKinds: [],
+        oursLineNumbers: [],
+        baseLineNumbers: [],
+        theirsLineNumbers: [],
+        oursLineStarts: [],
+        baseLineStarts: [],
+        theirsLineStarts: [],
+        oursRowBackgrounds: [],
+        baseRowBackgrounds: [],
+        theirsRowBackgrounds: [],
+        oursToBaseRow: [],
+        baseToOursRow: [],
+        baseToTheirsRow: [],
+        theirsToBaseRow: [],
+        oursBaseConnectorSegments: [],
+        baseTheirsConnectorSegments: [],
+        hunkOffsetsBase: [],
+        oursLabel: "",
+        baseLabel: "",
+        theirsLabel: ""
+    )
+
+    static func == (lhs: ThreeWayPrepared, rhs: ThreeWayPrepared) -> Bool {
+        lhs.oursAttr.isEqual(to: rhs.oursAttr)
+            && lhs.baseAttr.isEqual(to: rhs.baseAttr)
+            && lhs.theirsAttr.isEqual(to: rhs.theirsAttr)
+            && lhs.oursLineKinds == rhs.oursLineKinds
+            && lhs.baseLineKinds == rhs.baseLineKinds
+            && lhs.theirsLineKinds == rhs.theirsLineKinds
+            && lhs.oursLineNumbers == rhs.oursLineNumbers
+            && lhs.baseLineNumbers == rhs.baseLineNumbers
+            && lhs.theirsLineNumbers == rhs.theirsLineNumbers
+            && lhs.oursToBaseRow == rhs.oursToBaseRow
+            && lhs.baseToOursRow == rhs.baseToOursRow
+            && lhs.baseToTheirsRow == rhs.baseToTheirsRow
+            && lhs.theirsToBaseRow == rhs.theirsToBaseRow
+            && lhs.oursBaseConnectorSegments == rhs.oursBaseConnectorSegments
+            && lhs.baseTheirsConnectorSegments == rhs.baseTheirsConnectorSegments
+            && lhs.oursLabel == rhs.oursLabel
+            && lhs.baseLabel == rhs.baseLabel
+            && lhs.theirsLabel == rhs.theirsLabel
+    }
+
+    /// Cap on the per-side line count above which we skip LCS alignment and
+    /// fall back to a flat side-by-side layout (rows are paired top-to-bottom
+    /// without alignment). Keeps the O(N×M) LCS cost bounded.
+    private static let alignmentLineCap = 50_000
+
+    static func from(
+        blobs: ThreeWayBlobs,
+        filePath: String,
+        conflict: GitDiffFileConflict?
+    ) -> ThreeWayPrepared {
+        let oursLines = splitLines(blobs.ours ?? "")
+        let baseLines = splitLines(blobs.base ?? "")
+        let theirsLines = splitLines(blobs.theirs ?? "")
+
+        let aligned: [ThreeWayAlignedRow]
+        let isAligned = max(oursLines.count, baseLines.count, theirsLines.count) <= alignmentLineCap
+            && blobs.base != nil
+        if isAligned {
+            aligned = alignThreeWay(
+                oursLines: oursLines, baseLines: baseLines, theirsLines: theirsLines
+            )
+        } else {
+            // Fallback: zip rows top-to-bottom with no alignment (used for huge
+            // files or when the merge-base couldn't be computed). The 2-pane
+            // path remains the alternative when blobs.base == nil; here we keep
+            // the 3 columns rendering as-is so the UI stays consistent.
+            aligned = flatAlign(
+                oursLines: oursLines, baseLines: baseLines, theirsLines: theirsLines
+            )
+        }
+
+        let conflictRowFlags = computeConflictRowFlags(rows: aligned)
+
+        let font = codeFont()
+        let paragraph = NSMutableParagraphStyle()
+        let lineHeight = ceil(font.ascender - font.descender + font.leading) + 2
+        paragraph.minimumLineHeight = lineHeight
+        paragraph.maximumLineHeight = lineHeight
+        let language = HighlightLanguage.detect(fromFilePath: filePath)
+
+        let oursAttr = NSMutableAttributedString()
+        let baseAttr = NSMutableAttributedString()
+        let theirsAttr = NSMutableAttributedString()
+        var oursKinds: [SideBySideLineKind] = []
+        var baseKinds: [SideBySideLineKind] = []
+        var theirsKinds: [SideBySideLineKind] = []
+        var oursLineNumbers: [Int?] = []
+        var baseLineNumbers: [Int?] = []
+        var theirsLineNumbers: [Int?] = []
+        var oursLineStarts: [Int] = []
+        var baseLineStarts: [Int] = []
+        var theirsLineStarts: [Int] = []
+        var oursContentRanges: [NSRange] = []
+        var baseContentRanges: [NSRange] = []
+        var theirsContentRanges: [NSRange] = []
+        var oursRowBackgrounds: [(NSRange, NSColor)] = []
+        var baseRowBackgrounds: [(NSRange, NSColor)] = []
+        var theirsRowBackgrounds: [(NSRange, NSColor)] = []
+
+        // Pair-level kinds for connector building (parallel arrays of length =
+        // number of pair rows). pair*Rows[i] is the row index in the side's
+        // own line-starts array, or nil when that side is empty for the pair.
+        var pairOursKinds: [SideBySideLineKind] = []
+        var pairBaseKinds: [SideBySideLineKind] = []
+        var pairTheirsKinds: [SideBySideLineKind] = []
+        var pairOursRows: [Int?] = []
+        var pairBaseRows: [Int?] = []
+        var pairTheirsRows: [Int?] = []
+
+        var oursToBaseRow: [Int] = []
+        var baseToOursRow: [Int] = []
+        var baseToTheirsRow: [Int] = []
+        var theirsToBaseRow: [Int] = []
+        var lastSeenBaseRow = 0
+        var lastSeenOursRow = 0
+        var lastSeenTheirsRow = 0
+
+        var hunkOffsetsBase: [Int] = []
+        var prevWasChange = false
+
+        var oursLineCounter = 1
+        var baseLineCounter = 1
+        var theirsLineCounter = 1
+
+        for (rowIdx, row) in aligned.enumerated() {
+            let isConflict = conflictRowFlags[rowIdx]
+
+            let oursKind = computeKind(side: row.ours, base: row.base, isConflict: isConflict, sideKind: .conflictOurs, fallbackAdded: .added)
+            let baseKind = computeBaseKind(base: row.base, isConflict: isConflict)
+            let theirsKind = computeKind(side: row.theirs, base: row.base, isConflict: isConflict, sideKind: .conflictTheirs, fallbackAdded: .added)
+
+            let oursRowIdx = appendCell(
+                content: row.ours,
+                kind: oursKind,
+                lineNumber: row.ours == nil ? nil : oursLineCounter,
+                attr: oursAttr,
+                kinds: &oursKinds,
+                lineNumbers: &oursLineNumbers,
+                lineStarts: &oursLineStarts,
+                contentRanges: &oursContentRanges,
+                rowBackgrounds: &oursRowBackgrounds,
+                font: font,
+                paragraph: paragraph
+            )
+            if row.ours != nil { oursLineCounter += 1 }
+
+            let baseRowIdx = appendCell(
+                content: row.base,
+                kind: baseKind,
+                lineNumber: row.base == nil ? nil : baseLineCounter,
+                attr: baseAttr,
+                kinds: &baseKinds,
+                lineNumbers: &baseLineNumbers,
+                lineStarts: &baseLineStarts,
+                contentRanges: &baseContentRanges,
+                rowBackgrounds: &baseRowBackgrounds,
+                font: font,
+                paragraph: paragraph
+            )
+            if row.base != nil { baseLineCounter += 1 }
+
+            let theirsRowIdx = appendCell(
+                content: row.theirs,
+                kind: theirsKind,
+                lineNumber: row.theirs == nil ? nil : theirsLineCounter,
+                attr: theirsAttr,
+                kinds: &theirsKinds,
+                lineNumbers: &theirsLineNumbers,
+                lineStarts: &theirsLineStarts,
+                contentRanges: &theirsContentRanges,
+                rowBackgrounds: &theirsRowBackgrounds,
+                font: font,
+                paragraph: paragraph
+            )
+            if row.theirs != nil { theirsLineCounter += 1 }
+
+            // Pair-level kinds use empty for sides without a real row, which
+            // makes the connector builder collapse the funnel apex correctly.
+            pairOursKinds.append(oursRowIdx == nil ? .empty : oursKind)
+            pairBaseKinds.append(baseRowIdx == nil ? .empty : baseKind)
+            pairTheirsKinds.append(theirsRowIdx == nil ? .empty : theirsKind)
+            pairOursRows.append(oursRowIdx)
+            pairBaseRows.append(baseRowIdx)
+            pairTheirsRows.append(theirsRowIdx)
+
+            // Row-mapped sync (base is pivot).
+            if let o = oursRowIdx {
+                oursToBaseRow.append(baseRowIdx ?? lastSeenBaseRow)
+                lastSeenOursRow = o
+            }
+            if let b = baseRowIdx {
+                baseToOursRow.append(oursRowIdx ?? lastSeenOursRow)
+                baseToTheirsRow.append(theirsRowIdx ?? lastSeenTheirsRow)
+                lastSeenBaseRow = b
+            }
+            if let t = theirsRowIdx {
+                theirsToBaseRow.append(baseRowIdx ?? lastSeenBaseRow)
+                lastSeenTheirsRow = t
+            }
+
+            // Hunk navigation: anchor on base, mark the start of any run where
+            // ours or theirs differ from base.
+            let isChange = (oursKind != .context && oursKind != .empty)
+                || (theirsKind != .context && theirsKind != .empty)
+                || (baseKind == .empty)
+            if isChange && !prevWasChange, let b = baseRowIdx, b < baseLineStarts.count {
+                hunkOffsetsBase.append(baseLineStarts[b])
+            }
+            prevWasChange = isChange
+        }
+
+        // Syntax highlighting on each side using the existing helper.
+        SideBySidePrepared.applySyntax(to: oursAttr, contentRanges: oursContentRanges, language: language, font: font)
+        SideBySidePrepared.applySyntax(to: baseAttr, contentRanges: baseContentRanges, language: language, font: font)
+        SideBySidePrepared.applySyntax(to: theirsAttr, contentRanges: theirsContentRanges, language: language, font: font)
+
+        // Connector segments: ours ↔ base and base ↔ theirs.
+        let oursBaseConnectors = buildConnectorSegments(
+            pairLeftKinds: pairOursKinds,
+            pairRightKinds: pairBaseKinds,
+            pairLeftRows: pairOursRows,
+            pairRightRows: pairBaseRows,
+            leftAttr: oursAttr,
+            rightAttr: baseAttr,
+            leftLineStarts: oursLineStarts,
+            rightLineStarts: baseLineStarts,
+            detectMoves: false
+        )
+        let baseTheirsConnectors = buildConnectorSegments(
+            pairLeftKinds: pairBaseKinds,
+            pairRightKinds: pairTheirsKinds,
+            pairLeftRows: pairBaseRows,
+            pairRightRows: pairTheirsRows,
+            leftAttr: baseAttr,
+            rightAttr: theirsAttr,
+            leftLineStarts: baseLineStarts,
+            rightLineStarts: theirsLineStarts,
+            detectMoves: false
+        )
+
+        _ = conflict  // currently reserved for future heuristics; kept on the API.
+
+        return ThreeWayPrepared(
+            oursAttr: oursAttr,
+            baseAttr: baseAttr,
+            theirsAttr: theirsAttr,
+            oursLineKinds: oursKinds,
+            baseLineKinds: baseKinds,
+            theirsLineKinds: theirsKinds,
+            oursLineNumbers: oursLineNumbers,
+            baseLineNumbers: baseLineNumbers,
+            theirsLineNumbers: theirsLineNumbers,
+            oursLineStarts: oursLineStarts,
+            baseLineStarts: baseLineStarts,
+            theirsLineStarts: theirsLineStarts,
+            oursRowBackgrounds: oursRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
+            baseRowBackgrounds: baseRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
+            theirsRowBackgrounds: theirsRowBackgrounds.map { DiffRowBackground(range: $0.0, color: $0.1) },
+            oursToBaseRow: oursToBaseRow,
+            baseToOursRow: baseToOursRow,
+            baseToTheirsRow: baseToTheirsRow,
+            theirsToBaseRow: theirsToBaseRow,
+            oursBaseConnectorSegments: oursBaseConnectors,
+            baseTheirsConnectorSegments: baseTheirsConnectors,
+            hunkOffsetsBase: hunkOffsetsBase,
+            oursLabel: blobs.oursLabel,
+            baseLabel: blobs.baseLabel,
+            theirsLabel: blobs.theirsLabel
+        )
+    }
+}
+
+// MARK: - Three-way alignment helpers
+
+private struct ThreeWayAlignedRow {
+    let ours: String?
+    let base: String?
+    let theirs: String?
+}
+
+private func splitLines(_ s: String) -> [String] {
+    if s.isEmpty { return [] }
+    var lines = s.components(separatedBy: "\n")
+    // Trailing newline produces a trailing empty element; drop it so it
+    // doesn't render as a blank line at the bottom.
+    if let last = lines.last, last.isEmpty { lines.removeLast() }
+    return lines
+}
+
+/// Walks an LCS edit script (a = base, b = side) and produces two parallel
+/// structures indexed by base position k:
+///  - `atBase[k]`: the side's line that matched base[k] (keep), or nil if base[k]
+///    was deleted on this side.
+///  - `insBefore[k]`: lines on the side that were inserted before base[k]; the
+///    bucket at index `baseCount` collects trailing inserts.
+private func processSideAgainstBase(
+    ops: [LCSEditOp], baseCount: Int, sideLines: [String]
+) -> (atBase: [String?], insBefore: [[String]]) {
+    var atBase: [String?] = Array(repeating: nil, count: baseCount)
+    var insBefore: [[String]] = Array(repeating: [], count: baseCount + 1)
+    var baseIdx = 0
+    var sideIdx = 0
+    for op in ops {
+        switch op {
+        case .keep:
+            if baseIdx < baseCount && sideIdx < sideLines.count {
+                atBase[baseIdx] = sideLines[sideIdx]
+            }
+            baseIdx += 1
+            sideIdx += 1
+        case .deleteLeft:
+            if baseIdx < baseCount {
+                atBase[baseIdx] = nil
+            }
+            baseIdx += 1
+        case .insertRight:
+            if sideIdx < sideLines.count {
+                insBefore[min(baseIdx, baseCount)].append(sideLines[sideIdx])
+            }
+            sideIdx += 1
+        }
+    }
+    return (atBase, insBefore)
+}
+
+/// Aligns three line arrays into parallel rows using `base` as pivot. Each row
+/// has up to one line per side (nil = the side has no line at that row).
+private func alignThreeWay(
+    oursLines: [String], baseLines: [String], theirsLines: [String]
+) -> [ThreeWayAlignedRow] {
+    let opsOurs = lcsScript(a: baseLines, b: oursLines)
+    let opsTheirs = lcsScript(a: baseLines, b: theirsLines)
+    let oursMap = processSideAgainstBase(
+        ops: opsOurs, baseCount: baseLines.count, sideLines: oursLines
+    )
+    let theirsMap = processSideAgainstBase(
+        ops: opsTheirs, baseCount: baseLines.count, sideLines: theirsLines
+    )
+
+    var rows: [ThreeWayAlignedRow] = []
+    rows.reserveCapacity(baseLines.count + oursLines.count + theirsLines.count)
+
+    for k in 0...baseLines.count {
+        let oIns = oursMap.insBefore[k]
+        let tIns = theirsMap.insBefore[k]
+        let m = max(oIns.count, tIns.count)
+        for i in 0..<m {
+            let o = i < oIns.count ? oIns[i] : nil
+            let t = i < tIns.count ? tIns[i] : nil
+            rows.append(ThreeWayAlignedRow(ours: o, base: nil, theirs: t))
+        }
+        if k < baseLines.count {
+            rows.append(ThreeWayAlignedRow(
+                ours: oursMap.atBase[k],
+                base: baseLines[k],
+                theirs: theirsMap.atBase[k]
+            ))
+        }
+    }
+    return rows
+}
+
+/// Flat (no-alignment) fallback used when one of the blobs is missing or the
+/// file is too large to LCS. Pairs lines top-to-bottom; longer sides get nil
+/// padding on the others.
+private func flatAlign(
+    oursLines: [String], baseLines: [String], theirsLines: [String]
+) -> [ThreeWayAlignedRow] {
+    let n = max(oursLines.count, baseLines.count, theirsLines.count)
+    var rows: [ThreeWayAlignedRow] = []
+    rows.reserveCapacity(n)
+    for i in 0..<n {
+        rows.append(ThreeWayAlignedRow(
+            ours: i < oursLines.count ? oursLines[i] : nil,
+            base: i < baseLines.count ? baseLines[i] : nil,
+            theirs: i < theirsLines.count ? theirsLines[i] : nil
+        ))
+    }
+    return rows
+}
+
+/// A row is part of a conflict region when both ours and theirs diverge from
+/// base in the same row (one or both sides changed where the other also did).
+private func computeConflictRowFlags(rows: [ThreeWayAlignedRow]) -> [Bool] {
+    var flags: [Bool] = Array(repeating: false, count: rows.count)
+    var i = 0
+    while i < rows.count {
+        let oursDiverged = rowDiverges(side: rows[i].ours, base: rows[i].base)
+        let theirsDiverged = rowDiverges(side: rows[i].theirs, base: rows[i].base)
+        if oursDiverged && theirsDiverged {
+            // Find the run of consecutive divergent rows.
+            var j = i
+            while j < rows.count {
+                let od = rowDiverges(side: rows[j].ours, base: rows[j].base)
+                let td = rowDiverges(side: rows[j].theirs, base: rows[j].base)
+                if !(od || td) { break }
+                j += 1
+            }
+            for k in i..<j { flags[k] = true }
+            i = j
+        } else {
+            i += 1
+        }
+    }
+    return flags
+}
+
+private func rowDiverges(side: String?, base: String?) -> Bool {
+    if base == nil && side != nil { return true }   // insert by this side
+    if base != nil && side == nil { return true }   // delete by this side
+    return false
+}
+
+private func computeKind(
+    side: String?, base: String?,
+    isConflict: Bool,
+    sideKind: SideBySideLineKind,
+    fallbackAdded: SideBySideLineKind
+) -> SideBySideLineKind {
+    if side == nil { return .empty }
+    if base == nil {
+        return isConflict ? sideKind : fallbackAdded
+    }
+    return .context
+}
+
+private func computeBaseKind(base: String?, isConflict: Bool) -> SideBySideLineKind {
+    if base == nil { return .empty }
+    return .context
+}
+
+private func appendCell(
+    content: String?,
+    kind: SideBySideLineKind,
+    lineNumber: Int?,
+    attr: NSMutableAttributedString,
+    kinds: inout [SideBySideLineKind],
+    lineNumbers: inout [Int?],
+    lineStarts: inout [Int],
+    contentRanges: inout [NSRange],
+    rowBackgrounds: inout [(NSRange, NSColor)],
+    font: NSFont,
+    paragraph: NSParagraphStyle
+) -> Int? {
+    guard let content else { return nil }
+    let rowIndex = kinds.count
+    let start = attr.length
+    lineStarts.append(start)
+    let rendered = content + "\n"
+    attr.append(NSAttributedString(
+        string: rendered,
+        attributes: [
+            .font: font,
+            .foregroundColor: NSColor.labelColor,
+            .paragraphStyle: paragraph,
+        ]
+    ))
+    let contentUTF16Len = (content as NSString).length
+    let renderedUTF16Len = (rendered as NSString).length
+    if let bg = SideBySidePrepared.rowBackgroundColor(for: kind) {
+        rowBackgrounds.append((NSRange(location: start, length: renderedUTF16Len), bg))
+    }
+    if contentUTF16Len > 0 {
+        contentRanges.append(NSRange(location: start, length: contentUTF16Len))
+    }
+    kinds.append(kind)
+    lineNumbers.append(lineNumber)
+    return rowIndex
+}
+
 struct SideBySideDiffView: View {
     let prepared: SideBySidePrepared
     @Binding var scrollHunkIndex: Int?
@@ -2034,6 +2739,9 @@ struct SideBySideDiffView: View {
             rightLineStarts: prepared.rightLineStarts,
             collapsedStubs: prepared.collapsedStubs,
             inlineComments: prepared.inlineComments,
+            connectorSegments: prepared.connectorSegments,
+            leftRowToRightRow: prepared.leftRowToRightRow,
+            rightRowToLeftRow: prepared.rightRowToLeftRow,
             onExpandBlock: onExpandBlock,
             scrollHunkIndex: $scrollHunkIndex
         )
