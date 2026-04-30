@@ -788,6 +788,367 @@ private func parseHunkHeader(_ header: String) -> (Int, Int)? {
     return (a, b)
 }
 
+// MARK: - Connector segments (IntelliJ-style ribbons)
+
+/// One change region linking the left and right panes. Built from the
+/// per-line `SideBySideLineKind` arrays produced for the side-by-side view.
+///
+/// `leftLineRange` / `rightLineRange` index into the parallel `*LineStarts`
+/// arrays. An empty range means the side has no real lines for this segment
+/// (pure insertion or pure deletion); the renderer collapses that endpoint
+/// to a point at the gap between surrounding context.
+struct DiffConnectorSegment: Equatable, Sendable {
+    enum Kind: Sendable {
+        case added
+        case deleted
+        case changed
+        case moved
+    }
+
+    let kind: Kind
+    /// Range in the left side's `leftLineStarts` array. Empty when the change
+    /// is a pure addition (no left content); the renderer collapses the left
+    /// endpoint to a single Y at `leftAnchorRow`'s top.
+    let leftLineRange: Range<Int>
+    let rightLineRange: Range<Int>
+    /// For an empty `leftLineRange`, the row in `leftLineStarts` that should
+    /// host the funnel apex (the row right after the gap, i.e., the next
+    /// context line on the left). Equals `leftLineStarts.count` when the gap
+    /// sits at the very end of the file. Symmetric for the right side.
+    let leftAnchorRow: Int
+    let rightAnchorRow: Int
+    /// Same value on both ends of a moved pair, so the renderer can pair
+    /// them without reusing identifiers from other segment types.
+    let movePartnerID: Int?
+}
+
+/// Build connector segments from the parallel pair-level kind arrays plus
+/// the per-pair side row indices (nil when that side is empty for the pair).
+///
+/// `pairLeftRows[i]` / `pairRightRows[i]` give the row position in the side's
+/// own `leftLineStarts` / `rightLineStarts` arrays. Empty-side pairs are
+/// represented by `nil`, and the resulting segment's `leftLineRange` /
+/// `rightLineRange` will be empty for that side. The renderer pins the
+/// collapsed endpoint of the funnel to `leftAnchorRow` / `rightAnchorRow` —
+/// the next non-empty row on that side after the run.
+///
+/// Move detection (when `detectMoves` is true) hashes the trimmed content of
+/// each `.added`/`.deleted` run and pairs runs with identical content
+/// elsewhere in the file. Pairs become `.moved` segments; unpaired runs keep
+/// their original kind.
+func buildConnectorSegments(
+    pairLeftKinds: [SideBySideLineKind],
+    pairRightKinds: [SideBySideLineKind],
+    pairLeftRows: [Int?],
+    pairRightRows: [Int?],
+    leftAttr: NSAttributedString,
+    rightAttr: NSAttributedString,
+    leftLineStarts: [Int],
+    rightLineStarts: [Int],
+    detectMoves: Bool = true
+) -> [DiffConnectorSegment] {
+    let count = min(min(pairLeftKinds.count, pairRightKinds.count),
+                    min(pairLeftRows.count, pairRightRows.count))
+    guard count > 0 else { return [] }
+
+    func isChange(_ l: SideBySideLineKind, _ r: SideBySideLineKind) -> Bool {
+        switch (l, r) {
+        case (.context, .context),
+             (.context, .empty), (.empty, .context),
+             (.empty, .empty),
+             (.commentPlaceholder, _), (_, .commentPlaceholder):
+            return false
+        default:
+            return true
+        }
+    }
+
+    func nextLeftRow(after pairIdx: Int) -> Int {
+        var j = pairIdx
+        while j < count {
+            if let r = pairLeftRows[j] { return r }
+            j += 1
+        }
+        return leftLineStarts.count
+    }
+    func nextRightRow(after pairIdx: Int) -> Int {
+        var j = pairIdx
+        while j < count {
+            if let r = pairRightRows[j] { return r }
+            j += 1
+        }
+        return rightLineStarts.count
+    }
+
+    struct RawSegment {
+        let leftRange: Range<Int>
+        let rightRange: Range<Int>
+        let leftAnchor: Int
+        let rightAnchor: Int
+    }
+
+    var rawSegments: [RawSegment] = []
+    var i = 0
+    while i < count {
+        if !isChange(pairLeftKinds[i], pairRightKinds[i]) {
+            i += 1
+            continue
+        }
+        let runStart = i
+        while i < count && isChange(pairLeftKinds[i], pairRightKinds[i]) {
+            i += 1
+        }
+        let runRange = runStart..<i
+
+        var leftRows: [Int] = []
+        var rightRows: [Int] = []
+        for k in runRange {
+            if let lr = pairLeftRows[k] { leftRows.append(lr) }
+            if let rr = pairRightRows[k] { rightRows.append(rr) }
+        }
+        let leftRange: Range<Int>
+        if let lo = leftRows.first, let hi = leftRows.last {
+            leftRange = lo..<(hi + 1)
+        } else {
+            leftRange = 0..<0
+        }
+        let rightRange: Range<Int>
+        if let lo = rightRows.first, let hi = rightRows.last {
+            rightRange = lo..<(hi + 1)
+        } else {
+            rightRange = 0..<0
+        }
+        // Anchor for the empty side: the next real row past the run, or the
+        // last left/right row when the run sits at the end of the file. The
+        // renderer pins the funnel apex to this row's top edge.
+        let leftAnchor = leftRange.isEmpty ? nextLeftRow(after: runRange.upperBound) : leftRange.lowerBound
+        let rightAnchor = rightRange.isEmpty ? nextRightRow(after: runRange.upperBound) : rightRange.lowerBound
+        rawSegments.append(RawSegment(
+            leftRange: leftRange,
+            rightRange: rightRange,
+            leftAnchor: leftAnchor,
+            rightAnchor: rightAnchor
+        ))
+    }
+
+    let leftString = leftAttr.string as NSString
+    let rightString = rightAttr.string as NSString
+
+    func slice(_ s: NSString, _ starts: [Int], _ range: Range<Int>) -> String {
+        guard !range.isEmpty, range.lowerBound < starts.count else { return "" }
+        let start = starts[range.lowerBound]
+        let end: Int
+        if range.upperBound < starts.count {
+            end = starts[range.upperBound]
+        } else {
+            end = s.length
+        }
+        if end <= start { return "" }
+        return s.substring(with: NSRange(location: start, length: end - start))
+    }
+
+    func normalize(_ raw: String) -> String {
+        var lines: [String] = []
+        for line in raw.split(separator: "\n", omittingEmptySubsequences: false) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if !trimmed.isEmpty { lines.append(trimmed) }
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    var segments: [DiffConnectorSegment] = []
+    var deletedSlots: [String: [Int]] = [:]
+    var addedSlots: [String: [Int]] = [:]
+
+    for raw in rawSegments {
+        let leftHasContent = !raw.leftRange.isEmpty
+        let rightHasContent = !raw.rightRange.isEmpty
+        let kind: DiffConnectorSegment.Kind
+        if leftHasContent && rightHasContent {
+            kind = .changed
+        } else if rightHasContent {
+            kind = .added
+        } else if leftHasContent {
+            kind = .deleted
+        } else {
+            continue
+        }
+        let segmentIdx = segments.count
+        let segment = DiffConnectorSegment(
+            kind: kind,
+            leftLineRange: raw.leftRange,
+            rightLineRange: raw.rightRange,
+            leftAnchorRow: raw.leftAnchor,
+            rightAnchorRow: raw.rightAnchor,
+            movePartnerID: nil
+        )
+        segments.append(segment)
+
+        if detectMoves {
+            if kind == .added {
+                let key = normalize(slice(rightString, rightLineStarts, raw.rightRange))
+                if !key.isEmpty {
+                    addedSlots[key, default: []].append(segmentIdx)
+                }
+            } else if kind == .deleted {
+                let key = normalize(slice(leftString, leftLineStarts, raw.leftRange))
+                if !key.isEmpty {
+                    deletedSlots[key, default: []].append(segmentIdx)
+                }
+            }
+        }
+    }
+
+    if detectMoves {
+        var nextMoveID = 0
+        for (key, addedList) in addedSlots {
+            guard let deletedList = deletedSlots[key] else { continue }
+            let pairs = min(addedList.count, deletedList.count)
+            guard pairs > 0 else { continue }
+            for p in 0..<pairs {
+                let aPos = addedList[p]
+                let dPos = deletedList[p]
+                let movedID = nextMoveID
+                nextMoveID += 1
+                let added = segments[aPos]
+                let deleted = segments[dPos]
+                segments[aPos] = DiffConnectorSegment(
+                    kind: .moved,
+                    leftLineRange: deleted.leftLineRange,
+                    rightLineRange: added.rightLineRange,
+                    leftAnchorRow: deleted.leftAnchorRow,
+                    rightAnchorRow: added.rightAnchorRow,
+                    movePartnerID: movedID
+                )
+                segments[dPos] = DiffConnectorSegment(
+                    kind: .moved,
+                    leftLineRange: deleted.leftLineRange,
+                    rightLineRange: added.rightLineRange,
+                    leftAnchorRow: deleted.leftAnchorRow,
+                    rightAnchorRow: added.rightAnchorRow,
+                    movePartnerID: movedID
+                )
+            }
+        }
+        // Deduplicate: each move pair was written into both slots; collapse to
+        // a single segment per partner ID for the renderer.
+        var seenMoveIDs = Set<Int>()
+        var deduped: [DiffConnectorSegment] = []
+        deduped.reserveCapacity(segments.count)
+        for seg in segments {
+            if let id = seg.movePartnerID {
+                if seenMoveIDs.insert(id).inserted {
+                    deduped.append(seg)
+                }
+            } else {
+                deduped.append(seg)
+            }
+        }
+        segments = deduped
+    }
+
+    return segments
+}
+
+// MARK: - 3-way conflict viewer
+
+/// The three blobs needed to render a merge conflict as ours | base | theirs.
+/// Each blob is `nil` when the file isn't present in that ref (added on one
+/// side, deleted on the other, or the merge-base couldn't be computed). The
+/// labels are display strings derived from the spec branches.
+struct ThreeWayBlobs: Sendable, Equatable {
+    let ours: String?
+    let base: String?
+    let theirs: String?
+    let oursLabel: String
+    let baseLabel: String
+    let theirsLabel: String
+}
+
+/// Fetches the three blobs for a conflicting file: ours = `git show <base>:<path>`,
+/// theirs = `git show <compare>:<path>`, base = `git show <merge-base>:<path>`.
+/// Returns `nil` when `spec.compare == nil` or no merge-base can be computed
+/// (caller should fall back to the existing 2-pane merged-with-markers view).
+func fetchOursBaseTheirs(spec: GitDiffSpec, file: GitDiffFile) async throws -> ThreeWayBlobs? {
+    guard spec.compare != nil else { return nil }
+    let resolved = try await resolveSpecRefs(spec)
+    guard let compareRef = resolved.compare else { return nil }
+    let oursRef = resolved.base
+    let theirsRef = compareRef
+
+    // merge-base. Failure (no common ancestor, octopus, etc.) returns nil so
+    // the caller degrades gracefully to the side-by-side merged view.
+    let mergeBaseResult = try? await runGitAllowingNonZero(
+        args: ["merge-base", oursRef, theirsRef],
+        directory: spec.directory
+    )
+    let mergeBase: String?
+    if let r = mergeBaseResult, r.status == 0,
+       let s = String(data: r.stdout, encoding: .utf8) {
+        let trimmed = s.trimmingCharacters(in: .whitespacesAndNewlines)
+        mergeBase = trimmed.isEmpty ? nil : trimmed
+    } else {
+        mergeBase = nil
+    }
+
+    let path = file.path
+    let oldPath = file.oldPath
+
+    async let oursBlob = gitShowBlob(
+        ref: oursRef, path: path, fallbackPath: oldPath, directory: spec.directory
+    )
+    async let theirsBlob = gitShowBlob(
+        ref: theirsRef, path: path, fallbackPath: oldPath, directory: spec.directory
+    )
+    async let baseBlob: String? = {
+        guard let mb = mergeBase else { return nil }
+        return await gitShowBlob(
+            ref: mb, path: path, fallbackPath: oldPath, directory: spec.directory
+        )
+    }()
+
+    let ours = await oursBlob
+    let theirs = await theirsBlob
+    let base = await baseBlob
+
+    return ThreeWayBlobs(
+        ours: ours,
+        base: base,
+        theirs: theirs,
+        oursLabel: spec.base,
+        baseLabel: String(localized: "diff.threeWay.baseLabel", defaultValue: "merge-base"),
+        theirsLabel: spec.compare ?? ""
+    )
+}
+
+/// `git show <ref>:<path>` returning nil on any non-zero exit. Tries
+/// `fallbackPath` (typically `file.oldPath` for renames) when the primary
+/// path is absent in the given ref.
+private func gitShowBlob(
+    ref: String,
+    path: String,
+    fallbackPath: String?,
+    directory: String
+) async -> String? {
+    if let s = await tryGitShow(ref: ref, path: path, directory: directory) {
+        return s
+    }
+    if let alt = fallbackPath, alt != path,
+       let s = await tryGitShow(ref: ref, path: alt, directory: directory) {
+        return s
+    }
+    return nil
+}
+
+private func tryGitShow(ref: String, path: String, directory: String) async -> String? {
+    guard let result = try? await runGitAllowingNonZero(
+        args: ["show", "\(ref):\(path)"],
+        directory: directory
+    ) else { return nil }
+    guard result.status == 0 else { return nil }
+    return String(data: result.stdout, encoding: .utf8)
+}
+
 /// Iterates over NUL-delimited fields.
 private final class NulScanner {
     private let chars: [Substring]
