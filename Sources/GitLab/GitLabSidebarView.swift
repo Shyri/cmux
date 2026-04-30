@@ -2,8 +2,8 @@ import SwiftUI
 
 enum GitLabSidebarTab: String, CaseIterable, Identifiable {
     case mergeRequests
-    case pipelines
     case issues
+    case pipelines
     case releases
 
     var id: String { rawValue }
