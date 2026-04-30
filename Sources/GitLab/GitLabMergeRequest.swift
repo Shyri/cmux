@@ -10,6 +10,7 @@ struct GitLabReviewer: Equatable, Hashable, Sendable {
 struct GitLabMergeRequest: Identifiable, Equatable, Sendable {
     let id: Int
     let iid: Int
+    let projectId: Int
     let title: String
     let state: String
     let authorName: String
@@ -27,6 +28,16 @@ struct GitLabMergeRequest: Identifiable, Equatable, Sendable {
     let mergeStatus: String
     /// True when the GitLab `has_conflicts` flag is set on the MR.
     let hasConflicts: Bool
+    /// Approval info fetched lazily from
+    /// `projects/:id/merge_requests/:iid/approvals`. `nil` means not loaded yet.
+    var approval: GitLabMRApproval?
+}
+
+struct GitLabMRApproval: Equatable, Sendable {
+    let approved: Bool
+    let approvalsRequired: Int
+    let approvalsLeft: Int
+    let approvedBy: [GitLabReviewer]
 }
 
 // MARK: - JSON Decoding (glab mr list -F json)
@@ -39,6 +50,7 @@ private struct GLMRAuthor: Decodable {
 private struct GLMRResponse: Decodable {
     let id: Int
     let iid: Int
+    let project_id: Int?
     let title: String
     let state: String
     let author: GLMRAuthor?
@@ -58,6 +70,7 @@ private struct GLMRResponse: Decodable {
         GitLabMergeRequest(
             id: id,
             iid: iid,
+            projectId: project_id ?? 0,
             title: title,
             state: state,
             authorName: author?.name ?? "",
@@ -74,7 +87,8 @@ private struct GLMRResponse: Decodable {
             },
             userNotesCount: user_notes_count ?? 0,
             mergeStatus: merge_status ?? "",
-            hasConflicts: has_conflicts ?? false
+            hasConflicts: has_conflicts ?? false,
+            approval: nil
         )
     }
 
@@ -192,6 +206,67 @@ private func runGlabApprove(iid: Int, directory: String) throws -> String {
         .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
         .filter { !$0.isEmpty }
         .joined(separator: "\n")
+}
+
+// MARK: - Approvals
+
+private struct GLMRApprovalResponse: Decodable {
+    struct ApprovedByEntry: Decodable {
+        let user: GLMRAuthor?
+    }
+    let approved: Bool?
+    let approvals_required: Int?
+    let approvals_left: Int?
+    let approved_by: [ApprovedByEntry]?
+}
+
+/// Runs `glab api projects/:projectId/merge_requests/:iid/approvals` in
+/// `directory` and returns the parsed approval state.
+func fetchGitLabMRApproval(
+    projectId: Int,
+    iid: Int,
+    in directory: String
+) async throws -> GitLabMRApproval {
+    guard let glabPath = findExecutable("glab") else {
+        throw GitLabMRFetchError.glabNotFound
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = [
+        "api",
+        "projects/\(projectId)/merge_requests/\(iid)/approvals",
+    ]
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        throw GitLabMRFetchError.processError(errStr)
+    }
+
+    let decoded = try JSONDecoder().decode(GLMRApprovalResponse.self, from: outData)
+    return GitLabMRApproval(
+        approved: decoded.approved ?? false,
+        approvalsRequired: decoded.approvals_required ?? 0,
+        approvalsLeft: decoded.approvals_left ?? 0,
+        approvedBy: (decoded.approved_by ?? []).compactMap { entry in
+            guard let u = entry.user else { return nil }
+            return GitLabReviewer(name: u.name ?? "", username: u.username ?? "")
+        }
+    )
 }
 
 /// Search common paths for an executable.

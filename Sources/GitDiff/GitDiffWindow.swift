@@ -22,13 +22,23 @@ final class GitDiffViewModel: ObservableObject {
     /// Inline discussions fetched via `glab api` when the spec comes from an
     /// MR. Empty for working-tree diffs.
     @Published var mrDiscussions: [MRDiscussion] = []
-    /// Whether the user is viewing the MR overview (general discussions) in
-    /// lieu of a file diff.
+    /// MR metadata (description, author) shown above the comments timeline in
+    /// the Overview pane. `nil` until the fetch completes (or for non-MR diffs).
+    @Published var mrOverview: MROverview?
+    /// Whether the user is viewing the MR overview (description + general
+    /// discussions) in lieu of a file diff.
     @Published var overviewSelected: Bool = false
+
+    /// Conflict regions (line ranges in the merged result) for the currently
+    /// selected file. Reset whenever the selection changes.
+    @Published var currentConflict: GitDiffFileConflict?
+    @Published var isLoadingConflict: Bool = false
 
     private var fileListTask: Task<Void, Never>?
     private var diffTask: Task<Void, Never>?
     private var discussionsTask: Task<Void, Never>?
+    private var overviewTask: Task<Void, Never>?
+    private var conflictTask: Task<Void, Never>?
 
     var positionedDiscussions: [MRDiscussion] {
         mrDiscussions.filter { $0.isPositioned }
@@ -37,7 +47,9 @@ final class GitDiffViewModel: ObservableObject {
         mrDiscussions.filter { !$0.isPositioned }
     }
     var hasOverview: Bool {
-        spec.mergeRequestIID != nil && !generalDiscussions.isEmpty
+        // Show overview entry whenever this is an MR diff: description always
+        // belongs there, even when there are no general comments yet.
+        spec.mergeRequestIID != nil
     }
 
     init(spec: GitDiffSpec) {
@@ -47,6 +59,7 @@ final class GitDiffViewModel: ObservableObject {
     func reload() {
         loadFileList()
         loadDiscussionsIfNeeded()
+        loadOverviewIfNeeded()
     }
 
     private func loadDiscussionsIfNeeded() {
@@ -69,6 +82,24 @@ final class GitDiffViewModel: ObservableObject {
                 self?.mrDiscussions = result
             } catch {
                 NSLog("[cmux-mr-comments] fetch failed: \(error)")
+            }
+        }
+    }
+
+    private func loadOverviewIfNeeded() {
+        guard let iid = spec.mergeRequestIID else {
+            mrOverview = nil
+            return
+        }
+        overviewTask?.cancel()
+        let dir = spec.directory
+        overviewTask = Task { [weak self] in
+            do {
+                let result = try await fetchMROverview(mrIID: iid, directory: dir)
+                guard !Task.isCancelled else { return }
+                self?.mrOverview = result
+            } catch {
+                NSLog("[cmux-mr-overview] fetch failed: \(error)")
             }
         }
     }
@@ -97,6 +128,20 @@ final class GitDiffViewModel: ObservableObject {
                 self.isLoadingFiles = false
                 if self.selectedFile == nil, let first = result.first {
                     self.select(first)
+                }
+                // Conflict detection runs after the list is shown so the file
+                // sidebar isn't blocked on a second git invocation.
+                let conflicts = await fetchConflictingPaths(spec: spec)
+                guard !Task.isCancelled, !conflicts.isEmpty else { return }
+                self.files = self.files.map { file in
+                    var f = file
+                    f.hasConflict = conflicts.contains(file.path)
+                        || (file.oldPath.map { conflicts.contains($0) } ?? false)
+                    return f
+                }
+                if let sel = self.selectedFile,
+                   let updated = self.files.first(where: { $0.path == sel.path }) {
+                    self.selectedFile = updated
                 }
             } catch {
                 guard !Task.isCancelled else { return }
@@ -144,10 +189,16 @@ final class GitDiffViewModel: ObservableObject {
         isLoadingDiff = true
 
         let spec = self.spec
+        let useConflictDiff = file.hasConflict
         diffTask = Task { [weak self] in
             guard let self else { return }
             do {
-                let diff = try await fetchUnifiedDiff(spec: spec, file: file.path)
+                let diff: String
+                if useConflictDiff {
+                    diff = try await fetchUnifiedDiffWithConflictMarkers(spec: spec, file: file.path)
+                } else {
+                    diff = try await fetchUnifiedDiff(spec: spec, file: file.path)
+                }
                 guard !Task.isCancelled, self.selectedFile?.path == file.path else { return }
                 self.currentDiff = diff
                 self.isLoadingDiff = false
@@ -157,6 +208,26 @@ final class GitDiffViewModel: ObservableObject {
                 self.currentDiff = ""
                 self.isLoadingDiff = false
             }
+        }
+
+        loadConflictRegions(for: file)
+    }
+
+    private func loadConflictRegions(for file: GitDiffFile) {
+        conflictTask?.cancel()
+        currentConflict = nil
+        guard file.hasConflict else {
+            isLoadingConflict = false
+            return
+        }
+        isLoadingConflict = true
+        let spec = self.spec
+        conflictTask = Task { [weak self] in
+            guard let self else { return }
+            let result = await fetchConflictRegions(spec: spec, path: file.path)
+            guard !Task.isCancelled, self.selectedFile?.path == file.path else { return }
+            self.currentConflict = result
+            self.isLoadingConflict = false
         }
     }
 
@@ -195,7 +266,7 @@ enum FileListMode: String {
 struct GitDiffWindowView: View {
     @ObservedObject var viewModel: GitDiffViewModel
     @State private var displayMode: GitDiffDisplayMode = .sideBySide
-    @State private var fileListMode: FileListMode = .tree
+    @State private var fileListMode: FileListMode = .flat
     @State private var prepared: SideBySidePrepared = .empty
     @State private var scrollHunkIndex: Int? = nil
     @State private var activeHunk: Int = 0
@@ -210,7 +281,7 @@ struct GitDiffWindowView: View {
             Divider()
             HSplitView {
                 fileListPane
-                    .frame(minWidth: 60, idealWidth: 300, maxWidth: 300)
+                    .frame(minWidth: 60, idealWidth: 300)
                 diffPane
                     .frame(minWidth: 400, maxWidth: .infinity)
             }
@@ -416,6 +487,7 @@ struct GitDiffWindowView: View {
                         .foregroundStyle(.secondary)
                         .multilineTextAlignment(.center)
                         .padding(.horizontal, 12)
+                        .textSelection(.enabled)
                     if !viewModel.missingRefs.isEmpty {
                         Button {
                             Task { await viewModel.fetchMissingRefs() }
@@ -593,7 +665,10 @@ struct GitDiffWindowView: View {
     @ViewBuilder
     private var diffPane: some View {
         if viewModel.overviewSelected {
-            OverviewDiscussionsPane(discussions: viewModel.generalDiscussions)
+            OverviewDiscussionsPane(
+                overview: viewModel.mrOverview,
+                discussions: viewModel.generalDiscussions
+            )
         } else if let file = viewModel.selectedFile {
             VStack(spacing: 0) {
                 HStack(spacing: 6) {
@@ -698,21 +773,35 @@ private struct GitDiffFileRow: View {
     var body: some View {
         HStack(spacing: 4) {
             DiffTreeIndentGuides(depth: depth)
-            HStack(spacing: 4) {
+            HStack(spacing: 5) {
                 // Empty slot where a sibling folder's chevron would sit, so
                 // file names stay aligned with folders above.
                 Spacer().frame(width: DiffTreeMetrics.chevronWidth)
+                let icon = GitDiffFileIcon.info(for: file.path)
+                ZStack {
+                    Image(systemName: icon.symbol)
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(icon.color)
+                    if file.hasConflict {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 7))
+                            .foregroundStyle(GitDiffConflictStyle.color)
+                            .offset(x: 5, y: 5)
+                    }
+                }
+                .frame(width: 14, height: 14)
+                .help(file.hasConflict ? GitDiffConflictStyle.tooltip : "")
                 Text((file.path as NSString).lastPathComponent)
                     .font(.system(size: 12))
-                    .foregroundStyle(statusColor)
+                    .foregroundStyle(Color(nsColor: .labelColor))
                     .lineLimit(1)
                     .truncationMode(.middle)
                 if depth == 0 {
                     let parent = (file.path as NSString).deletingLastPathComponent
                     if !parent.isEmpty {
                         Text(parent)
-                            .font(.system(size: 10))
-                            .foregroundStyle(.tertiary)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
                             .lineLimit(1)
                             .truncationMode(.head)
                     }
@@ -722,43 +811,148 @@ private struct GitDiffFileRow: View {
                     Text("BIN")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundStyle(.secondary)
-                } else {
-                    HStack(spacing: 2) {
-                        if file.additions > 0 {
-                            Text("+\(file.additions)")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.green)
-                        }
-                        if file.deletions > 0 {
-                            Text("-\(file.deletions)")
-                                .font(.system(size: 9, weight: .medium, design: .monospaced))
-                                .foregroundStyle(.red)
-                        }
-                    }
+                }
+                Text(file.changeType.symbol)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .frame(minWidth: 12, alignment: .trailing)
+            }
+        }
+        .help(file.hasConflict
+              ? "\(file.path) — \(GitDiffConflictStyle.tooltip)"
+              : file.path)
+    }
+}
+
+// MARK: - Conflict banner
+
+private struct GitDiffConflictBanner: View {
+    let isLoading: Bool
+    let conflict: GitDiffFileConflict?
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: "exclamationmark.triangle.fill")
+                .font(.system(size: 12))
+                .foregroundStyle(GitDiffConflictStyle.color)
+            VStack(alignment: .leading, spacing: 2) {
+                Text(headline)
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(GitDiffConflictStyle.color)
+                if let conflict, !conflict.regions.isEmpty {
+                    Text(rangesText(conflict.regions))
+                        .font(.system(size: 11, design: .monospaced))
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
                 }
             }
-            .padding(.vertical, DiffTreeMetrics.rowVerticalPadding)
+            Spacer()
+            if isLoading {
+                ProgressView().scaleEffect(0.5).frame(width: 14, height: 14)
+            }
         }
-        .help(file.path)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+        .background(GitDiffConflictStyle.color.opacity(0.10))
     }
 
-    /// VS Code `gitDecoration.*ResourceForeground` palette — soft, easy on the eyes.
-    private var statusColor: Color {
-        switch file.changeType {
-        case .added:
-            // #81B88B
-            return Color(nsColor: NSColor(srgbRed: 0x81/255, green: 0xB8/255, blue: 0x8B/255, alpha: 1))
-        case .modified:
-            // #E2C08D — VS Code uses amber, not blue, for modified files.
-            return Color(nsColor: NSColor(srgbRed: 0xE2/255, green: 0xC0/255, blue: 0x8D/255, alpha: 1))
-        case .deleted:
-            // #C74E39
-            return Color(nsColor: NSColor(srgbRed: 0xC7/255, green: 0x4E/255, blue: 0x39/255, alpha: 1))
-        case .renamed, .copied:
-            // #73C991
-            return Color(nsColor: NSColor(srgbRed: 0x73/255, green: 0xC9/255, blue: 0x91/255, alpha: 1))
+    private var headline: String {
+        if let conflict, !conflict.regions.isEmpty {
+            let n = conflict.regions.count
+            return String(
+                localized: "diff.conflict.banner.regions",
+                defaultValue: "Merge conflict — \(n) region\(n == 1 ? "" : "s") in the merged result"
+            )
+        }
+        return String(
+            localized: "diff.conflict.banner.title",
+            defaultValue: "This file has a merge conflict"
+        )
+    }
+
+    private func rangesText(_ regions: [GitDiffConflictRegion]) -> String {
+        let prefix = String(localized: "diff.conflict.banner.lines", defaultValue: "Lines")
+        let parts = regions.map { r in
+            r.startLine == r.endLine ? "L\(r.startLine)" : "L\(r.startLine)–L\(r.endLine)"
+        }
+        return "\(prefix): \(parts.joined(separator: ", "))"
+    }
+}
+
+// MARK: - Conflict styling
+
+private enum GitDiffConflictStyle {
+    /// VS Code-like amber/orange used for conflict warnings.
+    static let color = Color(nsColor: NSColor(srgbRed: 0xE5/255, green: 0x8E/255, blue: 0x26/255, alpha: 1))
+    static var tooltip: String {
+        String(localized: "diff.fileList.hasConflicts", defaultValue: "Has merge conflicts")
+    }
+}
+
+// MARK: - File-type icons
+
+private enum GitDiffFileIcon {
+    struct Info {
+        let symbol: String
+        let color: Color
+    }
+
+    private static let orange = Color(nsColor: NSColor(srgbRed: 0xE0/255, green: 0x77/255, blue: 0x2C/255, alpha: 1))
+    private static let amber  = Color(nsColor: NSColor(srgbRed: 0xE5/255, green: 0xA5/255, blue: 0x2C/255, alpha: 1))
+    private static let blue   = Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x9D/255, blue: 0xE0/255, alpha: 1))
+    private static let green  = Color(nsColor: NSColor(srgbRed: 0x6F/255, green: 0xB8/255, blue: 0x6F/255, alpha: 1))
+    private static let purple = Color(nsColor: NSColor(srgbRed: 0xA9/255, green: 0x7B/255, blue: 0xFF/255, alpha: 1))
+    private static let teal   = Color(nsColor: NSColor(srgbRed: 0x29/255, green: 0xBE/255, blue: 0xB0/255, alpha: 1))
+    private static let pink   = Color(nsColor: NSColor(srgbRed: 0xE8/255, green: 0x6F/255, blue: 0xA8/255, alpha: 1))
+    private static let neutral = Color.secondary
+
+    static func info(for path: String) -> Info {
+        let ext = (path as NSString).pathExtension.lowercased()
+        switch ext {
+        case "swift":
+            return Info(symbol: "swift", color: orange)
+        case "kt", "kts":
+            return Info(symbol: "k.square.fill", color: purple)
+        case "java":
+            return Info(symbol: "cup.and.saucer.fill", color: orange)
+        case "xml", "html", "htm", "plist", "storyboard", "xib":
+            return Info(symbol: "chevron.left.forwardslash.chevron.right", color: orange)
+        case "json":
+            return Info(symbol: "curlybraces", color: amber)
+        case "js", "jsx", "mjs", "cjs":
+            return Info(symbol: "j.square.fill", color: amber)
+        case "ts", "tsx":
+            return Info(symbol: "t.square.fill", color: blue)
+        case "md", "markdown", "rst":
+            return Info(symbol: "doc.richtext", color: blue)
+        case "png", "jpg", "jpeg", "gif", "webp", "heic", "bmp", "tiff", "icns", "svg":
+            return Info(symbol: "photo.fill", color: pink)
+        case "yml", "yaml", "toml", "ini", "cfg", "conf":
+            return Info(symbol: "slider.horizontal.3", color: amber)
+        case "sh", "bash", "zsh", "fish":
+            return Info(symbol: "terminal.fill", color: green)
+        case "py":
+            return Info(symbol: "p.square.fill", color: blue)
+        case "rs":
+            return Info(symbol: "r.square.fill", color: orange)
+        case "go":
+            return Info(symbol: "g.square.fill", color: teal)
+        case "c", "cc", "cpp", "h", "hh", "hpp", "m", "mm":
+            return Info(symbol: "c.square.fill", color: blue)
+        case "css", "scss", "sass", "less":
+            return Info(symbol: "paintbrush.fill", color: blue)
+        case "rb":
+            return Info(symbol: "diamond.fill", color: pink)
+        case "zig":
+            return Info(symbol: "z.square.fill", color: orange)
+        case "lock", "gitignore", "gitattributes", "gitmodules":
+            return Info(symbol: "lock.fill", color: neutral)
+        case "txt", "log":
+            return Info(symbol: "doc.plaintext.fill", color: neutral)
+        case "":
+            return Info(symbol: "doc.fill", color: neutral)
         default:
-            return Color(nsColor: .labelColor).opacity(0.85)
+            return Info(symbol: "doc.text.fill", color: neutral)
         }
     }
 }
@@ -772,6 +966,7 @@ struct FileTreeNode: Identifiable, Equatable {
     var additions: Int
     var deletions: Int
     var fileCount: Int
+    var hasConflict: Bool = false
     var children: [FileTreeNode]?
 }
 
@@ -813,6 +1008,7 @@ enum FileTreeBuilder {
                 additions: file.additions,
                 deletions: file.deletions,
                 fileCount: 1,
+                hasConflict: file.hasConflict,
                 children: nil
             ))
             return
@@ -855,10 +1051,11 @@ enum FileTreeBuilder {
     }
 
     @discardableResult
-    private static func aggregateStats(_ nodes: inout [FileTreeNode]) -> (adds: Int, dels: Int, count: Int) {
+    private static func aggregateStats(_ nodes: inout [FileTreeNode]) -> (adds: Int, dels: Int, count: Int, conflict: Bool) {
         var totalAdds = 0
         var totalDels = 0
         var totalCount = 0
+        var anyConflict = false
         for i in nodes.indices {
             if var children = nodes[i].children {
                 let child = aggregateStats(&children)
@@ -866,16 +1063,19 @@ enum FileTreeBuilder {
                 nodes[i].additions = child.adds
                 nodes[i].deletions = child.dels
                 nodes[i].fileCount = child.count
+                nodes[i].hasConflict = child.conflict
                 totalAdds += child.adds
                 totalDels += child.dels
                 totalCount += child.count
+                if child.conflict { anyConflict = true }
             } else {
                 totalAdds += nodes[i].additions
                 totalDels += nodes[i].deletions
                 totalCount += 1
+                if nodes[i].hasConflict { anyConflict = true }
             }
         }
-        return (totalAdds, totalDels, totalCount)
+        return (totalAdds, totalDels, totalCount, anyConflict)
     }
 
     /// Collapse chains like foo → bar → baz where each has exactly one folder child
@@ -897,6 +1097,7 @@ enum FileTreeBuilder {
                     additions: only.additions,
                     deletions: only.deletions,
                     fileCount: only.fileCount,
+                    hasConflict: only.hasConflict,
                     children: only.children
                 )
             }
@@ -933,6 +1134,7 @@ private struct GitDiffOverviewRow: View {
 }
 
 private struct OverviewDiscussionsPane: View {
+    let overview: MROverview?
     let discussions: [MRDiscussion]
 
     var body: some View {
@@ -954,30 +1156,115 @@ private struct OverviewDiscussionsPane: View {
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
             Divider()
-            if discussions.isEmpty {
-                VStack {
-                    Spacer()
-                    Text(String(
-                        localized: "diff.overview.empty",
-                        defaultValue: "No general comments"
-                    ))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    Spacer()
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 6) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 8) {
+                    if let overview {
+                        MRDescriptionCard(overview: overview)
+                    }
+                    timelineHeader
+                    if discussions.isEmpty {
+                        Text(String(
+                            localized: "diff.overview.empty",
+                            defaultValue: "No general comments"
+                        ))
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .frame(maxWidth: .infinity, alignment: .center)
+                        .padding(.vertical, 16)
+                    } else {
                         ForEach(discussions) { d in
                             InlineCommentCard(discussion: d)
                         }
                     }
-                    .padding(.vertical, 6)
                 }
+                .padding(.vertical, 6)
             }
         }
         .background(Color(nsColor: DiffCodeContainer.editorBackground))
+    }
+
+    @ViewBuilder
+    private var timelineHeader: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "clock")
+                .font(.system(size: 10))
+                .foregroundStyle(.secondary)
+            Text(String(
+                localized: "diff.overview.timeline",
+                defaultValue: "Comments"
+            ))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            Rectangle()
+                .fill(Color(nsColor: NSColor(white: 1, alpha: 0.08)))
+                .frame(height: 1)
+        }
+        .padding(.horizontal, 12)
+        .padding(.top, 4)
+    }
+}
+
+private struct MRDescriptionCard: View {
+    let overview: MROverview
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            if !overview.title.isEmpty {
+                Text(overview.title)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.primary)
+                    .textSelection(.enabled)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 6) {
+                if !displayName.isEmpty {
+                    Text(displayName)
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+                if let when = overview.createdAt {
+                    Text(formatted(when))
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer()
+            }
+            if overview.description.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                Text(String(
+                    localized: "diff.overview.noDescription",
+                    defaultValue: "No description"
+                ))
+                .font(.system(size: 12))
+                .foregroundStyle(.tertiary)
+                .italic()
+            } else {
+                MarkdownText(source: overview.description, baseFontSize: 12)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .strokeBorder(Color(nsColor: NSColor(srgbRed: 0x3C/255, green: 0x3C/255, blue: 0x3C/255, alpha: 1)), lineWidth: 1)
+        )
+        .padding(.horizontal, 6)
+    }
+
+    private var displayName: String {
+        if !overview.authorName.isEmpty { return overview.authorName }
+        return overview.authorUsername.isEmpty ? "" : "@\(overview.authorUsername)"
+    }
+
+    private func formatted(_ date: Date) -> String {
+        let f = DateFormatter()
+        f.dateStyle = .medium
+        f.timeStyle = .short
+        return f.string(from: date)
     }
 }
 
@@ -1190,6 +1477,54 @@ struct InlineCommentWidget: Identifiable, Equatable {
     let anchorCharIndex: Int
     let reservedHeight: CGFloat
     let discussion: MRDiscussion
+    /// When true, the rendered card is taller than `reservedHeight` and must
+    /// scroll internally so it doesn't visually overflow the next code line.
+    let useInternalScroll: Bool
+}
+
+/// Best-effort height estimate for an `InlineCommentCard`. Used to reserve
+/// the right number of placeholder rows so a thread with many notes doesn't
+/// visually overlap the next code line. Slightly generous on purpose — we'd
+/// rather leave a sliver of empty space than clip a comment.
+func estimatedCardHeight(for discussion: MRDiscussion) -> CGFloat {
+    // Card paddings (vertical): outer .padding(.vertical, 2) on both sides
+    // (4pt) + inner VStack .padding(8) on both sides (16pt).
+    var height: CGFloat = 4 + 16
+    // System body font is 12pt, ~16pt per wrapped line in practice.
+    let bodyLineHeight: CGFloat = 16
+    // Approximate average character width for the proportional body font.
+    let avgCharWidth: CGFloat = 6.5
+    // Approximate inner content width; the actual width depends on the diff
+    // column at runtime, so this is a rough but stable target.
+    let bodyContentWidth: CGFloat = 480
+    let charsPerLine = max(20, Int(bodyContentWidth / avgCharWidth))
+    let dividerHeight: CGFloat = 1
+    for (idx, note) in discussion.notes.enumerated() {
+        if idx > 0 { height += dividerHeight }
+        // Per-note vertical padding (2pt top + 2pt bottom).
+        height += 4
+        // Header HStack with avatar (18pt circle) and meta text.
+        height += 22
+        // VStack spacing(4) between header and body.
+        height += 4
+        // Body wraps; count visual lines from explicit \n + width-based wrap.
+        let segments = note.body.split(separator: "\n", omittingEmptySubsequences: false)
+        var lines = 0
+        for seg in segments {
+            let len = seg.count
+            if len == 0 {
+                lines += 1
+            } else {
+                lines += Int(ceil(Double(len) / Double(charsPerLine)))
+            }
+        }
+        if lines == 0 { lines = 1 }
+        height += CGFloat(lines) * bodyLineHeight
+    }
+    // Small safety margin so anti-aliased edges and font ascenders aren't
+    // clipped by the placeholder run.
+    height += 6
+    return height
 }
 
 struct SideBySidePrepared: Equatable {
@@ -1437,9 +1772,14 @@ struct SideBySidePrepared: Equatable {
         }
 
         // Placeholder "phantom" rows reserve vertical space under an anchor
-        // line; the overlay NSHostingView is drawn on top of them.
-        let commentRowsPerCard = 7
-        let reservedHeight = lineHeight * CGFloat(commentRowsPerCard)
+        // line; the overlay NSHostingView is drawn on top of them. The number
+        // of rows is computed per-discussion so threads with many replies get
+        // enough vertical space and don't visually overlap the next line.
+        // Threads taller than `commentRowsCap` get a fixed height + an
+        // internal scrollview inside the card so they don't push the rest of
+        // the file off-screen.
+        let minCommentRowsPerCard = 4
+        let commentRowsCap = 24
         var collectedWidgets: [InlineCommentWidget] = []
 
         func appendPlaceholderRows(count: Int) {
@@ -1499,13 +1839,22 @@ struct SideBySidePrepared: Equatable {
             for (side, discussion) in matched {
                 let anchorLeft = left.length
                 let anchorRight = right.length
-                appendPlaceholderRows(count: commentRowsPerCard)
+                let estimatedHeight = estimatedCardHeight(for: discussion)
+                let estimatedRows = max(
+                    minCommentRowsPerCard,
+                    Int(ceil(estimatedHeight / lineHeight))
+                )
+                let needsScroll = estimatedRows > commentRowsCap
+                let rowsToReserve = needsScroll ? commentRowsCap : estimatedRows
+                let reservedHeight = lineHeight * CGFloat(rowsToReserve)
+                appendPlaceholderRows(count: rowsToReserve)
                 collectedWidgets.append(InlineCommentWidget(
                     id: discussion.id,
                     side: side,
                     anchorCharIndex: side == .left ? anchorLeft : anchorRight,
                     reservedHeight: reservedHeight,
-                    discussion: discussion
+                    discussion: discussion,
+                    useInternalScroll: needsScroll
                 ))
             }
         }
@@ -1514,10 +1863,19 @@ struct SideBySidePrepared: Equatable {
         // consecutive rows where either side is added/deleted becomes one
         // hunk for navigation and auto-scroll purposes.
         var prevIsChange = false
+        func isChangeKind(_ k: SideBySideLineKind) -> Bool {
+            switch k {
+            case .added, .deleted,
+                 .conflictOurs, .conflictBase, .conflictSeparator, .conflictTheirs:
+                return true
+            default:
+                return false
+            }
+        }
         for i in 0..<leftLineKinds.count {
             let lk = leftLineKinds[i]
             let rk = i < rightLineKinds.count ? rightLineKinds[i] : .context
-            let isChange = lk == .added || lk == .deleted || rk == .added || rk == .deleted
+            let isChange = isChangeKind(lk) || isChangeKind(rk)
             if isChange && !prevIsChange {
                 leftHunks.append(leftLineStarts[i])
                 rightHunks.append(i < rightLineStarts.count ? rightLineStarts[i] : 0)
@@ -1589,6 +1947,11 @@ struct SideBySidePrepared: Equatable {
         case .added: return NSColor(srgbRed: 0x37/255, green: 0x3D/255, blue: 0x29/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x4B/255, green: 0x18/255, blue: 0x18/255, alpha: 1)
         case .hunk: return NSColor(srgbRed: 0x23/255, green: 0x2D/255, blue: 0x3C/255, alpha: 1)
+        // Conflict markers: bold magenta family so they pop against added/deleted lines.
+        case .conflictOurs: return NSColor(srgbRed: 0x5A/255, green: 0x1E/255, blue: 0x4A/255, alpha: 1)
+        case .conflictBase: return NSColor(srgbRed: 0x3A/255, green: 0x2A/255, blue: 0x4A/255, alpha: 1)
+        case .conflictSeparator: return NSColor(srgbRed: 0x5A/255, green: 0x3F/255, blue: 0x14/255, alpha: 1)
+        case .conflictTheirs: return NSColor(srgbRed: 0x1E/255, green: 0x3F/255, blue: 0x5A/255, alpha: 1)
         case .context, .empty, .commentPlaceholder: return nil
         }
     }
@@ -1597,7 +1960,9 @@ struct SideBySidePrepared: Equatable {
         switch kind {
         case .added: return NSColor(srgbRed: 0x55/255, green: 0x62/255, blue: 0x2E/255, alpha: 1)
         case .deleted: return NSColor(srgbRed: 0x6F/255, green: 0x1E/255, blue: 0x1E/255, alpha: 1)
-        case .context, .empty, .hunk, .commentPlaceholder: return nil
+        case .context, .empty, .hunk, .commentPlaceholder,
+             .conflictOurs, .conflictBase, .conflictSeparator, .conflictTheirs:
+            return nil
         }
     }
 

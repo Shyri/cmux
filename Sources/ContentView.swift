@@ -2855,6 +2855,12 @@ struct ContentView: View {
         }
     }
 
+    private func syncNotesSidebarStateFromSelectedWorkspace() {
+        let target = tabManager.selectedWorkspace?.notesSidebarVisible ?? false
+        guard notesSidebarState.isVisible != target else { return }
+        notesSidebarState.isVisible = target
+    }
+
     private func updateTitlebarText() {
         guard let selectedId = tabManager.selectedTabId,
               let tab = tabManager.tabs.first(where: { $0.id == selectedId }) else {
@@ -3024,6 +3030,7 @@ struct ContentView: View {
             applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
             updateTitlebarText()
             syncTrafficLightInset()
+            syncNotesSidebarStateFromSelectedWorkspace()
 
             // Startup recovery (#399): if session restore or a race condition leaves the
             // view in a broken state (empty tabs, no selection, unmounted workspaces),
@@ -3087,12 +3094,25 @@ struct ContentView: View {
             tabManager.applyWindowBackgroundForSelectedTab()
             startWorkspaceHandoffIfNeeded(newSelectedId: newValue)
             reconcileMountedWorkspaceIds(selectedId: newValue)
+            syncNotesSidebarStateFromSelectedWorkspace()
             guard let newValue else { return }
             if selectedTabIds.count <= 1 {
                 selectedTabIds = [newValue]
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == newValue }
             }
             updateTitlebarText()
+        })
+
+        view = AnyView(view.onChange(of: notesSidebarState.isVisible) { newValue in
+            tabManager.selectedWorkspace?.notesSidebarVisible = newValue
+        })
+
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .cmuxWorkspaceRequestToggleNotesSidebar)) { notification in
+            guard
+                let workspaceId = notification.userInfo?[Workspace.toggleNotesWorkspaceIdKey] as? UUID,
+                workspaceId == tabManager.selectedTabId
+            else { return }
+            notesSidebarState.isVisible.toggle()
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) { _ in
@@ -10158,6 +10178,10 @@ struct VerticalTabsSidebar: View {
         }
         .accessibilityIdentifier("Sidebar")
         .ignoresSafeArea()
+        .background(
+            Color(nsColor: NSColor(srgbRed: 0x3D/255, green: 0x3F/255, blue: 0x41/255, alpha: 1))
+                .ignoresSafeArea()
+        )
         .background(SidebarBackdrop().ignoresSafeArea())
         .overlay(alignment: .trailing) {
             SidebarTrailingBorder()

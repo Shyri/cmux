@@ -135,6 +135,9 @@ if [[ -z "$TAG" ]]; then
     PRODUCT_BUNDLE_IDENTIFIER="$BUNDLE_ID"
   )
 fi
+if [[ "${CMUX_SKIP_ZIG_BUILD:-}" == "1" ]]; then
+  XCODEBUILD_ARGS+=(CMUX_SKIP_ZIG_BUILD=1)
+fi
 XCODEBUILD_ARGS+=(build)
 
 xcodebuild "${XCODEBUILD_ARGS[@]}"
@@ -226,7 +229,7 @@ sleep 0.3
 pkill -f "${APP_NAME}.app/Contents/MacOS/${BASE_APP_NAME}" || true
 sleep 0.3
 CMUXD_SRC="$PWD/cmuxd/zig-out/bin/cmuxd"
-if [[ -d "$PWD/cmuxd" ]]; then
+if [[ -d "$PWD/cmuxd" && "${CMUX_SKIP_ZIG_BUILD:-}" != "1" ]]; then
   (cd "$PWD/cmuxd" && zig build -Doptimize=ReleaseFast)
 fi
 if [[ -x "$CMUXD_SRC" ]]; then

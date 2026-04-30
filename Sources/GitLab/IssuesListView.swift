@@ -9,21 +9,33 @@ final class IssuesState: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
+    @Published private(set) var projectWebURL: String?
 
     private var fetchTask: Task<Void, Never>?
+    private var remoteTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
         if lastDirectory != directory {
             issues = []
+            projectWebURL = nil
         }
         lastDirectory = directory
         isLoading = true
         errorMessage = nil
+
+        remoteTask = Task { [weak self] in
+            let url = await gitLabProjectWebURL(directory: directory)
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.projectWebURL = url
+        }
 
         fetchTask = Task { [weak self] in
             let result: Result<[GitLabIssue], Error>
@@ -51,11 +63,13 @@ final class IssuesState: ObservableObject {
 
     func clear() {
         fetchTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         issues = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
+        projectWebURL = nil
     }
 
     private func messageFor(error: Error) -> String {
@@ -100,7 +114,10 @@ struct IssuesListView: View {
             }
         }
         .onAppear { refreshIfNeeded() }
-        .onChange(of: workspace.currentDirectory) { _ in refreshIfNeeded() }
+        .onChange(of: workspace.currentDirectory) { _ in
+            milestoneFilter = ""
+            refreshIfNeeded()
+        }
     }
 
     private var availableMilestones: [GitLabMilestone] {
@@ -139,6 +156,20 @@ struct IssuesListView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(.secondary.opacity(0.15)))
+            }
+            if let boardsURL = issueBoardURL {
+                Button {
+                    NSWorkspace.shared.open(boardsURL)
+                } label: {
+                    Image(systemName: "rectangle.split.3x1")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(String(
+                    localized: "issue.sidebar.openBoard",
+                    defaultValue: "Open issue board"
+                ))
             }
             Spacer()
             if state.isLoading {
@@ -333,6 +364,21 @@ struct IssuesListView: View {
         guard !dir.isEmpty else { return }
         state.refresh(directory: dir)
     }
+
+    /// Derives the project's issue-board URL, preferring the cached project
+    /// web URL (from `git remote`) and falling back to parsing any issue's
+    /// `web_url` (`https://host/group/project/-/issues/<iid>`).
+    private var issueBoardURL: URL? {
+        if let base = state.projectWebURL, !base.isEmpty {
+            return URL(string: "\(base)/-/boards")
+        }
+        if let sample = state.issues.first?.webURL,
+           let range = sample.range(of: "/-/issues/") {
+            let base = sample[..<range.lowerBound]
+            return URL(string: "\(base)/-/boards")
+        }
+        return nil
+    }
 }
 
 // MARK: - Issue Card
@@ -521,3 +567,4 @@ private struct IssueCardView: View {
         return formatter.localizedString(for: date, relativeTo: Date())
     }
 }
+

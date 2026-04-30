@@ -221,6 +221,7 @@ struct SessionNoteSnapshot: Codable, Sendable {
     var title: String
     var content: String
     var createdAt: TimeInterval
+    var isCompleted: Bool?
 }
 
 struct SessionNotesSidebarSnapshot: Codable, Sendable {
@@ -354,6 +355,7 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
     var notes: [SessionNoteSnapshot]?
+    var notesSidebarVisible: Bool?
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {

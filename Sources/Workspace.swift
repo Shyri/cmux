@@ -296,7 +296,8 @@ extension Workspace {
                 id: note.id,
                 title: note.title,
                 content: note.content,
-                createdAt: note.createdAt.timeIntervalSince1970
+                createdAt: note.createdAt.timeIntervalSince1970,
+                isCompleted: note.isCompleted ? true : nil
             )
         }
 
@@ -314,7 +315,8 @@ extension Workspace {
             logEntries: logSnapshots,
             progress: progressSnapshot,
             gitBranch: gitBranchSnapshot,
-            notes: notesSnapshots.isEmpty ? nil : notesSnapshots
+            notes: notesSnapshots.isEmpty ? nil : notesSnapshots,
+            notesSidebarVisible: notesSidebarVisible ? true : nil
         )
     }
 
@@ -369,9 +371,11 @@ extension Workspace {
                 id: snap.id,
                 title: snap.title,
                 content: snap.content,
+                isCompleted: snap.isCompleted ?? false,
                 createdAt: Date(timeIntervalSince1970: snap.createdAt)
             )
         }
+        notesSidebarVisible = snapshot.notesSidebarVisible ?? false
 
         recomputeListeningPorts()
 
@@ -6588,6 +6592,12 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var pullRequest: SidebarPullRequestState?
     @Published var panelPullRequests: [UUID: SidebarPullRequestState] = [:]
     @Published var notes: [WorkspaceNote] = []
+    @Published var notesSidebarVisible: Bool = false {
+        didSet {
+            guard oldValue != notesSidebarVisible else { return }
+            syncBonsplitNotesButtonActive()
+        }
+    }
     @Published var surfaceListeningPorts: [UUID: [Int]] = [:]
     var agentListeningPorts: [Int] = []
     @Published var remoteConfiguration: WorkspaceRemoteConfiguration?
@@ -6615,6 +6625,7 @@ final class Workspace: Identifiable, ObservableObject {
 
     private static let remoteErrorStatusKey = "remote.error"
     private static let remotePortConflictStatusKey = "remote.port_conflicts"
+    nonisolated static let toggleNotesWorkspaceIdKey = "cmux.toggleNotes.workspaceId"
     private static let remoteNotificationCooldown: TimeInterval = 5 * 60
     private static let sshControlMasterCleanupQueue = DispatchQueue(
         label: "com.cmux.remote-ssh.control-master-cleanup",
@@ -6755,7 +6766,8 @@ final class Workspace: Identifiable, ObservableObject {
             newTerminal: KeyboardShortcutSettings.Action.newSurface.tooltip("New Terminal"),
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
-            splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down")
+            splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down"),
+            toggleNotes: String(localized: "bonsplit.toggleNotes.tooltip", defaultValue: "Toggle Notes")
         )
     }
 
@@ -6785,10 +6797,13 @@ final class Workspace: Identifiable, ObservableObject {
     private static func bonsplitAppearance(
         from backgroundColor: NSColor,
         backgroundOpacity: Double,
-        tabTitleFontSize: CGFloat = 11
+        tabTitleFontSize: CGFloat = 11,
+        notesButtonActive: Bool = false
     ) -> BonsplitConfiguration.Appearance {
         BonsplitConfiguration.Appearance(
             tabTitleFontSize: tabTitleFontSize,
+            showNotesButton: true,
+            notesButtonActive: notesButtonActive,
             splitButtonTooltips: Self.currentSplitButtonTooltips(),
             enableAnimations: false,
             chromeColors: .init(
@@ -6798,6 +6813,13 @@ final class Workspace: Identifiable, ObservableObject {
                 )
             )
         )
+    }
+
+    fileprivate func syncBonsplitNotesButtonActive() {
+        var configuration = bonsplitController.configuration
+        guard configuration.appearance.notesButtonActive != notesSidebarVisible else { return }
+        configuration.appearance.notesButtonActive = notesSidebarVisible
+        bonsplitController.configuration = configuration
     }
 
     func applyGhosttyChrome(from config: GhosttyConfig, reason: String = "unspecified") {
@@ -12158,6 +12180,14 @@ extension Workspace: BonsplitDelegate {
         default:
             _ = newTerminalSurface(inPane: pane)
         }
+    }
+
+    func splitTabBar(_ controller: BonsplitController, didRequestToggleNotesInPane pane: PaneID) {
+        NotificationCenter.default.post(
+            name: .cmuxWorkspaceRequestToggleNotesSidebar,
+            object: nil,
+            userInfo: [Workspace.toggleNotesWorkspaceIdKey: id]
+        )
     }
 
     func splitTabBar(_ controller: BonsplitController, didRequestTabContextAction action: TabContextAction, for tab: Bonsplit.Tab, inPane pane: PaneID) {

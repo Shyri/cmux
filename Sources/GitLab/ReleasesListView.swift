@@ -9,21 +9,33 @@ final class ReleasesState: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
+    @Published private(set) var projectWebURL: String?
 
     private var fetchTask: Task<Void, Never>?
+    private var remoteTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
         if lastDirectory != directory {
             releases = []
+            projectWebURL = nil
         }
         lastDirectory = directory
         isLoading = true
         errorMessage = nil
+
+        remoteTask = Task { [weak self] in
+            let url = await gitLabProjectWebURL(directory: directory)
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.projectWebURL = url
+        }
 
         fetchTask = Task { [weak self] in
             let result: Result<[GitLabRelease], Error>
@@ -51,11 +63,13 @@ final class ReleasesState: ObservableObject {
 
     func clear() {
         fetchTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         releases = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
+        projectWebURL = nil
     }
 
     private func messageFor(error: Error) -> String {
@@ -105,6 +119,20 @@ struct ReleasesListView: View {
                     .padding(.horizontal, 6)
                     .padding(.vertical, 1)
                     .background(Capsule().fill(.secondary.opacity(0.15)))
+            }
+            if let url = panelURL {
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(String(
+                    localized: "release.sidebar.openPanel",
+                    defaultValue: "Open releases in browser"
+                ))
             }
             Spacer()
             if state.isLoading {
@@ -191,6 +219,11 @@ struct ReleasesListView: View {
         let dir = workspace.currentDirectory
         guard !dir.isEmpty else { return }
         state.refresh(directory: dir)
+    }
+
+    private var panelURL: URL? {
+        guard let base = state.projectWebURL, !base.isEmpty else { return nil }
+        return URL(string: "\(base)/-/releases")
     }
 }
 

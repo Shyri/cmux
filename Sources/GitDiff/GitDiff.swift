@@ -44,6 +44,10 @@ struct GitDiffFile: Identifiable, Equatable, Sendable, Hashable {
     let additions: Int
     let deletions: Int
     let isBinary: Bool
+    /// Set when this file would conflict if `compare` were merged into `base`
+    /// (for ranged diffs) or is currently in an unmerged state in the working
+    /// tree. Drives the conflict indicator in the file list.
+    var hasConflict: Bool = false
 }
 
 /// Describes what to diff. `compare == nil` means the working tree.
@@ -97,10 +101,23 @@ private func resolveRef(
 /// Default remote used when resolving or fetching MR refs.
 let gitDiffDefaultRemote = "origin"
 
-/// Resolve the `spec`'s refs to ones that exist locally, preferring the
-/// remote-tracking branch. Throws `missingRefs` if any side can't be resolved
-/// so the UI can surface a fetch-and-retry action.
-private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
+private func gitDiffDebugLog(_ message: String) {
+    let line = "[\(Date())] \(message)\n"
+    let path = "/tmp/cmux-gitdiff-debug.log"
+    if let data = line.data(using: .utf8) {
+        if let handle = FileHandle(forWritingAtPath: path) {
+            handle.seekToEndOfFile()
+            handle.write(data)
+            try? handle.close()
+        } else {
+            try? data.write(to: URL(fileURLWithPath: path))
+        }
+    }
+}
+
+/// Resolve the `spec`'s refs, throwing `missingRefs` if any side can't be
+/// resolved. Returns the actual ref names usable by git commands.
+private func resolveSpecRefs(_ spec: GitDiffSpec) async throws -> (base: String, compare: String?) {
     let remote = gitDiffDefaultRemote
     let resolvedBase = await resolveRef(spec.base, directory: spec.directory, remote: remote)
     var resolvedCompare: String? = nil
@@ -112,38 +129,79 @@ private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
     if resolvedBase == nil { missing.append(spec.base) }
     if let compare = spec.compare, resolvedCompare == nil { missing.append(compare) }
     if !missing.isEmpty {
+        gitDiffDebugLog("missing refs base=\(spec.base) compare=\(spec.compare ?? "-") missing=\(missing) remote=\(remote) dir=\(spec.directory)")
         throw GitDiffError.missingRefs(branches: missing, remote: remote)
     }
 
-    if let resolvedCompare {
-        return ["\(resolvedBase!)...\(resolvedCompare)"]
+    return (resolvedBase!, resolvedCompare)
+}
+
+/// Resolve the `spec`'s refs to ones that exist locally, preferring the
+/// remote-tracking branch. Throws `missingRefs` if any side can't be resolved
+/// so the UI can surface a fetch-and-retry action.
+private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
+    let resolved = try await resolveSpecRefs(spec)
+    if let compare = resolved.compare {
+        let range = "\(resolved.base)...\(compare)"
+        gitDiffDebugLog("range base=\(spec.base) -> \(resolved.base) compare=\(spec.compare ?? "-") -> \(compare) args=\(range) dir=\(spec.directory)")
+        return [range]
     }
-    return [resolvedBase!]
+    gitDiffDebugLog("range single base=\(spec.base) -> \(resolved.base) dir=\(spec.directory)")
+    return [resolved.base]
 }
 
 func fetchGitBranches(_ branches: [String], remote: String, directory: String) async throws {
     guard !branches.isEmpty else { return }
+    // Use explicit refspecs so `refs/remotes/<remote>/<branch>` is always
+    // updated, regardless of the user's configured `remote.<remote>.fetch`.
+    let refspecs = branches.map { "+refs/heads/\($0):refs/remotes/\(remote)/\($0)" }
     _ = try await runGit(
-        args: ["fetch", "--no-tags", remote] + branches,
+        args: ["fetch", "--no-tags", remote] + refspecs,
         directory: directory
     )
+}
+
+/// Heuristically detects git errors that signal an unresolvable revision or
+/// range, so callers can surface a fetch-and-retry affordance instead of the
+/// raw stderr message.
+private func looksLikeMissingRevision(_ message: String) -> Bool {
+    let lower = message.lowercased()
+    return lower.contains("ambiguous argument")
+        || lower.contains("unknown revision")
+        || lower.contains("bad revision")
+        || lower.contains("no merge base")
+}
+
+private func rethrowAsMissingRefs(_ error: Error, spec: GitDiffSpec) -> Error {
+    guard case let GitDiffError.processError(msg) = error,
+          looksLikeMissingRevision(msg) else { return error }
+    var branches: [String] = [spec.base]
+    if let compare = spec.compare { branches.append(compare) }
+    return GitDiffError.missingRefs(branches: branches, remote: gitDiffDefaultRemote)
 }
 
 // MARK: - Fetchers
 
 func fetchChangedFiles(spec: GitDiffSpec) async throws -> [GitDiffFile] {
     let rangeArgs = try await resolvedRangeArgs(for: spec)
-    let numstat = try await runGit(
-        args: ["diff", "--numstat", "-z"] + rangeArgs,
-        directory: spec.directory
-    )
-    let nameStatus = try await runGit(
-        args: ["diff", "--name-status", "-z"] + rangeArgs,
-        directory: spec.directory
-    )
+    let numstat: String
+    let nameStatus: String
+    do {
+        numstat = try await runGit(
+            args: ["diff", "--numstat", "-z"] + rangeArgs + ["--"],
+            directory: spec.directory
+        )
+        nameStatus = try await runGit(
+            args: ["diff", "--name-status", "-z"] + rangeArgs + ["--"],
+            directory: spec.directory
+        )
+    } catch {
+        throw rethrowAsMissingRefs(error, spec: spec)
+    }
 
     let stats = parseNumstat(numstat)
     let statuses = parseNameStatus(nameStatus)
+    gitDiffDebugLog("numstat bytes=\(numstat.utf8.count) nameStatus bytes=\(nameStatus.utf8.count) statuses=\(statuses.count) numstatRaw=\(numstat.debugDescription.prefix(300)) nameStatusRaw=\(nameStatus.debugDescription.prefix(300))")
 
     var result: [GitDiffFile] = []
     var seen = Set<String>()
@@ -163,6 +221,150 @@ func fetchChangedFiles(spec: GitDiffSpec) async throws -> [GitDiffFile] {
     return result
 }
 
+/// One conflict region inside a merged file. Line numbers are 1-based and
+/// refer to the merged result (the file produced by `git merge-tree`), so
+/// callers can tell the user "conflict at L42-L60".
+struct GitDiffConflictRegion: Equatable, Sendable, Hashable {
+    let startLine: Int
+    let endLine: Int
+}
+
+/// Conflict info for a single file: the line ranges (in the merged result)
+/// where conflict markers appear. Empty if the file has no conflict.
+struct GitDiffFileConflict: Equatable, Sendable, Hashable {
+    let path: String
+    let regions: [GitDiffConflictRegion]
+}
+
+/// Returns the set of file paths that would conflict if `spec.compare` were
+/// merged into `spec.base`. For working-tree diffs (`compare == nil`), returns
+/// paths currently in an unmerged state per `git ls-files -u`.
+///
+/// Failures (missing `merge-tree` support, unrelated histories, etc.) are
+/// swallowed and logged — conflict marking is a hint, not load-bearing.
+func fetchConflictingPaths(spec: GitDiffSpec) async -> Set<String> {
+    do {
+        if spec.compare != nil {
+            let resolved = try await resolveSpecRefs(spec)
+            guard let compare = resolved.compare else { return [] }
+            // git 2.38+: `merge-tree --write-tree` performs a 3-way merge of
+            // the two commits and exits non-zero with the conflicted paths
+            // listed when conflicts exist. `--name-only --no-messages -z`
+            // produces NUL-separated output: `<tree-oid>\0<path>\0...\0`.
+            let result = try await runGitAllowingNonZero(
+                args: [
+                    "merge-tree",
+                    "--write-tree",
+                    "--name-only",
+                    "--no-messages",
+                    "-z",
+                    resolved.base,
+                    compare,
+                ],
+                directory: spec.directory
+            )
+            // Exit code 0 = clean merge, 1 = conflicts, anything else = error.
+            if result.status == 0 {
+                return []
+            }
+            if result.status != 1 {
+                let errStr = String(data: result.stderr, encoding: .utf8) ?? ""
+                gitDiffDebugLog("merge-tree exit=\(result.status) stderr=\(errStr.prefix(300))")
+                return []
+            }
+            let raw = String(data: result.stdout, encoding: .utf8) ?? ""
+            var tokens = raw.split(separator: "\0", omittingEmptySubsequences: true).map(String.init)
+            // Drop the resulting tree OID (first token).
+            if !tokens.isEmpty { tokens.removeFirst() }
+            return Set(tokens)
+        } else {
+            // Working tree: `git ls-files -u -z` lists unmerged entries with
+            // stage > 0. Multiple stage entries per path; dedup via Set.
+            let raw = try await runGit(
+                args: ["ls-files", "-u", "-z"],
+                directory: spec.directory
+            )
+            var paths = Set<String>()
+            for record in raw.split(separator: "\0", omittingEmptySubsequences: true) {
+                // Format: <mode> <sha> <stage>\t<path>
+                if let tab = record.firstIndex(of: "\t") {
+                    paths.insert(String(record[record.index(after: tab)...]))
+                }
+            }
+            return paths
+        }
+    } catch {
+        gitDiffDebugLog("fetchConflictingPaths failed: \(error)")
+        return []
+    }
+}
+
+/// For a file flagged as conflicting, runs `git merge-tree --write-tree` to
+/// produce the merged tree, reads the merged blob via `git show <tree>:<path>`,
+/// and returns the line ranges where conflict markers appear. Returns `nil` if
+/// no conflict could be computed (e.g., spec has no compare side, merge-tree
+/// failed, or the file isn't actually conflicting).
+func fetchConflictRegions(spec: GitDiffSpec, path: String) async -> GitDiffFileConflict? {
+    guard spec.compare != nil else { return nil }
+    do {
+        let resolved = try await resolveSpecRefs(spec)
+        guard let compare = resolved.compare else { return nil }
+        // Without `--name-only` and with `--no-messages`, merge-tree prints:
+        //   <tree-oid>\n<conflict-info-section>
+        // where each conflict-info line is `<mode> <oid> <stage>\t<path>`.
+        // Exit 1 = conflicts present, 0 = clean.
+        let result = try await runGitAllowingNonZero(
+            args: [
+                "merge-tree",
+                "--write-tree",
+                "--no-messages",
+                resolved.base,
+                compare,
+            ],
+            directory: spec.directory
+        )
+        guard result.status == 1 else { return nil }
+        guard let raw = String(data: result.stdout, encoding: .utf8),
+              let firstNewline = raw.firstIndex(of: "\n") else { return nil }
+        let treeOID = String(raw[..<firstNewline])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !treeOID.isEmpty else { return nil }
+
+        // Read the merged blob. May fail for binary files or files that
+        // resolved cleanly even though other files conflicted.
+        let blob: String
+        do {
+            blob = try await runGit(
+                args: ["show", "\(treeOID):\(path)"],
+                directory: spec.directory
+            )
+        } catch {
+            return nil
+        }
+        let regions = parseConflictRegions(in: blob)
+        return regions.isEmpty ? nil : GitDiffFileConflict(path: path, regions: regions)
+    } catch {
+        gitDiffDebugLog("fetchConflictRegions failed for \(path): \(error)")
+        return nil
+    }
+}
+
+private func parseConflictRegions(in content: String) -> [GitDiffConflictRegion] {
+    var regions: [GitDiffConflictRegion] = []
+    var startLine: Int? = nil
+    var lineNo = 0
+    content.enumerateLines { line, _ in
+        lineNo += 1
+        if line.hasPrefix("<<<<<<<") {
+            startLine = lineNo
+        } else if line.hasPrefix(">>>>>>>"), let s = startLine {
+            regions.append(GitDiffConflictRegion(startLine: s, endLine: lineNo))
+            startLine = nil
+        }
+    }
+    return regions
+}
+
 func fetchUnifiedDiff(spec: GitDiffSpec, file: String) async throws -> String {
     // `-U999999` asks git to include every unchanged line as context, so the
     // renderer shows the whole file with additions/deletions interleaved —
@@ -175,7 +377,69 @@ func fetchUnifiedDiff(spec: GitDiffSpec, file: String) async throws -> String {
         "--no-ext-diff",
         "-U999999",
     ] + rangeArgs + ["--", file]
-    return try await runGit(args: args, directory: spec.directory, stringOutput: true)
+    do {
+        return try await runGit(args: args, directory: spec.directory, stringOutput: true)
+    } catch {
+        throw rethrowAsMissingRefs(error, spec: spec)
+    }
+}
+
+/// Same as `fetchUnifiedDiff`, but for conflicting files diffs `base` against
+/// the merged tree produced by `git merge-tree --write-tree`. The merged blob
+/// contains `<<<<<<<`/`=======`/`>>>>>>>` markers inline, so the diff renderer
+/// (which detects those via `conflictMarkerKind`) shows the conflict regions
+/// directly on the affected lines instead of needing a separate banner.
+///
+/// Falls back to the regular diff if the merged tree can't be produced (no
+/// compare side, missing `merge-tree --write-tree` support, etc.).
+func fetchUnifiedDiffWithConflictMarkers(spec: GitDiffSpec, file: String) async throws -> String {
+    guard spec.compare != nil else {
+        return try await fetchUnifiedDiff(spec: spec, file: file)
+    }
+    let resolved: (base: String, compare: String?)
+    do {
+        resolved = try await resolveSpecRefs(spec)
+    } catch {
+        return try await fetchUnifiedDiff(spec: spec, file: file)
+    }
+    guard let compare = resolved.compare else {
+        return try await fetchUnifiedDiff(spec: spec, file: file)
+    }
+    do {
+        let mergeResult = try await runGitAllowingNonZero(
+            args: [
+                "merge-tree",
+                "--write-tree",
+                "--no-messages",
+                resolved.base,
+                compare,
+            ],
+            directory: spec.directory
+        )
+        guard mergeResult.status == 1,
+              let raw = String(data: mergeResult.stdout, encoding: .utf8),
+              let firstNewline = raw.firstIndex(of: "\n") else {
+            return try await fetchUnifiedDiff(spec: spec, file: file)
+        }
+        let treeOID = String(raw[..<firstNewline])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !treeOID.isEmpty else {
+            return try await fetchUnifiedDiff(spec: spec, file: file)
+        }
+        let args: [String] = [
+            "-c", "color.ui=never",
+            "diff",
+            "--no-color",
+            "--no-ext-diff",
+            "-U999999",
+            resolved.base,
+            treeOID,
+            "--", file,
+        ]
+        return try await runGit(args: args, directory: spec.directory, stringOutput: true)
+    } catch {
+        return try await fetchUnifiedDiff(spec: spec, file: file)
+    }
 }
 
 // MARK: - git process runner
@@ -195,6 +459,56 @@ private func runGit(
             }
         }
     }
+}
+
+/// Runs git but does not throw on non-zero exit. Returns stdout/stderr bytes
+/// alongside the termination status so callers (e.g., `merge-tree`, which uses
+/// exit 1 to signal conflicts) can interpret the result.
+private struct GitRunResult: Sendable {
+    let stdout: Data
+    let stderr: Data
+    let status: Int32
+}
+
+private func runGitAllowingNonZero(
+    args: [String],
+    directory: String
+) async throws -> GitRunResult {
+    try await withCheckedThrowingContinuation { (cont: CheckedContinuation<GitRunResult, Error>) in
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                let result = try runGitAllowingNonZeroSync(args: args, directory: directory)
+                cont.resume(returning: result)
+            } catch {
+                cont.resume(throwing: error)
+            }
+        }
+    }
+}
+
+private func runGitAllowingNonZeroSync(args: [String], directory: String) throws -> GitRunResult {
+    guard let gitPath = findGitExecutable() else {
+        throw GitDiffError.gitNotFound
+    }
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: gitPath)
+    var env = ProcessInfo.processInfo.environment
+    env["GIT_PAGER"] = "cat"
+    env["PAGER"] = "cat"
+    env["LC_ALL"] = "C"
+    process.environment = env
+    process.arguments = args
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+    return GitRunResult(stdout: outData, stderr: errData, status: process.terminationStatus)
 }
 
 private func runGitSync(args: [String], directory: String) throws -> String {
@@ -322,6 +636,30 @@ enum SideBySideLineKind: Sendable, Equatable {
     case empty
     case hunk
     case commentPlaceholder
+    /// `<<<<<<<` marker (start of "ours" in a merge conflict).
+    case conflictOurs
+    /// `|||||||` marker (base in diff3 conflict style).
+    case conflictBase
+    /// `=======` separator between ours/theirs.
+    case conflictSeparator
+    /// `>>>>>>>` marker (end of "theirs").
+    case conflictTheirs
+}
+
+/// Returns the conflict-marker kind for a raw content line (without the
+/// leading `+`/`-`/space diff prefix), or `nil` if the line is not a marker.
+func conflictMarkerKind(forContent content: String) -> SideBySideLineKind? {
+    if content.hasPrefix("<<<<<<<") { return .conflictOurs }
+    if content.hasPrefix("|||||||") { return .conflictBase }
+    if content.hasPrefix(">>>>>>>") { return .conflictTheirs }
+    // `=======` is also used inside docstrings/setext underlines, so we
+    // require the line to be only `=` characters (allowing optional trailing
+    // label like `======= HEAD`).
+    if content.hasPrefix("=======") {
+        let body = content.dropFirst(7)
+        if body.isEmpty || body.first == " " { return .conflictSeparator }
+    }
+    return nil
 }
 
 struct SideBySideCell: Sendable {
@@ -400,10 +738,11 @@ func parseSideBySideRows(from diff: String) -> [SideBySideRow] {
         if line.hasPrefix(" ") || line.isEmpty {
             flushQueues()
             let content = line.isEmpty ? "" : String(line.dropFirst())
+            let kind: SideBySideLineKind = conflictMarkerKind(forContent: content) ?? .context
             rows.append(.pair(
                 id: nextId,
-                left: SideBySideCell(lineNumber: oldLine, content: content, kind: .context),
-                right: SideBySideCell(lineNumber: newLine, content: content, kind: .context)
+                left: SideBySideCell(lineNumber: oldLine, content: content, kind: kind),
+                right: SideBySideCell(lineNumber: newLine, content: content, kind: kind)
             ))
             nextId += 1
             oldLine += 1
@@ -412,13 +751,15 @@ func parseSideBySideRows(from diff: String) -> [SideBySideRow] {
         }
         if line.hasPrefix("-") {
             let content = String(line.dropFirst())
-            delQueue.append(SideBySideCell(lineNumber: oldLine, content: content, kind: .deleted))
+            let kind: SideBySideLineKind = conflictMarkerKind(forContent: content) ?? .deleted
+            delQueue.append(SideBySideCell(lineNumber: oldLine, content: content, kind: kind))
             oldLine += 1
             continue
         }
         if line.hasPrefix("+") {
             let content = String(line.dropFirst())
-            addQueue.append(SideBySideCell(lineNumber: newLine, content: content, kind: .added))
+            let kind: SideBySideLineKind = conflictMarkerKind(forContent: content) ?? .added
+            addQueue.append(SideBySideCell(lineNumber: newLine, content: content, kind: kind))
             newLine += 1
             continue
         }

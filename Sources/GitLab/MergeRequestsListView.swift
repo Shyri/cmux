@@ -8,21 +8,35 @@ final class MergeRequestsState: ObservableObject {
     @Published var isLoading = false
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
+    @Published private(set) var projectWebURL: String?
 
     private var fetchTask: Task<Void, Never>?
+    private var approvalsTask: Task<Void, Never>?
+    private var remoteTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
+        approvalsTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
         if lastDirectory != directory {
             mergeRequests = []
+            projectWebURL = nil
         }
         lastDirectory = directory
         isLoading = true
         errorMessage = nil
+
+        remoteTask = Task { [weak self] in
+            let url = await gitLabProjectWebURL(directory: directory)
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.projectWebURL = url
+        }
 
         fetchTask = Task { [weak self] in
             let result: Result<[GitLabMergeRequest], Error>
@@ -40,6 +54,7 @@ final class MergeRequestsState: ObservableObject {
             case .success(let mrs):
                 self.mergeRequests = mrs
                 self.errorMessage = nil
+                self.loadApprovals(for: mrs, directory: directory, token: token)
             case .failure(let error):
                 self.mergeRequests = []
                 self.errorMessage = self.messageFor(error: error)
@@ -50,11 +65,53 @@ final class MergeRequestsState: ObservableObject {
 
     func clear() {
         fetchTask?.cancel()
+        approvalsTask?.cancel()
+        remoteTask?.cancel()
         requestCounter &+= 1
         mergeRequests = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
+        projectWebURL = nil
+    }
+
+    private func loadApprovals(
+        for mrs: [GitLabMergeRequest],
+        directory: String,
+        token: UInt64
+    ) {
+        let targets: [(projectId: Int, iid: Int)] = mrs
+            .filter { $0.state == "opened" && $0.projectId > 0 }
+            .map { ($0.projectId, $0.iid) }
+        guard !targets.isEmpty else { return }
+
+        approvalsTask = Task { [weak self] in
+            await withTaskGroup(of: (Int, GitLabMRApproval?).self) { group in
+                for t in targets {
+                    group.addTask {
+                        do {
+                            let a = try await fetchGitLabMRApproval(
+                                projectId: t.projectId,
+                                iid: t.iid,
+                                in: directory
+                            )
+                            return (t.iid, a)
+                        } catch {
+                            return (t.iid, nil)
+                        }
+                    }
+                }
+                for await (iid, approval) in group {
+                    guard let self else { return }
+                    if Task.isCancelled || token != self.requestCounter
+                        || directory != self.lastDirectory { return }
+                    guard let approval else { continue }
+                    if let idx = self.mergeRequests.firstIndex(where: { $0.iid == iid }) {
+                        self.mergeRequests[idx].approval = approval
+                    }
+                }
+            }
+        }
     }
 
     private func messageFor(error: Error) -> String {
@@ -99,9 +156,13 @@ struct MergeRequestsListView: View {
         .onAppear { refreshIfNeeded() }
         .onChange(of: workspace.id) { _ in
             state.clear()
+            reviewerFilter = ""
             refreshIfNeeded()
         }
-        .onChange(of: workspace.currentDirectory) { _ in refreshIfNeeded() }
+        .onChange(of: workspace.currentDirectory) { _ in
+            reviewerFilter = ""
+            refreshIfNeeded()
+        }
     }
 
     private var availableReviewers: [GitLabReviewer] {
@@ -135,6 +196,20 @@ struct MergeRequestsListView: View {
                     .background(
                         Capsule().fill(.secondary.opacity(0.15))
                     )
+            }
+            if let url = panelURL {
+                Button {
+                    NSWorkspace.shared.open(url)
+                } label: {
+                    Image(systemName: "arrow.up.forward.square")
+                        .font(.caption.weight(.medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(String(
+                    localized: "mr.sidebar.openPanel",
+                    defaultValue: "Open merge requests in browser"
+                ))
             }
             Spacer()
             if state.isLoading {
@@ -311,6 +386,11 @@ struct MergeRequestsListView: View {
         guard !dir.isEmpty else { return }
         state.refresh(directory: dir)
     }
+
+    private var panelURL: URL? {
+        guard let base = state.projectWebURL, !base.isEmpty else { return nil }
+        return URL(string: "\(base)/-/merge_requests")
+    }
 }
 
 // MARK: - MR Card
@@ -341,7 +421,8 @@ private struct MRCardView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 1.0 : 0.6))
+                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
+                .opacity(isHovered ? 1.0 : 0.85)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
@@ -445,6 +526,7 @@ private struct MRCardView: View {
                             .fill(.orange.opacity(0.15))
                     )
             }
+            approvalBadge
             Spacer()
             if let created = mr.createdAt {
                 Text(relativeTime(from: created))
@@ -453,6 +535,30 @@ private struct MRCardView: View {
                     .help(fullDate(created))
             }
         }
+    }
+
+    @ViewBuilder
+    private var approvalBadge: some View {
+        if let approval = mr.approval, !approval.approvedBy.isEmpty {
+            Image(systemName: "checkmark.seal.fill")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.green)
+                .help(approvalTooltip(approval))
+        }
+    }
+
+    private func approvalTooltip(_ a: GitLabMRApproval) -> String {
+        if a.approvedBy.isEmpty {
+            return String(localized: "mr.card.approved", defaultValue: "Approved")
+        }
+        let names = a.approvedBy
+            .map { $0.name.isEmpty ? "@\($0.username)" : $0.name }
+            .joined(separator: ", ")
+        let template = String(
+            localized: "mr.card.approvedBy",
+            defaultValue: "Approved by %@"
+        )
+        return String(format: template, names)
     }
 
     private func fullDate(_ date: Date) -> String {

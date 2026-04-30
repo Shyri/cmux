@@ -6,8 +6,17 @@ import AppKit
 /// protocol and skips `makeFirstResponder` when a notes responder is active.
 protocol NotesSidebarResponder: AnyObject {}
 
+extension Notification.Name {
+    /// Posted by a Workspace when the user clicks the Bonsplit "toggle notes" button.
+    /// The userInfo dictionary contains `Workspace.toggleNotesWorkspaceIdKey` mapping to the workspace UUID.
+    static let cmuxWorkspaceRequestToggleNotesSidebar = Notification.Name("cmuxWorkspaceRequestToggleNotesSidebar")
+}
+
 @MainActor
 final class NotesSidebarState: ObservableObject {
+    /// Mirror of the *currently-selected* workspace's `notesSidebarVisible` flag for this window.
+    /// Per-workspace persistence lives on `Workspace.notesSidebarVisible`; this value tracks the
+    /// selected workspace so existing SwiftUI observers can drive sidebar layout unchanged.
     @Published var isVisible: Bool
     @Published var persistedWidth: CGFloat
 

@@ -428,6 +428,9 @@ final class DiffOverviewRuler: NSView {
         // Left half: markers for the left side (deletions). Right half:
         // markers for the right side (additions). Hunk headers get a faint
         // full-width tint so they're still visible as "there's a change here".
+        // Conflict markers get a strong magenta band on both halves so they're
+        // unmissable in the overview.
+        let conflictColor = NSColor(srgbRed: 220/255, green: 90/255, blue: 200/255, alpha: 0.95)
         drawMarkers(
             kinds: leftKinds,
             xRange: 1..<(midX - 0.5),
@@ -435,7 +438,8 @@ final class DiffOverviewRuler: NSView {
             minBlockHeight: minBlockHeight,
             addedColor: nil,
             deletedColor: NSColor(srgbRed: 255/255, green: 75/255, blue: 75/255, alpha: 0.9),
-            hunkColor: nil
+            hunkColor: nil,
+            conflictColor: conflictColor
         )
         drawMarkers(
             kinds: rightKinds,
@@ -444,7 +448,8 @@ final class DiffOverviewRuler: NSView {
             minBlockHeight: minBlockHeight,
             addedColor: NSColor(srgbRed: 155/255, green: 185/255, blue: 85/255, alpha: 0.9),
             deletedColor: nil,
-            hunkColor: nil
+            hunkColor: nil,
+            conflictColor: conflictColor
         )
         // Viewport thumb, drawn last.
         if thumbVisibleFraction < 1 {
@@ -465,7 +470,8 @@ final class DiffOverviewRuler: NSView {
         minBlockHeight: CGFloat,
         addedColor: NSColor?,
         deletedColor: NSColor?,
-        hunkColor: NSColor?
+        hunkColor: NSColor?,
+        conflictColor: NSColor? = nil
     ) {
         guard !kinds.isEmpty else { return }
         let x = xRange.lowerBound
@@ -482,6 +488,8 @@ final class DiffOverviewRuler: NSView {
                 case .added: color = addedColor
                 case .deleted: color = deletedColor
                 case .hunk: color = hunkColor
+                case .conflictOurs, .conflictBase, .conflictSeparator, .conflictTheirs:
+                    color = conflictColor
                 default: color = nil
                 }
                 if let color {
@@ -642,13 +650,15 @@ final class DiffTextView: NSTextView {
         }
         // Ensure a host exists for every widget.
         for widget in inlineWidgets {
+            let cap: CGFloat? = widget.useInternalScroll ? widget.reservedHeight : nil
+            let card = InlineCommentCard(discussion: widget.discussion, maxHeight: cap)
             if inlineHosts[widget.id] == nil {
-                let host = NSHostingView(rootView: InlineCommentCard(discussion: widget.discussion))
+                let host = NSHostingView(rootView: card)
                 host.translatesAutoresizingMaskIntoConstraints = true
                 addSubview(host)
                 inlineHosts[widget.id] = host
             } else if let host = inlineHosts[widget.id] {
-                host.rootView = InlineCommentCard(discussion: widget.discussion)
+                host.rootView = card
             }
         }
         needsLayout = true
