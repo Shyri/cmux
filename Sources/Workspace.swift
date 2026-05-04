@@ -366,7 +366,19 @@ extension Workspace {
         }
         progress = snapshot.progress.map { SidebarProgressState(value: $0.value, label: $0.label) }
         gitBranch = snapshot.gitBranch.map { SidebarGitBranchState(branch: $0.branch, isDirty: $0.isDirty) }
-        notes = (snapshot.notes ?? []).map { snap in
+        // Reconcile notes between the snapshot and the dedicated store. Order
+        // of precedence:
+        //   1. Active notes already in the store (most recent edits) win — do
+        //      nothing, the store keeps its content.
+        //   2. Otherwise, any archived notes for this workspaceId get auto-
+        //      restored (the user closed the workspace and is now reopening
+        //      it via a preset; "what I last had" trumps the snapshot's
+        //      historical inline copy).
+        //   3. Otherwise, migrate inline notes from the snapshot (covers the
+        //      legacy session.json layout and freshly-loaded presets that
+        //      were saved before this store existed).
+        let store = WorkspaceNotesStore.shared
+        let inlineNotes = (snapshot.notes ?? []).map { snap in
             WorkspaceNote(
                 id: snap.id,
                 title: snap.title,
@@ -374,6 +386,13 @@ extension Workspace {
                 isCompleted: snap.isCompleted ?? false,
                 createdAt: Date(timeIntervalSince1970: snap.createdAt)
             )
+        }
+        if store.hasMigratedNotes(for: id) {
+            // Active notes win — leave them alone.
+        } else if store.hasArchivedNotes(forOriginalWorkspaceId: id) {
+            _ = store.restoreAllArchivedNotes(for: id)
+        } else {
+            store.migrateInlineNotesIfNeeded(inlineNotes, for: id)
         }
         notesSidebarVisible = snapshot.notesSidebarVisible ?? false
 
@@ -6502,8 +6521,21 @@ struct ClosedBrowserPanelRestoreSnapshot {
 @MainActor
 final class Workspace: Identifiable, ObservableObject {
     let id: UUID
-    @Published var title: String
-    @Published var customTitle: String?
+    @Published var title: String {
+        didSet { recordCurrentTitleForNotesStore() }
+    }
+    @Published var customTitle: String? {
+        didSet { recordCurrentTitleForNotesStore() }
+    }
+
+    /// Cache the current best display title in `WorkspaceNotesStore` so the
+    /// Manage Notes window can label this workspace's notes even after the
+    /// workspace becomes dormant (e.g., loading a different preset).
+    private func recordCurrentTitleForNotesStore() {
+        let trimmed = customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let resolved = (trimmed?.isEmpty == false) ? trimmed! : title
+        WorkspaceNotesStore.shared.recordTitle(resolved, for: id)
+    }
     @Published var customDescription: String?
     @Published var isPinned: Bool = false
     @Published var customColor: String?  // hex string, e.g. "#C0392B"
@@ -6591,7 +6623,14 @@ final class Workspace: Identifiable, ObservableObject {
     @Published var panelGitBranches: [UUID: SidebarGitBranchState] = [:]
     @Published var pullRequest: SidebarPullRequestState?
     @Published var panelPullRequests: [UUID: SidebarPullRequestState] = [:]
-    @Published var notes: [WorkspaceNote] = []
+    /// Notes are owned by `WorkspaceNotesStore` (single source of truth, with
+    /// debounced disk persistence). This computed forwarder keeps the existing
+    /// `workspace.notes` API for backwards compatibility while change
+    /// notifications are sourced from the store's `@Published` properties.
+    var notes: [WorkspaceNote] {
+        get { WorkspaceNotesStore.shared.notes(for: id) }
+        set { WorkspaceNotesStore.shared.setNotes(newValue, for: id) }
+    }
     @Published var notesSidebarVisible: Bool = false {
         didSet {
             guard oldValue != notesSidebarVisible else { return }
@@ -6767,7 +6806,10 @@ final class Workspace: Identifiable, ObservableObject {
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
             splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down"),
-            toggleNotes: String(localized: "bonsplit.toggleNotes.tooltip", defaultValue: "Toggle Notes")
+            toggleNotes: String(localized: "bonsplit.toggleNotes.tooltip", defaultValue: "Toggle Notes"),
+            openInFinder: String(localized: "bonsplit.openInFinder.tooltip", defaultValue: "Open in Finder"),
+            openInIntelliJ: String(localized: "bonsplit.openInIntelliJ.tooltip", defaultValue: "Open in IntelliJ IDEA"),
+            openInAndroidStudio: String(localized: "bonsplit.openInAndroidStudio.tooltip", defaultValue: "Open in Android Studio")
         )
     }
 
@@ -6804,6 +6846,10 @@ final class Workspace: Identifiable, ObservableObject {
             tabTitleFontSize: tabTitleFontSize,
             showNotesButton: true,
             notesButtonActive: notesButtonActive,
+            showOpenInFinderButton: true,
+            showOpenInIDEButton: true,
+            openInIDEKind: "intellij",
+            openButtonsEnabled: false,
             splitButtonTooltips: Self.currentSplitButtonTooltips(),
             enableAnimations: false,
             chromeColors: .init(
@@ -6820,6 +6866,99 @@ final class Workspace: Identifiable, ObservableObject {
         guard configuration.appearance.notesButtonActive != notesSidebarVisible else { return }
         configuration.appearance.notesButtonActive = notesSidebarVisible
         bonsplitController.configuration = configuration
+    }
+
+    /// Recompute the open-in-IDE button's icon (IntelliJ vs Android Studio) and the
+    /// enabled state of the open-in-Finder/IDE buttons based on the focused pane's cwd.
+    /// Cheap to call repeatedly: only mutates `bonsplitController.configuration` when
+    /// the resolved values actually change.
+    func recomputeOpenInIDEKind() {
+        let trimmed: String? = {
+            let raw: String
+            if let panelId = focusedPanelId, let dir = panelDirectories[panelId] {
+                raw = dir
+            } else {
+                raw = currentDirectory
+            }
+            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            return t.isEmpty ? nil : t
+        }()
+
+        let directoryExists: Bool = {
+            guard let trimmed else { return false }
+            var isDir: ObjCBool = false
+            return FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDir) && isDir.boolValue
+        }()
+
+        let nextKind: String = {
+            guard directoryExists, let dir = trimmed else { return "intellij" }
+            let gradle = (dir as NSString).appendingPathComponent("build.gradle")
+            let gradleKts = (dir as NSString).appendingPathComponent("build.gradle.kts")
+            if FileManager.default.fileExists(atPath: gradle)
+                || FileManager.default.fileExists(atPath: gradleKts) {
+                return "androidStudio"
+            }
+            return "intellij"
+        }()
+
+        var configuration = bonsplitController.configuration
+        var changed = false
+        if configuration.appearance.openInIDEKind != nextKind {
+            configuration.appearance.openInIDEKind = nextKind
+            changed = true
+        }
+        if configuration.appearance.openButtonsEnabled != directoryExists {
+            configuration.appearance.openButtonsEnabled = directoryExists
+            changed = true
+        }
+        if changed {
+            bonsplitController.configuration = configuration
+#if DEBUG
+            dlog("openInIDE.kind=\(nextKind) enabled=\(directoryExists) dir=\(trimmed ?? "nil")")
+#endif
+        }
+    }
+
+    /// Resolve the working directory for the given pane: cwd of the pane's selected
+    /// terminal tab → fallback to the workspace's `currentDirectory`. Returns `nil`
+    /// when the resolved path doesn't exist on disk.
+    fileprivate func resolvedDirectoryURL(forPane pane: PaneID) -> URL? {
+        let raw: String = {
+            if let tab = bonsplitController.selectedTab(inPane: pane),
+               let panelId = panelIdFromSurfaceId(tab.id),
+               let dir = panelDirectories[panelId],
+               !dir.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                return dir
+            }
+            return currentDirectory
+        }()
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDir), isDir.boolValue else {
+            return nil
+        }
+        return URL(fileURLWithPath: trimmed, isDirectory: true)
+    }
+
+    /// Open the resolved working directory of the given pane in an external app.
+    /// Mirrors the pattern of `openFocusedDirectory` in ContentView.
+    fileprivate func openExternalDirectory(target: TerminalDirectoryOpenTarget, inPane pane: PaneID) {
+        guard let url = resolvedDirectoryURL(forPane: pane) else {
+            NSSound.beep()
+            return
+        }
+        switch target {
+        case .finder:
+            NSWorkspace.shared.selectFile(nil, inFileViewerRootedAtPath: url.path)
+        default:
+            guard let appURL = target.applicationURL() else {
+                NSSound.beep()
+                return
+            }
+            let cfg = NSWorkspace.OpenConfiguration()
+            NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: cfg)
+        }
     }
 
     func applyGhosttyChrome(from config: GhosttyConfig, reason: String = "unspecified") {
@@ -6998,6 +7137,8 @@ final class Workspace: Identifiable, ObservableObject {
             bonsplitController.selectTab(initialTabId)
         }
         tmuxLayoutSnapshot = bonsplitController.layoutSnapshot()
+        recordCurrentTitleForNotesStore()
+        recomputeOpenInIDEKind()
     }
 
     deinit {
@@ -7615,6 +7756,9 @@ final class Workspace: Identifiable, ObservableObject {
         // Update current directory if this is the focused panel
         if panelId == focusedPanelId, currentDirectory != trimmed {
             currentDirectory = trimmed
+        }
+        if panelId == focusedPanelId {
+            recomputeOpenInIDEKind()
         }
     }
 
@@ -11461,6 +11605,13 @@ extension Workspace: BonsplitDelegate {
         gitBranch = panelGitBranches[panelId]
         pullRequest = panelPullRequests[panelId]
 
+        // Defer the IDE kind recompute so we don't mutate bonsplit's
+        // configuration (which triggers a SwiftUI re-render of the whole tab
+        // bar tree) inside the workspace-switch hot path.
+        DispatchQueue.main.async { [weak self] in
+            self?.recomputeOpenInIDEKind()
+        }
+
         // Post notification
         NotificationCenter.default.post(
             name: .ghosttyDidFocusSurface,
@@ -12188,6 +12339,15 @@ extension Workspace: BonsplitDelegate {
             object: nil,
             userInfo: [Workspace.toggleNotesWorkspaceIdKey: id]
         )
+    }
+
+    func splitTabBar(_ controller: BonsplitController, didRequestOpenInFinderInPane pane: PaneID) {
+        openExternalDirectory(target: .finder, inPane: pane)
+    }
+
+    func splitTabBar(_ controller: BonsplitController, didRequestOpenInIDEInPane pane: PaneID, kind: String?) {
+        let target: TerminalDirectoryOpenTarget = (kind == "androidStudio") ? .androidStudio : .intellij
+        openExternalDirectory(target: target, inPane: pane)
     }
 
     func splitTabBar(_ controller: BonsplitController, didRequestTabContextAction action: TabContextAction, for tab: Bonsplit.Tab, inPane pane: PaneID) {
