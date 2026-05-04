@@ -17,6 +17,7 @@ struct GitLabAssignee: Equatable, Hashable, Sendable {
 struct GitLabIssue: Identifiable, Equatable, Sendable {
     let id: Int
     let iid: Int
+    let projectId: Int
     let title: String
     let state: String
     let authorName: String
@@ -28,6 +29,10 @@ struct GitLabIssue: Identifiable, Equatable, Sendable {
     let userNotesCount: Int
     let createdAt: Date?
     let updatedAt: Date?
+    /// Count of open merge requests related to this issue. `nil` means not
+    /// loaded yet (lazy fetch via
+    /// `projects/:id/issues/:iid/related_merge_requests`).
+    var relatedOpenMRsCount: Int?
 }
 
 // MARK: - JSON Decoding (glab issue list -F json)
@@ -47,6 +52,7 @@ private struct GLIssueMilestone: Decodable {
 private struct GLIssueResponse: Decodable {
     let id: Int?
     let iid: Int?
+    let project_id: Int?
     let title: String?
     let state: String?
     let author: GLIssueAuthor?
@@ -74,6 +80,7 @@ private struct GLIssueResponse: Decodable {
         return GitLabIssue(
             id: id ?? 0,
             iid: iid ?? 0,
+            projectId: project_id ?? 0,
             title: title ?? "",
             state: state ?? "opened",
             authorName: author?.name ?? "",
@@ -89,7 +96,8 @@ private struct GLIssueResponse: Decodable {
             },
             userNotesCount: user_notes_count ?? 0,
             createdAt: Self.parseDate(created_at),
-            updatedAt: Self.parseDate(updated_at)
+            updatedAt: Self.parseDate(updated_at),
+            relatedOpenMRsCount: nil
         )
     }
 
@@ -172,6 +180,55 @@ private func trimmingNonJSONPrefix(_ data: Data) -> Data {
         return data
     }
     return data.subdata(in: firstBracket..<data.endIndex)
+}
+
+// MARK: - Related Merge Requests
+
+private struct GLRelatedMRResponse: Decodable {
+    let state: String?
+}
+
+/// Runs `glab api projects/:projectId/issues/:iid/related_merge_requests` and
+/// returns the count of merge requests in the `opened` state.
+func fetchGitLabIssueOpenRelatedMRsCount(
+    projectId: Int,
+    iid: Int,
+    in directory: String
+) async throws -> Int {
+    guard let glabPath = findGlabPath() else {
+        throw GitLabIssueFetchError.glabNotFound
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = [
+        "api",
+        "projects/\(projectId)/issues/\(iid)/related_merge_requests",
+    ]
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        throw GitLabIssueFetchError.processError(errStr)
+    }
+
+    guard !outData.isEmpty else { return 0 }
+    let trimmed = trimmingNonJSONPrefix(outData)
+    let decoded = try JSONDecoder().decode([GLRelatedMRResponse].self, from: trimmed)
+    return decoded.filter { $0.state == "opened" }.count
 }
 
 private func findGlabPath() -> String? {

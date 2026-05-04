@@ -13,11 +13,13 @@ final class IssuesState: ObservableObject {
 
     private var fetchTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
+    private var relatedMRsTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
         remoteTask?.cancel()
+        relatedMRsTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
@@ -53,6 +55,7 @@ final class IssuesState: ObservableObject {
             case .success(let items):
                 self.issues = items
                 self.errorMessage = nil
+                self.loadRelatedMRs(for: items, directory: directory, token: token)
             case .failure(let error):
                 self.issues = []
                 self.errorMessage = self.messageFor(error: error)
@@ -64,12 +67,65 @@ final class IssuesState: ObservableObject {
     func clear() {
         fetchTask?.cancel()
         remoteTask?.cancel()
+        relatedMRsTask?.cancel()
         requestCounter &+= 1
         issues = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
         projectWebURL = nil
+    }
+
+    private func loadRelatedMRs(
+        for items: [GitLabIssue],
+        directory: String,
+        token: UInt64
+    ) {
+        let targets: [(projectId: Int, iid: Int)] = items
+            .filter { $0.state == "opened" && $0.projectId > 0 }
+            .map { ($0.projectId, $0.iid) }
+        guard !targets.isEmpty else { return }
+
+        relatedMRsTask = Task { [weak self] in
+            await withTaskGroup(of: (Int, Int?).self) { group in
+                let maxConcurrent = 5
+                var iter = targets.makeIterator()
+                var inFlight = 0
+
+                func enqueueNext() {
+                    guard let t = iter.next() else { return }
+                    inFlight += 1
+                    group.addTask {
+                        do {
+                            let count = try await fetchGitLabIssueOpenRelatedMRsCount(
+                                projectId: t.projectId,
+                                iid: t.iid,
+                                in: directory
+                            )
+                            return (t.iid, count)
+                        } catch {
+                            return (t.iid, nil)
+                        }
+                    }
+                }
+
+                for _ in 0..<min(maxConcurrent, targets.count) { enqueueNext() }
+
+                while inFlight > 0 {
+                    guard let (iid, count) = await group.next() else { break }
+                    inFlight -= 1
+                    enqueueNext()
+
+                    guard let self else { return }
+                    if Task.isCancelled || token != self.requestCounter
+                        || directory != self.lastDirectory { return }
+                    guard let count else { continue }
+                    if let idx = self.issues.firstIndex(where: { $0.iid == iid }) {
+                        self.issues[idx].relatedOpenMRsCount = count
+                    }
+                }
+            }
+        }
     }
 
     private func messageFor(error: Error) -> String {
@@ -447,6 +503,22 @@ private struct IssueCardView: View {
                 .background(Capsule().fill(Color.accentColor.opacity(0.15)))
                 .overlay(Capsule().strokeBorder(Color.accentColor.opacity(0.35), lineWidth: 0.5))
                 .help(String(localized: "issue.card.comments", defaultValue: "Comments"))
+            }
+            if let openMRs = issue.relatedOpenMRsCount, openMRs > 0 {
+                HStack(spacing: 3) {
+                    Image(systemName: "arrow.triangle.pull")
+                        .font(.system(size: 10, weight: .semibold))
+                    Text("\(openMRs)")
+                        .font(.system(size: 10, weight: .bold))
+                }
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().fill(Color.orange.opacity(0.15)))
+                .overlay(Capsule().strokeBorder(Color.orange.opacity(0.35), lineWidth: 0.5))
+                .help(openMRs == 1
+                    ? String(localized: "issue.card.openMR", defaultValue: "1 open merge request")
+                    : String(format: String(localized: "issue.card.openMRs", defaultValue: "%d open merge requests"), openMRs))
             }
             Spacer()
             if let updated = issue.updatedAt {
