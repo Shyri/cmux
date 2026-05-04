@@ -144,19 +144,27 @@ final class IssuesState: ObservableObject {
 
 // MARK: - Issues List View
 
-private let kNoMilestoneSentinel = "__none__"
-
 struct IssuesListView: View {
     @ObservedObject var workspace: Workspace
     @StateObject private var state = IssuesState()
+    @ObservedObject private var filtersStore = GitLabIssueFiltersStore.shared
     @State private var milestoneFilter: String = ""  // "" = all, kNoMilestoneSentinel = no milestone, else milestone title
+    @State private var assigneeFilter: String = ""  // "" = all, kNoAssigneeSentinel = unassigned, else username
+
+    private var hasMilestoneOptions: Bool {
+        !availableMilestones.isEmpty || state.issues.contains(where: { $0.milestone == nil })
+    }
+
+    private var hasAssigneeOptions: Bool {
+        !availableAssignees.isEmpty || state.issues.contains(where: { $0.assignees.isEmpty })
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             header
             Divider()
-            if !availableMilestones.isEmpty || state.issues.contains(where: { $0.milestone == nil }) {
-                milestoneFilterBar
+            if hasMilestoneOptions || hasAssigneeOptions {
+                filterBar
                 Divider()
             }
             if state.isLoading && state.issues.isEmpty {
@@ -169,11 +177,29 @@ struct IssuesListView: View {
                 list
             }
         }
-        .onAppear { refreshIfNeeded() }
-        .onChange(of: workspace.currentDirectory) { _ in
-            milestoneFilter = ""
+        .onAppear {
+            loadPersistedFilters()
             refreshIfNeeded()
         }
+        .onChange(of: workspace.id) { _ in
+            loadPersistedFilters()
+            refreshIfNeeded()
+        }
+        .onChange(of: workspace.currentDirectory) { _ in
+            refreshIfNeeded()
+        }
+        .onChange(of: milestoneFilter) { newValue in
+            filtersStore.setMilestoneFilter(newValue, for: workspace.id)
+        }
+        .onChange(of: assigneeFilter) { newValue in
+            filtersStore.setAssigneeFilter(newValue, for: workspace.id)
+        }
+    }
+
+    private func loadPersistedFilters() {
+        let stored = filtersStore.filters(for: workspace.id)
+        if milestoneFilter != stored.milestone { milestoneFilter = stored.milestone }
+        if assigneeFilter != stored.assignee { assigneeFilter = stored.assignee }
     }
 
     private var availableMilestones: [GitLabMilestone] {
@@ -195,12 +221,50 @@ struct IssuesListView: View {
         }
     }
 
-    private var filteredIssues: [GitLabIssue] {
-        if milestoneFilter.isEmpty { return state.issues }
-        if milestoneFilter == kNoMilestoneSentinel {
-            return state.issues.filter { $0.milestone == nil }
+    private var availableAssignees: [GitLabAssignee] {
+        var seen = Set<String>()
+        var result: [GitLabAssignee] = []
+        for issue in state.issues {
+            for a in issue.assignees {
+                let key = a.username.isEmpty ? a.name : a.username
+                guard !key.isEmpty else { continue }
+                if seen.insert(key).inserted {
+                    result.append(a)
+                }
+            }
         }
-        return state.issues.filter { $0.milestone?.title == milestoneFilter }
+        return result.sorted { lhs, rhs in
+            let l = (lhs.name.isEmpty ? lhs.username : lhs.name).lowercased()
+            let r = (rhs.name.isEmpty ? rhs.username : rhs.name).lowercased()
+            return l < r
+        }
+    }
+
+    private var filteredIssues: [GitLabIssue] {
+        var result = state.issues
+
+        if !milestoneFilter.isEmpty {
+            if milestoneFilter == kNoMilestoneSentinel {
+                result = result.filter { $0.milestone == nil }
+            } else {
+                result = result.filter { $0.milestone?.title == milestoneFilter }
+            }
+        }
+
+        if !assigneeFilter.isEmpty {
+            if assigneeFilter == kNoAssigneeSentinel {
+                result = result.filter { $0.assignees.isEmpty }
+            } else {
+                result = result.filter { issue in
+                    issue.assignees.contains { a in
+                        let key = a.username.isEmpty ? a.name : a.username
+                        return key == assigneeFilter
+                    }
+                }
+            }
+        }
+
+        return result
     }
 
     private var header: some View {
@@ -247,11 +311,25 @@ struct IssuesListView: View {
         .padding(.vertical, 6)
     }
 
-    private var milestoneFilterBar: some View {
+    private var filterBar: some View {
+        VStack(spacing: 4) {
+            if hasMilestoneOptions {
+                milestoneFilterRow
+            }
+            if hasAssigneeOptions {
+                assigneeFilterRow
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private var milestoneFilterRow: some View {
         HStack(spacing: 6) {
             Image(systemName: "flag.fill")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .frame(width: 12, alignment: .center)
             Menu {
                 Button {
                     milestoneFilter = ""
@@ -275,41 +353,24 @@ struct IssuesListView: View {
                         }
                     }
                 }
-                Divider()
-                ForEach(availableMilestones, id: \.id) { milestone in
-                    Button {
-                        milestoneFilter = milestone.title
-                    } label: {
-                        HStack {
-                            Text(milestoneMenuLabel(milestone))
-                            if milestoneFilter == milestone.title {
-                                Spacer()
-                                Image(systemName: "checkmark")
+                if !availableMilestones.isEmpty {
+                    Divider()
+                    ForEach(availableMilestones, id: \.id) { milestone in
+                        Button {
+                            milestoneFilter = milestone.title
+                        } label: {
+                            HStack {
+                                Text(milestoneMenuLabel(milestone))
+                                if milestoneFilter == milestone.title {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
                             }
                         }
                     }
                 }
             } label: {
-                HStack(spacing: 4) {
-                    Text(currentFilterLabel)
-                        .font(.caption)
-                        .foregroundStyle(.primary)
-                        .lineLimit(1)
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .font(.system(size: 9, weight: .medium))
-                        .foregroundStyle(.tertiary)
-                }
-                .padding(.horizontal, 8)
-                .padding(.vertical, 4)
-                .background(
-                    RoundedRectangle(cornerRadius: 5)
-                        .fill(.secondary.opacity(0.1))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 5)
-                        .strokeBorder(.separator, lineWidth: 0.5)
-                )
+                filterMenuChipLabel(text: currentMilestoneFilterLabel)
             }
             .menuStyle(.borderlessButton)
             .menuIndicator(.hidden)
@@ -327,8 +388,96 @@ struct IssuesListView: View {
                 .help(String(localized: "issue.filter.clear", defaultValue: "Clear filter"))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
+    }
+
+    private var assigneeFilterRow: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "person.fill")
+                .font(.caption)
+                .foregroundStyle(.tertiary)
+                .frame(width: 12, alignment: .center)
+            Menu {
+                Button {
+                    assigneeFilter = ""
+                } label: {
+                    HStack {
+                        Text(String(localized: "issue.filter.allAssignees", defaultValue: "All assignees"))
+                        if assigneeFilter.isEmpty {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                Button {
+                    assigneeFilter = kNoAssigneeSentinel
+                } label: {
+                    HStack {
+                        Text(String(localized: "issue.filter.noAssignee", defaultValue: "Unassigned"))
+                        if assigneeFilter == kNoAssigneeSentinel {
+                            Spacer()
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+                if !availableAssignees.isEmpty {
+                    Divider()
+                    ForEach(availableAssignees, id: \.username) { assignee in
+                        let key = assignee.username.isEmpty ? assignee.name : assignee.username
+                        Button {
+                            assigneeFilter = key
+                        } label: {
+                            HStack {
+                                Text(assigneeMenuLabel(assignee))
+                                if assigneeFilter == key {
+                                    Spacer()
+                                    Image(systemName: "checkmark")
+                                }
+                            }
+                        }
+                    }
+                }
+            } label: {
+                filterMenuChipLabel(text: currentAssigneeFilterLabel)
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize(horizontal: false, vertical: true)
+
+            if !assigneeFilter.isEmpty {
+                Button {
+                    assigneeFilter = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.tertiary)
+                }
+                .buttonStyle(.plain)
+                .help(String(localized: "issue.filter.clear", defaultValue: "Clear filter"))
+            }
+        }
+    }
+
+    private func filterMenuChipLabel(text: String) -> some View {
+        HStack(spacing: 4) {
+            Text(text)
+                .font(.caption)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer()
+            Image(systemName: "chevron.down")
+                .font(.system(size: 9, weight: .medium))
+                .foregroundStyle(.tertiary)
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 4)
+        .background(
+            RoundedRectangle(cornerRadius: 5)
+                .fill(.secondary.opacity(0.1))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 5)
+                .strokeBorder(.separator, lineWidth: 0.5)
+        )
     }
 
     private func milestoneMenuLabel(_ m: GitLabMilestone) -> String {
@@ -338,7 +487,15 @@ struct IssuesListView: View {
         return "\(m.title) • \(df.string(from: due))"
     }
 
-    private var currentFilterLabel: String {
+    private func assigneeMenuLabel(_ a: GitLabAssignee) -> String {
+        let display = a.name.isEmpty ? a.username : a.name
+        if !a.username.isEmpty && a.username != a.name {
+            return "\(display) (@\(a.username))"
+        }
+        return display
+    }
+
+    private var currentMilestoneFilterLabel: String {
         if milestoneFilter.isEmpty {
             return String(localized: "issue.filter.allMilestones", defaultValue: "All milestones")
         }
@@ -346,6 +503,21 @@ struct IssuesListView: View {
             return String(localized: "issue.filter.noMilestone", defaultValue: "No milestone")
         }
         return milestoneFilter
+    }
+
+    private var currentAssigneeFilterLabel: String {
+        if assigneeFilter.isEmpty {
+            return String(localized: "issue.filter.allAssignees", defaultValue: "All assignees")
+        }
+        if assigneeFilter == kNoAssigneeSentinel {
+            return String(localized: "issue.filter.noAssignee", defaultValue: "Unassigned")
+        }
+        if let match = availableAssignees.first(where: {
+            ($0.username.isEmpty ? $0.name : $0.username) == assigneeFilter
+        }) {
+            return match.name.isEmpty ? "@\(match.username)" : match.name
+        }
+        return assigneeFilter
     }
 
     private var loadingState: some View {
@@ -389,7 +561,7 @@ struct IssuesListView: View {
                 .font(.system(size: 32))
                 .foregroundStyle(.quaternary)
             Text(
-                milestoneFilter.isEmpty
+                (milestoneFilter.isEmpty && assigneeFilter.isEmpty)
                     ? String(localized: "issue.sidebar.empty", defaultValue: "No issues")
                     : String(localized: "issue.sidebar.emptyFiltered", defaultValue: "No issues match this filter")
             )
