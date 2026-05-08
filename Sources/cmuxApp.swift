@@ -142,6 +142,7 @@ struct cmuxApp: App {
     @StateObject private var notesSidebarState = NotesSidebarState()
     @StateObject private var cmuxConfigStore = CmuxConfigStore()
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
+    @ObservedObject private var sessionPresetStore = SessionPresetStore.shared
     private let primaryWindowId = UUID()
     @AppStorage(AppearanceSettings.appearanceModeKey) private var appearanceMode = AppearanceSettings.defaultMode.rawValue
     @AppStorage("titlebarControlsStyle") private var titlebarControlsStyle = TitlebarControlsStyle.classic.rawValue
@@ -597,6 +598,15 @@ struct cmuxApp: App {
                     AppDelegate.shared?.showOpenFolderInInlineVSCodePanel()
                 }
                 .disabled(!TerminalDirectoryOpenTarget.vscodeInline.isAvailable())
+
+                Button(
+                    String(
+                        localized: "menu.file.newClaudeChat",
+                        defaultValue: "New Claude Chat Tab"
+                    )
+                ) {
+                    _ = activeTabManager.openClaudeChat()
+                }
             }
 
             // Close tab/workspace
@@ -640,6 +650,10 @@ struct cmuxApp: App {
                 splitCommandButton(title: String(localized: "menu.file.reopenClosedBrowserPanel", defaultValue: "Reopen Closed Browser Panel"), shortcut: menuShortcut(for: .reopenClosedBrowserPanel)) {
                     _ = activeTabManager.reopenMostRecentlyClosedBrowserPanel()
                 }
+
+                Divider()
+
+                sessionPresetsFileMenuItems
             }
 
             // Find
@@ -880,6 +894,72 @@ struct cmuxApp: App {
 
     private var notificationMenuSnapshot: NotificationMenuSnapshot {
         NotificationMenuSnapshotBuilder.make(notifications: notificationStore.notifications)
+    }
+
+    private struct SessionPresetsMenuSnapshot {
+        let presets: [SessionPreset]
+        let activePresetId: UUID?
+    }
+
+    private var sessionPresetsMenuSnapshot: SessionPresetsMenuSnapshot {
+        SessionPresetStore.shared.loadIfNeeded()
+        return SessionPresetsMenuSnapshot(
+            presets: sessionPresetStore.presets,
+            activePresetId: sessionPresetStore.activePresetId
+        )
+    }
+
+    @ViewBuilder
+    private var sessionPresetsFileMenuItems: some View {
+        let snapshot = sessionPresetsMenuSnapshot
+
+        splitCommandButton(
+            title: String(localized: "menu.file.saveSessionAsPreset", defaultValue: "Save Session as Preset…"),
+            shortcut: menuShortcut(for: .saveSessionAsPreset)
+        ) {
+            AppDelegate.shared?.presentSaveCurrentSessionAsPresetPrompt()
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.updateActivePreset", defaultValue: "Update Current Preset"),
+            shortcut: menuShortcut(for: .updateActiveSessionPreset)
+        ) {
+            _ = AppDelegate.shared?.updateActivePresetFromCurrentSession()
+        }
+        .disabled(snapshot.activePresetId == nil)
+
+        Menu(String(localized: "menu.file.loadPreset", defaultValue: "Load Preset")) {
+            if snapshot.presets.isEmpty {
+                Button(String(localized: "menu.file.loadPreset.empty", defaultValue: "No presets")) {}
+                    .disabled(true)
+            } else {
+                ForEach(snapshot.presets) { preset in
+                    Button {
+                        _ = AppDelegate.shared?.loadSessionPreset(preset)
+                    } label: {
+                        if snapshot.activePresetId == preset.id {
+                            Label(preset.name, systemImage: "checkmark")
+                        } else {
+                            Text(preset.name)
+                        }
+                    }
+                }
+            }
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.manageSessionPresets", defaultValue: "Manage Presets…"),
+            shortcut: menuShortcut(for: .manageSessionPresets)
+        ) {
+            AppDelegate.shared?.presentManageSessionPresets()
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.manageWorkspaceNotes", defaultValue: "Manage Notes…"),
+            shortcut: menuShortcut(for: .manageWorkspaceNotes)
+        ) {
+            AppDelegate.shared?.presentManageWorkspaceNotes()
+        }
     }
 
     private var activeTabManager: TabManager {

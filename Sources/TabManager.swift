@@ -3794,6 +3794,16 @@ class TabManager: ObservableObject {
     func closeWorkspace(_ workspace: Workspace) {
         guard tabs.count > 1 else { return }
         sentryBreadcrumb("workspace.close", data: ["tabCount": tabs.count - 1])
+        // Safety net: if some non-user-initiated path lands here (socket API,
+        // internal teardown) with notes still present in the store, auto-
+        // archive them rather than orphaning the entries.
+        let notesStore = WorkspaceNotesStore.shared
+        if notesStore.notesCount(for: workspace.id) > 0 {
+            let title = workspace.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+                ? workspace.customTitle!
+                : workspace.title
+            notesStore.archiveNotes(for: workspace.id, workspaceTitle: title)
+        }
         clearWorkspaceGitProbes(workspaceId: workspace.id)
         clearWorkspacePullRequestTracking(workspaceId: workspace.id)
         sidebarSelectedWorkspaceIds.remove(workspace.id)
@@ -3920,6 +3930,9 @@ class TabManager: ObservableObject {
 
     @discardableResult
     func closeWorkspaceWithConfirmation(_ workspace: Workspace) -> Bool {
+        guard decideAndApplyNotesDisposition(for: workspace) else {
+            return false
+        }
         if workspace.isPinned {
             guard confirmClose(
                 title: String(localized: "dialog.closePinnedWorkspace.title", defaultValue: "Close pinned workspace?"),
@@ -3936,6 +3949,64 @@ class TabManager: ObservableObject {
         }
         closeWorkspaceIfRunningProcess(workspace)
         return true
+    }
+
+    /// If the workspace has notes, prompts the user to archive them, delete
+    /// them, or cancel. Honors the "always archive" UserDefaults suppression.
+    /// Returns false if the user cancels — the close should be aborted.
+    private func decideAndApplyNotesDisposition(for workspace: Workspace) -> Bool {
+        let store = WorkspaceNotesStore.shared
+        let count = store.notesCount(for: workspace.id)
+        guard count > 0 else { return true }
+
+        let workspaceTitle = workspace.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false
+            ? workspace.customTitle!
+            : workspace.title
+
+        if UserDefaults.standard.bool(forKey: "workspaceNotes.alwaysArchiveOnClose") {
+            store.archiveNotes(for: workspace.id, workspaceTitle: workspaceTitle)
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(
+            format: String(
+                localized: "dialog.closeWorkspaceNotes.title.format",
+                defaultValue: "Archive notes from \u{201C}%@\u{201D}?"
+            ),
+            workspaceTitle
+        )
+        alert.informativeText = String(
+            format: String(
+                localized: "dialog.closeWorkspaceNotes.message.format",
+                defaultValue: "This workspace has %lld note(s). Archived notes can be restored later from File \u{2192} Manage Notes."
+            ),
+            count
+        )
+        alert.addButton(withTitle: String(localized: "dialog.closeWorkspaceNotes.archive", defaultValue: "Archive"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        alert.addButton(withTitle: String(localized: "dialog.closeWorkspaceNotes.delete", defaultValue: "Delete Notes"))
+        alert.showsSuppressionButton = true
+        alert.suppressionButton?.title = String(
+            localized: "dialog.closeWorkspaceNotes.alwaysArchive",
+            defaultValue: "Always archive notes when closing workspaces"
+        )
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn:
+            if alert.suppressionButton?.state == .on {
+                UserDefaults.standard.set(true, forKey: "workspaceNotes.alwaysArchiveOnClose")
+            }
+            store.archiveNotes(for: workspace.id, workspaceTitle: workspaceTitle)
+            return true
+        case .alertThirdButtonReturn:
+            store.deleteNotes(for: workspace.id)
+            return true
+        default:
+            return false
+        }
     }
 
     @discardableResult
@@ -3966,6 +4037,7 @@ class TabManager: ObservableObject {
 
         for workspace in plan.workspaces {
             guard tabs.contains(where: { $0.id == workspace.id }) else { continue }
+            guard decideAndApplyNotesDisposition(for: workspace) else { continue }
             closeWorkspaceIfRunningProcess(workspace, requiresConfirmation: false)
         }
     }
@@ -5359,6 +5431,40 @@ class TabManager: ObservableObject {
             preferredProfileID: preferredProfileID,
             insertAtEnd: insertAtEnd
         )
+    }
+
+    /// Open a Claude Chat panel as a new tab in the focused pane of the
+    /// currently selected workspace. Returns the new panel id, or nil if no
+    /// workspace is available or pane creation failed.
+    @discardableResult
+    func openClaudeChat() -> UUID? {
+        guard let workspace = selectedWorkspace else { return nil }
+        if selectedTabId != workspace.id {
+            selectedTabId = workspace.id
+        }
+
+        let cwd = workspace.focusedTerminalPanel?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+            ?? workspace.panels.values
+                .compactMap({ $0 as? TerminalPanel })
+                .first?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let workingDirectory: String
+        if let cwd, !cwd.isEmpty {
+            workingDirectory = cwd
+        } else {
+            workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+        }
+
+        guard let paneId = workspace.bonsplitController.focusedPaneId
+                ?? workspace.bonsplitController.allPaneIds.first,
+              let chatPanel = workspace.newClaudeChatSurface(
+                  inPane: paneId,
+                  workingDirectory: workingDirectory,
+                  focus: true
+              ) else {
+            return nil
+        }
+        rememberFocusedSurface(tabId: workspace.id, surfaceId: chatPanel.id)
+        return chatPanel.id
     }
 
     /// Reopen the most recently closed browser panel (Cmd+Shift+T).

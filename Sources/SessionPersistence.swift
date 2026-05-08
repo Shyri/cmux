@@ -253,6 +253,19 @@ struct SessionMarkdownPanelSnapshot: Codable, Sendable {
     var filePath: String
 }
 
+/// Persisted state for a `ClaudeChatPanel`. Phase 1 of the MVP does not yet
+/// fill these in — chat panels are skipped from snapshots — but the field
+/// exists so phase 4 can wire in `--resume` without breaking decoding of
+/// snapshots written by intermediate builds.
+struct SessionClaudeChatPanelSnapshot: Codable, Sendable {
+    var sessionId: String?
+    var workingDirectory: String?
+    /// Path to the JSONL transcript file inside the app's Application Support
+    /// directory. Stored separately from the main snapshot to avoid bloating
+    /// it with full conversation logs.
+    var transcriptPath: String?
+}
+
 struct SessionPanelSnapshot: Codable, Sendable {
     var id: UUID
     var type: PanelType
@@ -267,6 +280,7 @@ struct SessionPanelSnapshot: Codable, Sendable {
     var terminal: SessionTerminalPanelSnapshot?
     var browser: SessionBrowserPanelSnapshot?
     var markdown: SessionMarkdownPanelSnapshot?
+    var claudeChat: SessionClaudeChatPanelSnapshot?
 }
 
 enum SessionSplitOrientation: String, Codable, Sendable {

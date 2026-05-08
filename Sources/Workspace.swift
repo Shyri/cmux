@@ -489,6 +489,7 @@ extension Workspace {
         let terminalSnapshot: SessionTerminalPanelSnapshot?
         let browserSnapshot: SessionBrowserPanelSnapshot?
         let markdownSnapshot: SessionMarkdownPanelSnapshot?
+        let claudeChatSnapshot: SessionClaudeChatPanelSnapshot?
         switch panel.panelType {
         case .terminal:
             guard let terminalPanel = panel as? TerminalPanel else { return nil }
@@ -512,6 +513,7 @@ extension Workspace {
             )
             browserSnapshot = nil
             markdownSnapshot = nil
+            claudeChatSnapshot = nil
         case .browser:
             guard let browserPanel = panel as? BrowserPanel else { return nil }
             terminalSnapshot = nil
@@ -526,11 +528,19 @@ extension Workspace {
                 forwardHistoryURLStrings: historySnapshot.forwardHistoryURLStrings
             )
             markdownSnapshot = nil
+            claudeChatSnapshot = nil
         case .markdown:
             guard let markdownPanel = panel as? MarkdownPanel else { return nil }
             terminalSnapshot = nil
             browserSnapshot = nil
             markdownSnapshot = SessionMarkdownPanelSnapshot(filePath: markdownPanel.filePath)
+            claudeChatSnapshot = nil
+        case .claudeChat:
+            // Phase 4 will persist the session id, working directory and a
+            // path to a JSONL transcript here. Phase 1 returns nil so chat
+            // panels are simply omitted from the snapshot (i.e. they do not
+            // restore on relaunch).
+            return nil
         }
 
         return SessionPanelSnapshot(
@@ -546,7 +556,8 @@ extension Workspace {
             ttyName: ttyName,
             terminal: terminalSnapshot,
             browser: browserSnapshot,
-            markdown: markdownSnapshot
+            markdown: markdownSnapshot,
+            claudeChat: claudeChatSnapshot
         )
     }
 
@@ -721,6 +732,11 @@ extension Workspace {
             }
             applySessionPanelMetadata(snapshot, toPanelId: markdownPanel.id)
             return markdownPanel.id
+        case .claudeChat:
+            // Phase 4 will recreate the panel with the persisted sessionId,
+            // working directory and JSONL transcript. Phase 1 has no chat
+            // payload to restore from so we simply skip.
+            return nil
         }
     }
 
@@ -6554,6 +6570,11 @@ final class Workspace: Identifiable, ObservableObject {
     /// Subscriptions for panel updates (e.g., browser title changes)
     private var panelSubscriptions: [UUID: AnyCancellable] = [:]
 
+    /// Panels currently in a "needs user input" state. Used to detect
+    /// 0 → >0 transitions so we only fire one native notification per
+    /// burst of pending tool calls / questions.
+    private var claudeChatNeedsInputPanelIds: Set<UUID> = []
+
     /// When true, suppresses auto-creation in didSplitPane (programmatic splits handle their own panels)
     private var isProgrammaticSplit = false
     private var debugStressPreloadSelectionDepth = 0
@@ -6776,6 +6797,7 @@ final class Workspace: Identifiable, ObservableObject {
         static let terminal = "terminal"
         static let browser = "browser"
         static let markdown = "markdown"
+        static let claudeChat = "claudeChat"
     }
 
     enum PanelShellActivityState: String {
@@ -6804,6 +6826,7 @@ final class Workspace: Identifiable, ObservableObject {
         BonsplitConfiguration.SplitButtonTooltips(
             newTerminal: KeyboardShortcutSettings.Action.newSurface.tooltip("New Terminal"),
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
+            newClaudeChat: String(localized: "bonsplit.newClaudeChat.tooltip", defaultValue: "New Claude Chat"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
             splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down"),
             toggleNotes: String(localized: "bonsplit.toggleNotes.tooltip", defaultValue: "Toggle Notes"),
@@ -6846,6 +6869,7 @@ final class Workspace: Identifiable, ObservableObject {
             tabTitleFontSize: tabTitleFontSize,
             showNotesButton: true,
             notesButtonActive: notesButtonActive,
+            showClaudeChatButton: true,
             showOpenInFinderButton: true,
             showOpenInIDEButton: true,
             openInIDEKind: "intellij",
@@ -7394,6 +7418,129 @@ final class Workspace: Identifiable, ObservableObject {
         panelSubscriptions[markdownPanel.id] = subscription
     }
 
+    private func installClaudeChatPanelSubscription(_ claudeChatPanel: ClaudeChatPanel) {
+        let titleSub = claudeChatPanel.$messages
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak claudeChatPanel] _ in
+                guard let self, let panel = claudeChatPanel else { return }
+                self.refreshClaudeChatTabAppearance(panel)
+            }
+        let statusSub = claudeChatPanel.$status
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak claudeChatPanel] _ in
+                guard let self, let panel = claudeChatPanel else { return }
+                self.refreshClaudeChatTabAppearance(panel)
+            }
+        let approvalSub = claudeChatPanel.$pendingApprovals
+            .map { $0.count }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak claudeChatPanel] _ in
+                guard let self, let panel = claudeChatPanel else { return }
+                self.handleClaudeChatPendingTransition(panel)
+                self.refreshClaudeChatTabAppearance(panel)
+            }
+        let questionSub = claudeChatPanel.$pendingQuestions
+            .map { $0.count }
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak claudeChatPanel] _ in
+                guard let self, let panel = claudeChatPanel else { return }
+                self.handleClaudeChatPendingTransition(panel)
+                self.refreshClaudeChatTabAppearance(panel)
+            }
+
+        panelSubscriptions[claudeChatPanel.id] = AnyCancellable {
+            titleSub.cancel()
+            statusSub.cancel()
+            approvalSub.cancel()
+            questionSub.cancel()
+        }
+    }
+
+    /// Reflect the chat panel's status and pending-input counters into the
+    /// bonsplit tab strip:
+    ///   - `isLoading` (spinner) when claude is running or input is pending
+    ///   - `showsNotificationBadge` when input is pending
+    /// plus keep the title in sync.
+    private func refreshClaudeChatTabAppearance(_ panel: ClaudeChatPanel) {
+        guard let tabId = surfaceIdFromPanelId(panel.id) else { return }
+        guard let existing = bonsplitController.tab(tabId) else { return }
+
+        let newTitle = panel.displayTitle
+        if panelTitles[panel.id] != newTitle {
+            panelTitles[panel.id] = newTitle
+        }
+        let resolvedTitle = resolvedPanelTitle(panelId: panel.id, fallback: newTitle)
+        let needsInput = !panel.pendingApprovals.isEmpty || !panel.pendingQuestions.isEmpty
+        let isSending: Bool
+        if case .sending = panel.status { isSending = true } else { isSending = false }
+        let isLoading = isSending || needsInput
+
+        let titleUpdate: String? = existing.title != resolvedTitle ? resolvedTitle : nil
+        let hasCustomTitleUpdate: Bool? = titleUpdate != nil
+            ? (panelCustomTitles[panel.id] != nil) : nil
+        let isLoadingUpdate: Bool? = existing.isLoading != isLoading ? isLoading : nil
+        let badgeUpdate: Bool? = existing.showsNotificationBadge != needsInput ? needsInput : nil
+
+        if titleUpdate == nil, isLoadingUpdate == nil, badgeUpdate == nil { return }
+
+        bonsplitController.updateTab(
+            tabId,
+            title: titleUpdate,
+            hasCustomTitle: hasCustomTitleUpdate,
+            showsNotificationBadge: badgeUpdate,
+            isLoading: isLoadingUpdate
+        )
+    }
+
+    /// Track 0 → >0 transitions for pending approvals/questions and fire a
+    /// native notification (mirrors what Claude Code in a terminal does
+    /// when it needs the user). Per-panel cooldown key keeps spam down if
+    /// claude calls a flurry of tools.
+    private func handleClaudeChatPendingTransition(_ panel: ClaudeChatPanel) {
+        let needsInput = !panel.pendingApprovals.isEmpty || !panel.pendingQuestions.isEmpty
+        let previously = claudeChatNeedsInputPanelIds.contains(panel.id)
+        if needsInput && !previously {
+            claudeChatNeedsInputPanelIds.insert(panel.id)
+            postClaudeChatNeedsInputNotification(panel)
+        } else if !needsInput && previously {
+            claudeChatNeedsInputPanelIds.remove(panel.id)
+        }
+    }
+
+    private func postClaudeChatNeedsInputNotification(_ panel: ClaudeChatPanel) {
+        let title = String(
+            localized: "claudeChat.notification.needsInput.title",
+            defaultValue: "Claude needs your input"
+        )
+        let subtitle = panel.displayTitle
+        let body: String = {
+            if let firstApproval = panel.pendingApprovals.first {
+                let approvalLabel = String(
+                    localized: "claudeChat.notification.needsInput.approvalBody",
+                    defaultValue: "Allow tool"
+                )
+                return "\(approvalLabel): \(firstApproval.toolName)"
+            }
+            if let firstQuestion = panel.pendingQuestions.first?.questions.first {
+                return firstQuestion.question
+            }
+            return ""
+        }()
+        TerminalNotificationStore.shared.addNotification(
+            tabId: id,
+            surfaceId: panel.id,
+            title: title,
+            subtitle: subtitle,
+            body: body,
+            cooldownKey: "claudeChat-needsInput-\(panel.id.uuidString)",
+            cooldownInterval: 1.5
+        )
+    }
+
     private func browserRemoteWorkspaceStatusSnapshot() -> BrowserRemoteWorkspaceStatus? {
         guard let target = remoteDisplayTarget else { return nil }
         return BrowserRemoteWorkspaceStatus(
@@ -7431,6 +7578,10 @@ final class Workspace: Identifiable, ObservableObject {
         panels[panelId] as? MarkdownPanel
     }
 
+    func claudeChatPanel(for panelId: UUID) -> ClaudeChatPanel? {
+        panels[panelId] as? ClaudeChatPanel
+    }
+
     private func surfaceKind(for panel: any Panel) -> String {
         switch panel.panelType {
         case .terminal:
@@ -7439,6 +7590,8 @@ final class Workspace: Identifiable, ObservableObject {
             return SurfaceKind.browser
         case .markdown:
             return SurfaceKind.markdown
+        case .claudeChat:
+            return SurfaceKind.claudeChat
         }
     }
 
@@ -9450,6 +9603,55 @@ final class Workspace: Identifiable, ObservableObject {
 
         installMarkdownPanelSubscription(markdownPanel)
         return markdownPanel
+    }
+
+    /// Create a new Claude Chat panel as a tab inside `paneId`.
+    @discardableResult
+    func newClaudeChatSurface(
+        inPane paneId: PaneID,
+        workingDirectory: String,
+        focus: Bool? = nil
+    ) -> ClaudeChatPanel? {
+        let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
+        let previousFocusedPanelId = focusedPanelId
+        let previousHostedView = focusedTerminalPanel?.hostedView
+
+        let claudeChatPanel = ClaudeChatPanel(
+            workspaceId: id,
+            workingDirectory: workingDirectory
+        )
+        panels[claudeChatPanel.id] = claudeChatPanel
+        panelTitles[claudeChatPanel.id] = claudeChatPanel.displayTitle
+
+        guard let newTabId = bonsplitController.createTab(
+            title: claudeChatPanel.displayTitle,
+            icon: claudeChatPanel.displayIcon,
+            kind: SurfaceKind.claudeChat,
+            isDirty: claudeChatPanel.isDirty,
+            isLoading: false,
+            isPinned: false,
+            inPane: paneId
+        ) else {
+            panels.removeValue(forKey: claudeChatPanel.id)
+            panelTitles.removeValue(forKey: claudeChatPanel.id)
+            return nil
+        }
+
+        surfaceIdToPanelId[newTabId] = claudeChatPanel.id
+        if shouldFocusNewTab {
+            bonsplitController.focusPane(paneId)
+            bonsplitController.selectTab(newTabId)
+            applyTabSelection(tabId: newTabId, inPane: paneId)
+        } else {
+            preserveFocusAfterNonFocusSplit(
+                preferredPanelId: previousFocusedPanelId,
+                splitPanelId: claudeChatPanel.id,
+                previousHostedView: previousHostedView
+            )
+        }
+
+        installClaudeChatPanelSubscription(claudeChatPanel)
+        return claudeChatPanel
     }
 
     /// Tear down all panels in this workspace, freeing their Ghostty surfaces.
@@ -12328,6 +12530,17 @@ extension Workspace: BonsplitDelegate {
             _ = newTerminalSurface(inPane: pane)
         case "browser":
             _ = newBrowserSurface(inPane: pane)
+        case "claudeChat":
+            let cwd = resolvedDirectoryURL(forPane: pane)?.path
+                ?? currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            let workingDirectory = cwd.isEmpty
+                ? FileManager.default.homeDirectoryForCurrentUser.path
+                : cwd
+            _ = newClaudeChatSurface(
+                inPane: pane,
+                workingDirectory: workingDirectory,
+                focus: true
+            )
         default:
             _ = newTerminalSurface(inPane: pane)
         }

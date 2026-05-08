@@ -491,6 +491,9 @@ final class FileDropOverlayView: NSView {
     /// The WKWebView that accepted prepareForDragOperation so conclude can be
     /// delivered to the same browser target after the drop completes.
     private weak var preparedDragWebView: WKWebView?
+    /// The Claude Chat drop zone currently receiving forwarded drag events
+    /// (used so we can call draggingExited cleanly when the cursor leaves).
+    private weak var activeDragChatZone: ChatDropZoneNSView?
     private var lastHitTestLogSignature: String?
     private var lastDragRouteLogSignatureByPhase: [String: String] = [:]
 
@@ -661,6 +664,10 @@ final class FileDropOverlayView: NSView {
             prev.draggingExited(sender)
             activeDragWebView = nil
         }
+        if let prev = activeDragChatZone {
+            prev.draggingExited(sender)
+            activeDragChatZone = nil
+        }
     }
 
     override func prepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
@@ -671,6 +678,9 @@ final class FileDropOverlayView: NSView {
             hasLocalDraggingSource: hasLocalDraggingSource
         )
         let webView = shouldCapture ? (activeDragWebView ?? webViewUnderPoint(sender.draggingLocation)) : nil
+        let chatZone = (shouldCapture && webView == nil)
+            ? (activeDragChatZone ?? chatDropZoneUnderPoint(sender.draggingLocation))
+            : nil
         let terminal = terminalUnderPoint(sender.draggingLocation)
         let hasTerminalTarget = terminal != nil
 #if DEBUG
@@ -690,6 +700,11 @@ final class FileDropOverlayView: NSView {
             preparedDragWebView = webView
             return webView.prepareForDragOperation(sender)
         }
+        if chatZone != nil {
+            // Chat zones always accept; the actual file extraction happens
+            // in performDragOperation.
+            return true
+        }
         preparedDragWebView = nil
         return hasTerminalTarget
     }
@@ -703,6 +718,9 @@ final class FileDropOverlayView: NSView {
         )
         let webView = shouldCapture
             ? (preparedDragWebView ?? activeDragWebView ?? webViewUnderPoint(sender.draggingLocation))
+            : nil
+        let chatZone = (shouldCapture && webView == nil)
+            ? chatDropZoneUnderPoint(sender.draggingLocation)
             : nil
         let terminal = terminalUnderPoint(sender.draggingLocation)
         let hasTerminalTarget = terminal != nil
@@ -718,14 +736,20 @@ final class FileDropOverlayView: NSView {
         guard shouldCapture else {
             preparedDragWebView = nil
             activeDragWebView = nil
+            activeDragChatZone = nil
             return false
         }
         if let webView {
             preparedDragWebView = webView
             return webView.performDragOperation(sender)
         }
+        if let chatZone {
+            activeDragChatZone = nil
+            return chatZone.performDragOperation(sender)
+        }
         preparedDragWebView = nil
         activeDragWebView = nil
+        activeDragChatZone = nil
         guard let terminal else { return false }
         return terminal.performDragOperation(sender)
     }
@@ -761,6 +785,20 @@ final class FileDropOverlayView: NSView {
                 return webView.draggingEntered(sender)
             }
             return webView.draggingUpdated(sender)
+        }
+
+        // Try the Claude Chat panel before falling back to terminal routing.
+        let chatZone = shouldCapture ? chatDropZoneUnderPoint(loc) : nil
+        if let prev = activeDragChatZone, prev !== chatZone {
+            prev.draggingExited(sender)
+            activeDragChatZone = nil
+        }
+        if let chatZone {
+            if activeDragChatZone !== chatZone {
+                activeDragChatZone = chatZone
+                return chatZone.draggingEntered(sender)
+            }
+            return chatZone.draggingUpdated(sender)
         }
 
         let hasTerminalTarget = terminalUnderPoint(loc) != nil
@@ -947,6 +985,24 @@ final class FileDropOverlayView: NSView {
         var current: NSView? = hitView
         while let view = current {
             if let terminal = view as? GhosttyNSView { return terminal }
+            current = view.superview
+        }
+        return nil
+    }
+
+    /// Hit-tests the window to find a `ChatDropZoneNSView` (Claude Chat
+    /// panel) under the cursor. Returns nil when the user is dragging
+    /// over any other panel kind.
+    func chatDropZoneUnderPoint(_ windowPoint: NSPoint) -> ChatDropZoneNSView? {
+        guard let window, let contentView = window.contentView else { return nil }
+        isHidden = true
+        defer { isHidden = false }
+        let point = contentView.convert(windowPoint, from: nil)
+        let hitView = contentView.hitTest(point)
+
+        var current: NSView? = hitView
+        while let view = current {
+            if let zone = view as? ChatDropZoneNSView { return zone }
             current = view.superview
         }
         return nil
@@ -6136,6 +6192,8 @@ struct ContentView: View {
             return String(localized: "commandPalette.kind.browser", defaultValue: "Browser")
         case .markdown:
             return String(localized: "commandPalette.kind.markdown", defaultValue: "Markdown")
+        case .claudeChat:
+            return String(localized: "commandPalette.kind.claudeChat", defaultValue: "Claude Chat")
         }
     }
 
@@ -6147,6 +6205,8 @@ struct ContentView: View {
             return ["browser", "web", "page"]
         case .markdown:
             return ["markdown", "note", "preview"]
+        case .claudeChat:
+            return ["claude", "chat", "ai", "assistant"]
         }
     }
 
