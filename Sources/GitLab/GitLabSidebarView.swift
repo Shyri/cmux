@@ -38,9 +38,12 @@ struct GitLabSidebarView: View {
     var body: some View {
         VStack(spacing: 0) {
             tabBar
-            Divider()
+            Rectangle()
+                .fill(Color.darculaBorder)
+                .frame(height: 1)
             content
         }
+        .background(Color.darculaSidebarBackground)
     }
 
     private var tabBar: some View {
@@ -59,12 +62,16 @@ struct GitLabSidebarView: View {
             } label: {
                 Image(systemName: "text.magnifyingglass")
                     .font(.system(size: 11, weight: .medium))
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(Color.darculaForeground.opacity(0.85))
                     .padding(.horizontal, 8)
                     .padding(.vertical, 5)
                     .background(
                         RoundedRectangle(cornerRadius: 5)
-                            .fill(.secondary.opacity(0.08))
+                            .fill(Color.darculaCardBackground)
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 5)
+                            .strokeBorder(Color.darculaBorder, lineWidth: 0.5)
                     )
             }
             .buttonStyle(.plain)
@@ -100,17 +107,17 @@ struct GitLabSidebarView: View {
                     .font(.system(size: 11, weight: isSelected ? .semibold : .medium))
                     .fixedSize()
             }
-            .foregroundStyle(isSelected ? Color.accentColor : .secondary)
+            .foregroundStyle(isSelected ? Color.darculaAccent : Color.darculaForeground.opacity(0.75))
             .padding(.horizontal, 6)
             .padding(.vertical, 3)
             .background(
                 RoundedRectangle(cornerRadius: 5)
-                    .fill(isSelected ? Color.accentColor.opacity(0.15) : Color.clear)
+                    .fill(isSelected ? Color.darculaAccent.opacity(0.18) : Color.clear)
             )
             .overlay(
                 RoundedRectangle(cornerRadius: 5)
                     .strokeBorder(
-                        isSelected ? Color.accentColor.opacity(0.35) : Color.clear,
+                        isSelected ? Color.darculaAccent.opacity(0.45) : Color.clear,
                         lineWidth: 0.5
                     )
             )

@@ -421,12 +421,11 @@ private struct MRCardView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
-                .opacity(isHovered ? 1.0 : 0.85)
+                .fill(isHovered ? Color.darculaCardHover : Color.darculaCardBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(.separator, lineWidth: 0.5)
+                .strokeBorder(Color.darculaBorder, lineWidth: 0.5)
         )
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
@@ -735,9 +734,26 @@ struct AvatarBadge: View {
     }
 
     private var color: Color {
-        let hash = abs(name.hashValue)
-        let palette: [Color] = [.blue, .purple, .pink, .orange, .teal, .indigo, .mint, .cyan]
-        return palette[hash % palette.count]
+        // Deterministic FNV-1a 64-bit hash of the name so the same user always
+        // gets the same color (String.hashValue is randomized per process run).
+        var hash: UInt64 = 0xcbf29ce484222325
+        for byte in name.lowercased().utf8 {
+            hash ^= UInt64(byte)
+            hash = hash &* 0x100000001b3
+        }
+        // Map to a hue on the full color wheel for many more distinct colors
+        // than a fixed 8-color palette. Use the golden-ratio offset to spread
+        // adjacent hashes apart visually.
+        let hueBase = Double(hash % 1_000_000) / 1_000_000.0
+        let hue = (hueBase + 0.61803398875).truncatingRemainder(dividingBy: 1.0)
+        // Slight saturation/brightness jitter (also derived from the hash) so
+        // two names that happen to land on a similar hue still feel distinct
+        // against the Darcula card surface.
+        let satJitter = Double((hash >> 16) % 100) / 100.0   // 0.0 ..< 1.0
+        let briJitter = Double((hash >> 32) % 100) / 100.0   // 0.0 ..< 1.0
+        let saturation = 0.55 + satJitter * 0.30             // 0.55 ..< 0.85
+        let brightness = 0.70 + briJitter * 0.20             // 0.70 ..< 0.90
+        return Color(hue: hue, saturation: saturation, brightness: brightness)
     }
 
     var body: some View {

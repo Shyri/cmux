@@ -1,6 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
+import MarkdownUI
 
 // MARK: - Models
 
@@ -287,288 +288,198 @@ private func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
     return results
 }
 
+// MARK: - Card style
+
+/// Shared chrome for MR description and comment cards: dark background with
+/// a subtle 1pt border and rounded corners, matching the reference look.
+enum MRCommentCardStyle {
+    static let background = Color(nsColor: NSColor(srgbRed: 0x1F/255, green: 0x20/255, blue: 0x24/255, alpha: 1))
+    static let border = Color(nsColor: NSColor(srgbRed: 0x33/255, green: 0x36/255, blue: 0x3D/255, alpha: 1))
+    static let cornerRadius: CGFloat = 8
+    static let innerHorizontalPadding: CGFloat = 16
+    static let innerVerticalPadding: CGFloat = 14
+}
+
+/// Color used for handle/timestamp meta text in the card header.
+enum MRCommentMetaStyle {
+    static let metaColor = Color(nsColor: NSColor(srgbRed: 0x8E/255, green: 0x93/255, blue: 0x9C/255, alpha: 1))
+}
+
 // MARK: - Markdown rendering
 
-/// Block-level Markdown renderer. SwiftUI's `Text` can render inline Markdown
-/// (bold/italic/code/links) via `AttributedString`, but it ignores block
-/// constructs like headings, lists, fenced code blocks, and blockquotes. This
-/// view splits the input into blocks and renders each with the appropriate
-/// SwiftUI primitive so MR descriptions and comments look right.
+/// MR descriptions and comments rendered with MarkdownUI under a compact
+/// theme that matches the chrome of the surrounding cards. Supports the full
+/// GitHub-flavored Markdown set (tables, task lists, strikethrough, nested
+/// lists, autolinks, fenced code blocks).
 struct MarkdownText: View {
     let source: String
     var baseFontSize: CGFloat = 12
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        let blocks = MarkdownBlock.parse(source)
-        VStack(alignment: .leading, spacing: 6) {
-            ForEach(Array(blocks.enumerated()), id: \.offset) { _, block in
-                renderBlock(block)
-            }
-        }
+        Markdown(source.trimmingCharacters(in: .whitespacesAndNewlines))
+            .markdownTheme(makeCommentTheme(baseFontSize: baseFontSize, isDark: colorScheme == .dark))
+            .textSelection(.enabled)
     }
+}
 
-    private func headingFontSize(level: Int) -> CGFloat {
-        switch level {
-        case 1: return baseFontSize + 6
-        case 2: return baseFontSize + 4
-        case 3: return baseFontSize + 2
-        default: return baseFontSize + 1
+/// MarkdownUI theme for MR description and comment cards. Matches the
+/// reference look: light gray sans-serif body, amber inline-code pills with
+/// a dark-amber background, blue links without underline, hollow-circle
+/// nested list bullets.
+private func makeCommentTheme(baseFontSize: CGFloat, isDark: Bool) -> Theme {
+    // Body palette (the cards live on a near-black surface, so colors are
+    // tuned for dark mode and only soften in light mode).
+    let textColor: Color = isDark
+        ? Color(nsColor: NSColor(srgbRed: 0xD5/255, green: 0xD8/255, blue: 0xDD/255, alpha: 1))
+        : .primary
+    let headingColor: Color = isDark ? .white : .primary
+    let secondaryTextColor: Color = isDark ? .white.opacity(0.55) : .secondary
+
+    // Amber pill for inline code and code blocks.
+    let codeFg = Color(nsColor: NSColor(srgbRed: 0xE5/255, green: 0xB8/255, blue: 0x64/255, alpha: 1))
+    let inlineCodeBg = Color(nsColor: NSColor(srgbRed: 0x3B/255, green: 0x2E/255, blue: 0x1A/255, alpha: 1))
+    let codeBlockBg = Color(nsColor: NSColor(srgbRed: 0x1A/255, green: 0x17/255, blue: 0x10/255, alpha: 1))
+
+    // Blue link without underline (rendered as plain colored text).
+    let linkColor = Color(nsColor: NSColor(srgbRed: 0x5B/255, green: 0xA0/255, blue: 0xF2/255, alpha: 1))
+
+    let tableBorder: Color = isDark ? .white.opacity(0.15) : .gray.opacity(0.3)
+    let tableRowA: Color = isDark
+        ? Color(nsColor: NSColor(white: 0.14, alpha: 1.0))
+        : Color(nsColor: NSColor(white: 0.96, alpha: 1.0))
+    let tableRowB: Color = isDark
+        ? Color(nsColor: NSColor(white: 0.10, alpha: 1.0))
+        : Color(nsColor: NSColor(white: 1.0, alpha: 1.0))
+    let blockquoteBar: Color = isDark ? .white.opacity(0.22) : .gray.opacity(0.4)
+
+    return Theme()
+        .text {
+            ForegroundColor(textColor)
+            FontSize(baseFontSize)
         }
-    }
-
-    @ViewBuilder
-    private func renderBlock(_ block: MarkdownBlock) -> some View {
-        switch block {
-        case .heading(let level, let text):
-            Text(renderMarkdownInline(text))
-                .font(.system(size: headingFontSize(level: level), weight: .semibold))
-                .foregroundStyle(.primary)
-                .fixedSize(horizontal: false, vertical: true)
-
-        case .paragraph(let text):
-            Text(renderMarkdownInline(text))
-                .font(.system(size: baseFontSize))
-                .foregroundStyle(Color(nsColor: .labelColor))
-                .tint(.accentColor)
-                .textSelection(.enabled)
-                .fixedSize(horizontal: false, vertical: true)
-
-        case .blockquote(let text):
-            HStack(alignment: .top, spacing: 8) {
-                Rectangle()
-                    .fill(Color.secondary.opacity(0.4))
-                    .frame(width: 2)
-                Text(renderMarkdownInline(text))
-                    .font(.system(size: baseFontSize))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-        case .codeBlock(let code, _):
+        .heading1 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.bold)
+                    FontSize(baseFontSize + 4)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 12, bottom: 6)
+        }
+        .heading2 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.bold)
+                    FontSize(baseFontSize + 2.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 10, bottom: 5)
+        }
+        .heading3 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(baseFontSize + 1.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 8, bottom: 4)
+        }
+        .heading4 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(baseFontSize + 0.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 6, bottom: 3)
+        }
+        .heading5 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.medium)
+                    FontSize(baseFontSize)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 6, bottom: 2)
+        }
+        .heading6 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.medium)
+                    FontSize(baseFontSize)
+                    ForegroundColor(secondaryTextColor)
+                }
+                .markdownMargin(top: 6, bottom: 2)
+        }
+        .paragraph { configuration in
+            configuration.label
+                .markdownMargin(top: 4, bottom: 6)
+        }
+        .listItem { configuration in
+            configuration.label
+                .markdownMargin(top: 2, bottom: 2)
+        }
+        // Hollow circle bullets matching the reference look. MarkdownUI
+        // already nests appropriately; the alternating preset would render
+        // a filled disc on the outermost level, which is too heavy here.
+        .bulletedListMarker(.circle)
+        .codeBlock { configuration in
             ScrollView(.horizontal, showsIndicators: false) {
-                Text(code)
-                    .font(.system(size: baseFontSize - 1, design: .monospaced))
-                    .foregroundStyle(Color(nsColor: .labelColor))
-                    .textSelection(.enabled)
-                    .padding(8)
-            }
-            .background(
-                RoundedRectangle(cornerRadius: 4)
-                    .fill(Color(nsColor: NSColor(white: 1, alpha: 0.05)))
-            )
-
-        case .list(let items, let ordered):
-            VStack(alignment: .leading, spacing: 2) {
-                ForEach(Array(items.enumerated()), id: \.offset) { idx, item in
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        Text(ordered ? "\(idx + 1)." : "•")
-                            .font(.system(size: baseFontSize))
-                            .foregroundStyle(.secondary)
-                            .frame(minWidth: 14, alignment: .trailing)
-                        Text(renderMarkdownInline(item))
-                            .font(.system(size: baseFontSize))
-                            .foregroundStyle(Color(nsColor: .labelColor))
-                            .tint(.accentColor)
-                            .textSelection(.enabled)
-                            .fixedSize(horizontal: false, vertical: true)
+                configuration.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(baseFontSize - 1)
+                        ForegroundColor(codeFg)
                     }
-                }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
             }
-
-        case .horizontalRule:
-            Rectangle()
-                .fill(Color.secondary.opacity(0.3))
-                .frame(height: 1)
-                .padding(.vertical, 2)
+            .background(codeBlockBg)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .markdownMargin(top: 6, bottom: 6)
         }
-    }
-}
-
-enum MarkdownBlock {
-    case heading(level: Int, text: String)
-    case paragraph(String)
-    case blockquote(String)
-    case codeBlock(code: String, language: String?)
-    case list(items: [String], ordered: Bool)
-    case horizontalRule
-
-    static func parse(_ source: String) -> [MarkdownBlock] {
-        var blocks: [MarkdownBlock] = []
-        let lines = source.components(separatedBy: "\n")
-        var idx = 0
-        var paragraphBuf: [String] = []
-        var quoteBuf: [String] = []
-        var listBuf: [String] = []
-        var listOrdered: Bool? = nil
-
-        func flushParagraph() {
-            if !paragraphBuf.isEmpty {
-                blocks.append(.paragraph(paragraphBuf.joined(separator: "\n")))
-                paragraphBuf.removeAll()
-            }
+        .code {
+            FontFamilyVariant(.monospaced)
+            FontSize(baseFontSize - 1.5)
+            ForegroundColor(codeFg)
+            BackgroundColor(inlineCodeBg)
         }
-        func flushQuote() {
-            if !quoteBuf.isEmpty {
-                blocks.append(.blockquote(quoteBuf.joined(separator: "\n")))
-                quoteBuf.removeAll()
-            }
-        }
-        func flushList() {
-            if !listBuf.isEmpty, let ordered = listOrdered {
-                blocks.append(.list(items: listBuf, ordered: ordered))
-                listBuf.removeAll()
-                listOrdered = nil
-            }
-        }
-        func flushAll() {
-            flushParagraph()
-            flushQuote()
-            flushList()
-        }
-
-        while idx < lines.count {
-            let raw = lines[idx]
-            let line = raw.trimmingCharacters(in: .whitespaces)
-
-            // Fenced code block
-            if line.hasPrefix("```") {
-                flushAll()
-                let lang = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
-                idx += 1
-                var codeLines: [String] = []
-                while idx < lines.count {
-                    let cur = lines[idx]
-                    if cur.trimmingCharacters(in: .whitespaces).hasPrefix("```") {
-                        idx += 1
-                        break
+        .blockquote { configuration in
+            HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(blockquoteBar)
+                    .frame(width: 3)
+                configuration.label
+                    .markdownTextStyle {
+                        ForegroundColor(secondaryTextColor)
+                        FontSize(baseFontSize)
                     }
-                    codeLines.append(cur)
-                    idx += 1
-                }
-                blocks.append(.codeBlock(code: codeLines.joined(separator: "\n"),
-                                         language: lang.isEmpty ? nil : lang))
-                continue
+                    .padding(.leading, 12)
             }
-
-            // Horizontal rule
-            if line == "---" || line == "***" || line == "___" {
-                flushAll()
-                blocks.append(.horizontalRule)
-                idx += 1
-                continue
-            }
-
-            // Heading
-            if let match = headingMatch(line) {
-                flushAll()
-                blocks.append(.heading(level: match.level, text: match.text))
-                idx += 1
-                continue
-            }
-
-            // Blank line
-            if line.isEmpty {
-                flushAll()
-                idx += 1
-                continue
-            }
-
-            // Blockquote
-            if line.hasPrefix(">") {
-                flushParagraph()
-                flushList()
-                let body = String(line.dropFirst()).trimmingCharacters(in: .whitespaces)
-                quoteBuf.append(body)
-                idx += 1
-                continue
-            } else if !quoteBuf.isEmpty {
-                flushQuote()
-            }
-
-            // Unordered list
-            if let body = unorderedItem(line) {
-                flushParagraph()
-                if listOrdered == true { flushList() }
-                listOrdered = false
-                listBuf.append(body)
-                idx += 1
-                continue
-            }
-            // Ordered list
-            if let body = orderedItem(line) {
-                flushParagraph()
-                if listOrdered == false { flushList() }
-                listOrdered = true
-                listBuf.append(body)
-                idx += 1
-                continue
-            }
-            if !listBuf.isEmpty {
-                flushList()
-            }
-
-            // Default: paragraph line. Preserve original (trimmed only at edges).
-            paragraphBuf.append(raw)
-            idx += 1
+            .markdownMargin(top: 6, bottom: 6)
         }
-        flushAll()
-        return blocks
-    }
-
-    private static func headingMatch(_ line: String) -> (level: Int, text: String)? {
-        var level = 0
-        for ch in line {
-            if ch == "#" { level += 1 } else { break }
-            if level > 6 { return nil }
+        .link {
+            ForegroundColor(linkColor)
         }
-        guard level >= 1 && level <= 6 else { return nil }
-        let after = line.dropFirst(level)
-        guard after.first == " " else { return nil }
-        let text = after.dropFirst().trimmingCharacters(in: .whitespaces)
-        return (level, text)
-    }
-
-    private static func unorderedItem(_ line: String) -> String? {
-        for prefix in ["- ", "* ", "+ "] {
-            if line.hasPrefix(prefix) {
-                return String(line.dropFirst(prefix.count))
-            }
+        .strong {
+            FontWeight(.semibold)
         }
-        return nil
-    }
-
-    private static func orderedItem(_ line: String) -> String? {
-        // Match "<digits>. " at the start.
-        var i = line.startIndex
-        var digitCount = 0
-        while i < line.endIndex, line[i].isNumber {
-            digitCount += 1
-            i = line.index(after: i)
+        .strikethrough {
+            StrikethroughStyle(.single)
         }
-        guard digitCount > 0, i < line.endIndex, line[i] == "." else { return nil }
-        let afterDot = line.index(after: i)
-        guard afterDot < line.endIndex, line[afterDot] == " " else { return nil }
-        return String(line[line.index(after: afterDot)...])
-    }
-}
-
-/// Inline-only Markdown rendering (bold/italic/code/links). Used inside
-/// `MarkdownText` per block.
-func renderMarkdownInline(_ raw: String) -> AttributedString {
-    let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-    if trimmed.isEmpty { return AttributedString() }
-    do {
-        return try AttributedString(
-            markdown: trimmed,
-            options: AttributedString.MarkdownParsingOptions(
-                allowsExtendedAttributes: false,
-                interpretedSyntax: .inlineOnlyPreservingWhitespace,
-                failurePolicy: .returnPartiallyParsedIfPossible
-            )
-        )
-    } catch {
-        return AttributedString(trimmed)
-    }
+        .table { configuration in
+            configuration.label
+                .markdownTableBorderStyle(.init(color: tableBorder))
+                .markdownTableBackgroundStyle(
+                    .alternatingRows(tableRowA, tableRowB)
+                )
+                .markdownMargin(top: 6, bottom: 6)
+        }
+        .thematicBreak {
+            Divider()
+                .markdownMargin(top: 10, bottom: 10)
+        }
 }
 
 // MARK: - SwiftUI card
@@ -590,7 +501,8 @@ struct InlineCommentCard: View {
                 noteRow(note)
             }
         }
-        .padding(8)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
 
         return Group {
             if let maxHeight {
@@ -603,53 +515,58 @@ struct InlineCommentCard: View {
             }
         }
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
+            RoundedRectangle(cornerRadius: 8)
+                .fill(MRCommentCardStyle.background)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color(nsColor: NSColor(srgbRed: 0x3C/255, green: 0x3C/255, blue: 0x3C/255, alpha: 1)), lineWidth: 1)
+            RoundedRectangle(cornerRadius: 8)
+                .strokeBorder(MRCommentCardStyle.border, lineWidth: 1)
         )
         .padding(.horizontal, 6)
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     @ViewBuilder
     private func noteRow(_ note: MRNote) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(alignment: .center, spacing: 10) {
                 Text(initials(for: note))
-                    .font(.system(size: 9, weight: .bold))
-                    .foregroundStyle(.white)
-                    .frame(width: 18, height: 18)
-                    .background(Circle().fill(authorColor(for: note)))
-                Text(note.authorName.isEmpty ? note.authorUsername : note.authorName)
                     .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .foregroundStyle(.white)
+                    .frame(width: 28, height: 28)
+                    .background(Circle().fill(authorColor(for: note)))
+                let displayName = note.authorName.isEmpty ? note.authorUsername : note.authorName
+                Text(displayName)
+                    .font(.system(size: 14, weight: .semibold))
+                    .foregroundStyle(.white)
                 if !note.authorUsername.isEmpty && note.authorUsername != note.authorName {
                     Text("@\(note.authorUsername)")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
+                }
+                if let when = note.createdAt {
+                    Text("·")
+                        .font(.system(size: 13))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
+                    Text(relative(when))
+                        .font(.system(size: 13))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
                 }
                 Spacer()
-                if let when = note.createdAt {
-                    Text(relative(when))
-                        .font(.system(size: 10))
-                        .foregroundStyle(.tertiary)
-                }
                 if discussion.resolved {
                     Text("Resolved")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(.green)
-                        .padding(.horizontal, 5)
-                        .padding(.vertical, 1)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
                         .background(Capsule().fill(Color.green.opacity(0.15)))
                 }
             }
-            MarkdownText(source: note.body, baseFontSize: 12)
+            MarkdownText(source: note.body, baseFontSize: 14)
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(.leading, 38)  // align body with name (avatar 28 + spacing 10)
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 4)
     }
 
     private func initials(for note: MRNote) -> String {

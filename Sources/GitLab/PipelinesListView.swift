@@ -289,11 +289,11 @@ private struct PipelineCardView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: .controlBackgroundColor).opacity(isHovered ? 1.0 : 0.6))
+                .fill(isHovered ? Color.darculaCardHover : Color.darculaCardBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(.separator, lineWidth: 0.5)
+                .strokeBorder(Color.darculaBorder, lineWidth: 0.5)
         )
         .contentShape(Rectangle())
         .onHover { isHovered = $0 }
