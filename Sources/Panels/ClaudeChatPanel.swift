@@ -627,6 +627,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         return path
     }
 
+    /// Append a synthetic system message to the transcript. Used by the
+    /// slash-command dispatcher (e.g. `/cost`, `/help`, `/model`) to show
+    /// the user a one-shot informational message without involving claude.
+    /// Markdown is rendered with the chat's normal theme.
+    func appendSystemNotice(_ text: String) {
+        messages.append(.text(.system, text))
+    }
+
     /// Reset the conversation: cancel any in-flight turn, drop the messages
     /// transcript, forget the session id (so the next turn starts a fresh
     /// claude session, not a `--resume`), and clear errors.

@@ -48,6 +48,7 @@
 		A50014B1 /* ChatPermissionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50014B0 /* ChatPermissionRules.swift */; };
 		A50014B3 /* UnifiedDiff.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50014B2 /* UnifiedDiff.swift */; };
 		A50014B5 /* ClaudeSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50014B4 /* ClaudeSessionHistory.swift */; };
+		A50014B7 /* SlashCommandRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = A50014B6 /* SlashCommandRegistry.swift */; };
 		A5001290 /* MarkdownUI in Frameworks */ = {isa = PBXBuildFile; productRef = A5001291 /* MarkdownUI */; };
 		A5001405 /* PanelContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001415 /* PanelContentView.swift */; };
 		A5001406 /* Workspace.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001416 /* Workspace.swift */; };
@@ -291,6 +292,7 @@
 		A50014B0 /* ChatPermissionRules.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChat/ChatPermissionRules.swift; sourceTree = "<group>"; };
 		A50014B2 /* UnifiedDiff.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChat/UnifiedDiff.swift; sourceTree = "<group>"; };
 		A50014B4 /* ClaudeSessionHistory.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChat/ClaudeSessionHistory.swift; sourceTree = "<group>"; };
+		A50014B6 /* SlashCommandRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChat/SlashCommandRegistry.swift; sourceTree = "<group>"; };
 		A5001416 /* Workspace.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Workspace.swift; sourceTree = "<group>"; };
 		A5001417 /* WorkspaceContentView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceContentView.swift; sourceTree = "<group>"; };
 		A5001090 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
@@ -606,6 +608,7 @@
 				A50014B0 /* ChatPermissionRules.swift */,
 				A50014B2 /* UnifiedDiff.swift */,
 				A50014B4 /* ClaudeSessionHistory.swift */,
+				A50014B6 /* SlashCommandRegistry.swift */,
 				A5001510 /* CmuxWebView.swift */,
 				A5001415 /* PanelContentView.swift */,
 				A5001211 /* UpdateController.swift */,
@@ -970,6 +973,7 @@
 				A50014B1 /* ChatPermissionRules.swift in Sources */,
 				A50014B3 /* UnifiedDiff.swift in Sources */,
 				A50014B5 /* ClaudeSessionHistory.swift in Sources */,
+				A50014B7 /* SlashCommandRegistry.swift in Sources */,
 				A5001500 /* CmuxWebView.swift in Sources */,
 				A5001405 /* PanelContentView.swift in Sources */,
 				A5001201 /* UpdateController.swift in Sources */,

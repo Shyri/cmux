@@ -754,6 +754,13 @@ struct ClaudeChatPanelView: View {
     @State private var pendingRewindUserMessageId: UUID? = nil
     /// Highlights the chat area while a drag is hovering.
     @State private var isDropTargeted: Bool = false
+    /// Slash-command autocomplete state. The popup only appears while the
+    /// draft starts with a single `/` followed by an alphanumeric run (no
+    /// whitespace yet) — i.e. while the user is typing a command name.
+    @State private var slashAllCommands: [SlashCommand] = []
+    @State private var slashFilteredCommands: [SlashCommand] = []
+    @State private var slashSelectedIndex: Int = 0
+    @State private var showingSlashPopup: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     private static let bottomSentinelId = "__claudechat_bottom__"
@@ -843,6 +850,19 @@ struct ClaudeChatPanelView: View {
             if case .idle = newStatus {
                 inputFocusToken &+= 1
             }
+        }
+        .onAppear {
+            slashAllCommands = SlashCommandRegistry.availableCommands(cwd: panel.workingDirectory)
+            updateSlashPopupForDraft(draft)
+        }
+        .onChange(of: panel.workingDirectory) { newCwd in
+            // The cwd governs which project-scope custom commands the
+            // registry includes; refresh on rare changes.
+            slashAllCommands = SlashCommandRegistry.availableCommands(cwd: newCwd)
+            updateSlashPopupForDraft(draft)
+        }
+        .onChange(of: draft) { newValue in
+            updateSlashPopupForDraft(newValue)
         }
     }
 
@@ -1284,6 +1304,24 @@ struct ClaudeChatPanelView: View {
 
     private var inputBar: some View {
         VStack(alignment: .leading, spacing: 6) {
+            // Slash-command suggestions sit ABOVE the input so the user can
+            // see what they're picking while still typing. Inserting it as
+            // a sibling (not an overlay) sidesteps the clip/zindex traps
+            // that hide an overlay rendered "above" its parent's bounds.
+            if showingSlashPopup, !slashFilteredCommands.isEmpty {
+                SlashCommandPopup(
+                    commands: slashFilteredCommands,
+                    selectedIndex: slashSelectedIndex,
+                    palette: palette,
+                    isDark: colorScheme == .dark,
+                    onPick: { idx in
+                        slashSelectedIndex = idx
+                        confirmSlashSelection()
+                    }
+                )
+                .frame(maxWidth: 460, alignment: .leading)
+                .transition(.opacity)
+            }
             ChatInputTextView(
                 text: $draft,
                 placeholder: String(
@@ -1294,8 +1332,11 @@ struct ClaudeChatPanelView: View {
                 textColor: panel.terminalForegroundColor,
                 focusToken: inputFocusToken,
                 onSubmit: submit,
-                onCancel: cancelIfSending,
-                onBecomeFirstResponder: { onRequestPanelFocus() }
+                onCancel: handleEscape,
+                onBecomeFirstResponder: { onRequestPanelFocus() },
+                onArrowUp: { moveSlashSelection(by: -1) },
+                onArrowDown: { moveSlashSelection(by: +1) },
+                onTabKey: completeSlashCommandPrefixIfPossible
             )
             .frame(minHeight: 16, maxHeight: 48)
             .padding(.horizontal, 8)
@@ -1361,7 +1402,23 @@ struct ClaudeChatPanelView: View {
         }
     }
 
+    /// Esc: close the slash-command popup if it's up; otherwise fall
+    /// back to the original "stop the in-flight turn" behavior.
+    private func handleEscape() {
+        if showingSlashPopup {
+            showingSlashPopup = false
+            return
+        }
+        cancelIfSending()
+    }
+
     private func submit() {
+        // Slash-command popup intercepts Enter: if the user has filtered
+        // down to one (or selected one) we run that instead of sending.
+        if showingSlashPopup, !slashFilteredCommands.isEmpty {
+            confirmSlashSelection()
+            return
+        }
         let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if case .sending = panel.status { return }
@@ -1370,6 +1427,178 @@ struct ClaudeChatPanelView: View {
         // Sending always means the user wants to follow the conversation
         // again — jump to the latest, even if they were reading history.
         forceScrollToBottomToken &+= 1
+    }
+
+    // MARK: - Slash command autocomplete
+
+    /// Parse the draft and decide whether to show the popup. The popup
+    /// shows iff the trimmed draft starts with `/` and the first token
+    /// (everything until whitespace) is just word-characters — i.e. the
+    /// user is still typing the command name. Once they type a space we
+    /// hide it (the rest of the input is treated as command arguments,
+    /// for `sendAsPrompt` commands).
+    private func updateSlashPopupForDraft(_ text: String) {
+        guard let prefix = slashCommandPrefix(in: text) else {
+            if showingSlashPopup { showingSlashPopup = false }
+            return
+        }
+        let filtered = SlashCommandRegistry.filter(slashAllCommands, byPrefix: prefix)
+        slashFilteredCommands = filtered
+        if filtered.isEmpty {
+            showingSlashPopup = false
+            return
+        }
+        if slashSelectedIndex >= filtered.count {
+            slashSelectedIndex = 0
+        }
+        showingSlashPopup = true
+    }
+
+    /// Returns the `/`-less prefix the user has typed so far, or `nil`
+    /// when the draft is not in "typing a slash command" state.
+    private func slashCommandPrefix(in text: String) -> String? {
+        guard text.hasPrefix("/") else { return nil }
+        let after = text.dropFirst()
+        // No whitespace allowed — once the user adds args we stop
+        // suggesting names.
+        if after.contains(where: { $0.isWhitespace }) { return nil }
+        return String(after)
+    }
+
+    /// Move the highlighted row in the popup. Returns true (= key
+    /// consumed) when the popup is visible, so the NSTextView default
+    /// caret movement does not also fire.
+    @discardableResult
+    private func moveSlashSelection(by delta: Int) -> Bool {
+        guard showingSlashPopup, !slashFilteredCommands.isEmpty else { return false }
+        let count = slashFilteredCommands.count
+        let next = ((slashSelectedIndex + delta) % count + count) % count
+        slashSelectedIndex = next
+        return true
+    }
+
+    /// Tab: complete the input to the longest unambiguous prefix among
+    /// the filtered commands. Returns true to swallow Tab when the popup
+    /// is up.
+    @discardableResult
+    private func completeSlashCommandPrefixIfPossible() -> Bool {
+        guard showingSlashPopup, !slashFilteredCommands.isEmpty else { return false }
+        if slashFilteredCommands.count == 1 {
+            // One match — fully complete (without confirming) so the user
+            // can still hit Enter or add args.
+            draft = "/" + slashFilteredCommands[0].name
+            return true
+        }
+        // Multiple matches — extend the typed prefix to the longest
+        // common name prefix, like a shell.
+        let names = slashFilteredCommands.map { $0.name }
+        let common = longestCommonPrefix(of: names)
+        let typed = slashCommandPrefix(in: draft) ?? ""
+        if common.count > typed.count {
+            draft = "/" + common
+        }
+        return true
+    }
+
+    private func longestCommonPrefix(of strings: [String]) -> String {
+        guard let first = strings.first else { return "" }
+        var prefix = first
+        for s in strings.dropFirst() {
+            while !s.lowercased().hasPrefix(prefix.lowercased()), !prefix.isEmpty {
+                prefix.removeLast()
+            }
+            if prefix.isEmpty { return "" }
+        }
+        return prefix
+    }
+
+    /// User picked the highlighted command (Enter / click).
+    private func confirmSlashSelection() {
+        guard slashSelectedIndex < slashFilteredCommands.count else { return }
+        let cmd = slashFilteredCommands[slashSelectedIndex]
+        showingSlashPopup = false
+        switch cmd.action {
+        case .runBuiltin(let key):
+            runBuiltinSlashCommand(key)
+            draft = ""
+        case .sendAsPrompt:
+            // Replace the typed name with the canonical one (the user may
+            // have only typed a prefix), then send. Preserves any args
+            // they may have already added — but our prefix gate hides the
+            // popup as soon as a space appears, so in practice there
+            // aren't any args yet here.
+            let prefix = slashCommandPrefix(in: draft) ?? ""
+            let rest = String(draft.dropFirst(1 + prefix.count))
+            let canonical = "/" + cmd.name + rest
+            panel.send(canonical.trimmingCharacters(in: .whitespacesAndNewlines))
+            draft = ""
+            forceScrollToBottomToken &+= 1
+        }
+    }
+
+    /// Dispatch a built-in slash command by its registry key.
+    private func runBuiltinSlashCommand(_ key: String) {
+        switch key {
+        case SlashCommandRegistry.BuiltinKey.clear:
+            panel.clearTranscript()
+        case SlashCommandRegistry.BuiltinKey.rewind,
+             SlashCommandRegistry.BuiltinKey.undo:
+            if panel.undoCheckpoints.isEmpty {
+                panel.appendSystemNotice(String(
+                    localized: "claudeChat.slash.rewind.empty",
+                    defaultValue: "Nothing to rewind — no turns recorded yet."
+                ))
+                return
+            }
+            // Re-use the same dialog the header button raises.
+            pendingRewindUserMessageId = nil
+            showingUndoConfirmation = true
+        case SlashCommandRegistry.BuiltinKey.cost:
+            let value = panel.totalCostUSD
+            let msg = String(
+                format: String(
+                    localized: "claudeChat.slash.cost.message",
+                    defaultValue: "Cumulative API cost so far: %@"
+                ),
+                formatCost(value)
+            )
+            panel.appendSystemNotice(msg)
+        case SlashCommandRegistry.BuiltinKey.model:
+            let model = panel.modelName ?? String(
+                localized: "claudeChat.slash.model.unknown",
+                defaultValue: "(model not yet reported by claude)"
+            )
+            panel.appendSystemNotice(String(
+                format: String(
+                    localized: "claudeChat.slash.model.message",
+                    defaultValue: "Active model: %@"
+                ),
+                model
+            ))
+        case SlashCommandRegistry.BuiltinKey.permissions:
+            showingAlwaysAllowedPopover = true
+        case SlashCommandRegistry.BuiltinKey.help:
+            panel.appendSystemNotice(buildHelpMessage())
+        default:
+            break
+        }
+    }
+
+    private func buildHelpMessage() -> String {
+        var out = String(
+            localized: "claudeChat.slash.help.header",
+            defaultValue: "Available slash commands:"
+        ) + "\n\n"
+        for cmd in slashAllCommands {
+            let scopeTag: String
+            switch cmd.source {
+            case .builtin: scopeTag = ""
+            case .userCustom: scopeTag = " (user)"
+            case .projectCustom: scopeTag = " (project)"
+            }
+            out += "- `/\(cmd.name)`\(scopeTag) — \(cmd.description)\n"
+        }
+        return out
     }
 
     // MARK: - Theme
@@ -2416,6 +2645,11 @@ struct ChatInputTextView: NSViewRepresentable {
     /// clicking into the chat input does not unstick a stale focus that
     /// still points at a sibling terminal pane, and keystrokes leak there.
     var onBecomeFirstResponder: (() -> Void)? = nil
+    /// Popup-driven key intercepts (slash-command dropdown). Each returns
+    /// `true` to swallow the key, `false` to fall through to NSTextView.
+    var onArrowUp: (() -> Bool)? = nil
+    var onArrowDown: (() -> Bool)? = nil
+    var onTabKey: (() -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2451,6 +2685,9 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onSubmit = onSubmit
         chatTextView.onCancel = onCancel
         chatTextView.onBecomeFirstResponder = onBecomeFirstResponder
+        chatTextView.onArrowUp = onArrowUp
+        chatTextView.onArrowDown = onArrowDown
+        chatTextView.onTabKey = onTabKey
         chatTextView.string = text
         chatTextView.placeholderString = placeholder
 
@@ -2470,6 +2707,9 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onSubmit = onSubmit
         chatTextView.onCancel = onCancel
         chatTextView.onBecomeFirstResponder = onBecomeFirstResponder
+        chatTextView.onArrowUp = onArrowUp
+        chatTextView.onArrowDown = onArrowDown
+        chatTextView.onTabKey = onTabKey
         // Honor an external focus request — bump the token via @State and
         // we steal first-responder on the next render.
         if context.coordinator.lastFocusToken != focusToken {
@@ -2505,6 +2745,12 @@ final class ChatInputNSTextView: NSTextView {
     /// keystrokes from leaking to a sibling terminal that bonsplit still
     /// remembers as focused.
     var onBecomeFirstResponder: (() -> Void)?
+    /// Optional intercepts for popup-driven UI (e.g. slash-command
+    /// dropdown). Each handler returns `true` to swallow the key, `false`
+    /// to fall through to the normal NSTextView behavior.
+    var onArrowUp: (() -> Bool)?
+    var onArrowDown: (() -> Bool)?
+    var onTabKey: (() -> Bool)?
     var placeholderString: String = "" {
         didSet {
             needsDisplay = true
@@ -2523,6 +2769,14 @@ final class ChatInputNSTextView: NSTextView {
             onCancel?()
             return
         }
+        // Up/Down arrows: when a popup is up these navigate the popup
+        // selection; otherwise the NSTextView default (caret movement)
+        // applies. Use keyCode rather than chars so non-US layouts behave.
+        if event.keyCode == 126, let onArrowUp, onArrowUp() { return }    // up
+        if event.keyCode == 125, let onArrowDown, onArrowDown() { return } // down
+        // Tab: prefer-completion when a popup is up; otherwise default
+        // keyView/insert-tab behavior.
+        if event.keyCode == 48, let onTabKey, onTabKey() { return }
         // Return: submit (unless Shift+Return, which inserts a newline).
         let isReturn = event.charactersIgnoringModifiers == "\r" || event.keyCode == 36
         if isReturn {
@@ -2837,5 +3091,148 @@ private struct ToolBatchView: View {
             }
         }
         return seen.joined(separator: ", ")
+    }
+}
+
+// MARK: - Slash command popup
+
+/// Floating list of slash commands shown above the chat input while the
+/// user types a `/`-prefixed name. Visual style matches the rest of the
+/// chat: panel-derived card background, thin border, two-line rows with
+/// the command name in mono and a description below.
+private struct SlashCommandPopup: View {
+    let commands: [SlashCommand]
+    let selectedIndex: Int
+    let palette: ChatPalette
+    let isDark: Bool
+    let onPick: (Int) -> Void
+
+    /// Cap so a project with dozens of custom commands does not push the
+    /// chat history off-screen — the user can scroll inside the popup.
+    private static let maxListHeight: CGFloat = 240
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ScrollViewReader { proxy in
+                ScrollView(.vertical, showsIndicators: true) {
+                    LazyVStack(spacing: 0) {
+                        ForEach(Array(commands.enumerated()), id: \.element.id) { idx, cmd in
+                            SlashCommandRow(
+                                command: cmd,
+                                isSelected: idx == selectedIndex,
+                                palette: palette,
+                                isDark: isDark
+                            )
+                            .id(idx)
+                            .contentShape(Rectangle())
+                            .onTapGesture { onPick(idx) }
+                            if idx < commands.count - 1 {
+                                Divider().opacity(0.3)
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: Self.maxListHeight)
+                .onChange(of: selectedIndex) { newValue in
+                    // Keep the highlighted row visible while the user
+                    // arrows through a long list.
+                    withAnimation(.easeOut(duration: 0.1)) {
+                        proxy.scrollTo(newValue, anchor: .center)
+                    }
+                }
+            }
+            HStack(spacing: 10) {
+                hint(symbol: "↑↓", label: String(
+                    localized: "claudeChat.slash.hint.move",
+                    defaultValue: "navigate"
+                ))
+                hint(symbol: "↩", label: String(
+                    localized: "claudeChat.slash.hint.run",
+                    defaultValue: "run"
+                ))
+                hint(symbol: "⇥", label: String(
+                    localized: "claudeChat.slash.hint.complete",
+                    defaultValue: "complete"
+                ))
+                hint(symbol: "esc", label: String(
+                    localized: "claudeChat.slash.hint.dismiss",
+                    defaultValue: "dismiss"
+                ))
+                Spacer(minLength: 0)
+            }
+            .font(.system(size: 10))
+            .foregroundColor(.secondary)
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
+            .background(palette.cardSubtleBg(isDark))
+        }
+        .background(palette.cardBg(isDark))
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(palette.borderSubtle(isDark), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .shadow(color: Color.black.opacity(isDark ? 0.5 : 0.18), radius: 12, y: 4)
+    }
+
+    private func hint(symbol: String, label: String) -> some View {
+        HStack(spacing: 3) {
+            Text(symbol).font(.system(size: 10, design: .monospaced))
+            Text(label)
+        }
+    }
+}
+
+private struct SlashCommandRow: View {
+    let command: SlashCommand
+    let isSelected: Bool
+    let palette: ChatPalette
+    let isDark: Bool
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            VStack(alignment: .leading, spacing: 2) {
+                HStack(spacing: 6) {
+                    Text(command.displayTitle)
+                        .font(.system(size: 13, design: .monospaced))
+                        .foregroundColor(palette.fg(isDark))
+                    sourceTag
+                }
+                if !command.description.isEmpty {
+                    Text(command.description)
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                        .lineLimit(2)
+                }
+            }
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 7)
+        .background(
+            isSelected ? palette.accent(isDark).opacity(isDark ? 0.22 : 0.14) : Color.clear
+        )
+    }
+
+    @ViewBuilder
+    private var sourceTag: some View {
+        switch command.source {
+        case .builtin:
+            EmptyView()
+        case .userCustom:
+            Text(String(localized: "claudeChat.slash.source.user", defaultValue: "user"))
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
+        case .projectCustom:
+            Text(String(localized: "claudeChat.slash.source.project", defaultValue: "project"))
+                .font(.system(size: 9))
+                .foregroundColor(.secondary)
+                .padding(.horizontal, 5)
+                .padding(.vertical, 1)
+                .background(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
+        }
     }
 }
