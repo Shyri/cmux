@@ -278,7 +278,50 @@ final class DiffCodeContainer: NSView {
             leftLineStarts: leftLineStarts,
             rightLineStarts: rightLineStarts
         )
+        let (leftMarkers, rightMarkers) = DiffCodeContainer.insertionMarkers(
+            from: connectorSegments,
+            leftLineStarts: leftLineStarts,
+            rightLineStarts: rightLineStarts,
+            leftLength: leftText.textStorage?.length ?? 0,
+            rightLength: rightText.textStorage?.length ?? 0
+        )
+        leftText.insertionMarkers = leftMarkers
+        rightText.insertionMarkers = rightMarkers
         needsLayout = true
+    }
+
+    /// 1px markers in the editor where the other pane has content but this
+    /// pane doesn't (the connector funnel collapses to a point at this Y).
+    /// Returns `(leftMarkers, rightMarkers)`.
+    static func insertionMarkers(
+        from segments: [DiffConnectorSegment],
+        leftLineStarts: [Int],
+        rightLineStarts: [Int],
+        leftLength: Int,
+        rightLength: Int
+    ) -> (
+        left: [(charIndex: Int, color: NSColor, atEnd: Bool)],
+        right: [(charIndex: Int, color: NSColor, atEnd: Bool)]
+    ) {
+        let addedColor = NSColor(srgbRed: 0x6E/255, green: 0x9F/255, blue: 0x36/255, alpha: 0.85)
+        let deletedColor = NSColor(srgbRed: 0xC4/255, green: 0x35/255, blue: 0x35/255, alpha: 0.85)
+        var leftMarkers: [(Int, NSColor, Bool)] = []
+        var rightMarkers: [(Int, NSColor, Bool)] = []
+        for seg in segments {
+            if seg.leftLineRange.isEmpty {
+                let row = seg.leftAnchorRow
+                let atEnd = row >= leftLineStarts.count
+                let idx = atEnd ? leftLength : leftLineStarts[row]
+                leftMarkers.append((idx, addedColor, atEnd))
+            }
+            if seg.rightLineRange.isEmpty {
+                let row = seg.rightAnchorRow
+                let atEnd = row >= rightLineStarts.count
+                let idx = atEnd ? rightLength : rightLineStarts[row]
+                rightMarkers.append((idx, deletedColor, atEnd))
+            }
+        }
+        return (leftMarkers, rightMarkers)
     }
 
     func scrollToHunk(at index: Int) {
@@ -1058,6 +1101,13 @@ final class DiffTextView: NSTextView {
     var rowBackgrounds: [(NSRange, NSColor)] = [] {
         didSet { needsDisplay = true }
     }
+    /// 1px horizontal lines drawn at the top of a row (or at the bottom of
+    /// the document when `atEnd` is true), used to mark where the other side
+    /// of the diff has a pure insertion/deletion that collapses the connector
+    /// funnel to a point on this side.
+    var insertionMarkers: [(charIndex: Int, color: NSColor, atEnd: Bool)] = [] {
+        didSet { needsDisplay = true }
+    }
     /// Character ranges that are "collapse stubs" (clickable to expand the
     /// corresponding block of hidden unchanged lines). The Int is the block id.
     var stubRanges: [(NSRange, Int)] = []
@@ -1161,6 +1211,30 @@ final class DiffTextView: NSTextView {
                 if drawRect.intersects(rect) {
                     drawRect.fill()
                 }
+            }
+        }
+
+        // Insertion markers: 1px horizontal lines marking where the other
+        // pane has a pure insertion/deletion. Drawn after row backgrounds so
+        // they sit on top of the band fills.
+        guard !insertionMarkers.isEmpty, layoutManager.numberOfGlyphs > 0 else { return }
+        let textLength = textStorage?.length ?? 0
+        for marker in insertionMarkers {
+            let y: CGFloat
+            if marker.atEnd {
+                let lastGlyph = layoutManager.numberOfGlyphs - 1
+                let lastRect = layoutManager.lineFragmentRect(forGlyphAt: lastGlyph, effectiveRange: nil)
+                y = lastRect.maxY + insetY
+            } else {
+                let clamped = max(0, min(marker.charIndex, max(0, textLength - 1)))
+                let glyph = layoutManager.glyphIndexForCharacter(at: clamped)
+                let frag = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+                y = frag.minY + insetY
+            }
+            let lineRect = NSRect(x: 0, y: y - 0.5, width: bounds.width, height: 1)
+            if lineRect.intersects(rect) {
+                marker.color.setFill()
+                lineRect.fill()
             }
         }
     }

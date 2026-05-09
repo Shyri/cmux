@@ -167,6 +167,29 @@ final class DiffThreeWayContainer: NSView {
             leftLineStarts: p.baseLineStarts,
             rightLineStarts: p.theirsLineStarts
         )
+
+        // Insertion markers per pane. Base aggregates markers from both
+        // connector sets (right side of ours↔base, left side of base↔theirs).
+        let oursLen = oursText.textStorage?.length ?? 0
+        let baseLen = baseText.textStorage?.length ?? 0
+        let theirsLen = theirsText.textStorage?.length ?? 0
+        let (oursMarkers, baseFromLeft) = DiffCodeContainer.insertionMarkers(
+            from: p.oursBaseConnectorSegments,
+            leftLineStarts: p.oursLineStarts,
+            rightLineStarts: p.baseLineStarts,
+            leftLength: oursLen,
+            rightLength: baseLen
+        )
+        let (baseFromRight, theirsMarkers) = DiffCodeContainer.insertionMarkers(
+            from: p.baseTheirsConnectorSegments,
+            leftLineStarts: p.baseLineStarts,
+            rightLineStarts: p.theirsLineStarts,
+            leftLength: baseLen,
+            rightLength: theirsLen
+        )
+        oursText.insertionMarkers = oursMarkers
+        baseText.insertionMarkers = baseFromLeft + baseFromRight
+        theirsText.insertionMarkers = theirsMarkers
         needsLayout = true
     }
 

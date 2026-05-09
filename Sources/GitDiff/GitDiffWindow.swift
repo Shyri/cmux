@@ -1292,24 +1292,27 @@ private struct MRDescriptionCard: View {
     let overview: MROverview
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             if !overview.title.isEmpty {
                 Text(overview.title)
-                    .font(.system(size: 14, weight: .semibold))
-                    .foregroundStyle(.primary)
+                    .font(.system(size: 17, weight: .semibold))
+                    .foregroundStyle(.white)
                     .textSelection(.enabled)
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 6) {
                 if !displayName.isEmpty {
                     Text(displayName)
-                        .font(.system(size: 11, weight: .medium))
-                        .foregroundStyle(.secondary)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
                 }
                 if let when = overview.createdAt {
+                    Text("·")
+                        .font(.system(size: 13))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
                     Text(formatted(when))
-                        .font(.system(size: 11))
-                        .foregroundStyle(.tertiary)
+                        .font(.system(size: 13))
+                        .foregroundStyle(MRCommentMetaStyle.metaColor)
                 }
                 Spacer()
             }
@@ -1318,23 +1321,24 @@ private struct MRDescriptionCard: View {
                     localized: "diff.overview.noDescription",
                     defaultValue: "No description"
                 ))
-                .font(.system(size: 12))
-                .foregroundStyle(.tertiary)
+                .font(.system(size: 14))
+                .foregroundStyle(MRCommentMetaStyle.metaColor)
                 .italic()
             } else {
-                MarkdownText(source: overview.description, baseFontSize: 12)
+                MarkdownText(source: overview.description, baseFontSize: 14)
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
-        .padding(10)
+        .padding(.horizontal, MRCommentCardStyle.innerHorizontalPadding)
+        .padding(.vertical, MRCommentCardStyle.innerVerticalPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
-            RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
+            RoundedRectangle(cornerRadius: MRCommentCardStyle.cornerRadius)
+                .fill(MRCommentCardStyle.background)
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(Color(nsColor: NSColor(srgbRed: 0x3C/255, green: 0x3C/255, blue: 0x3C/255, alpha: 1)), lineWidth: 1)
+            RoundedRectangle(cornerRadius: MRCommentCardStyle.cornerRadius)
+                .strokeBorder(MRCommentCardStyle.border, lineWidth: 1)
         )
         .padding(.horizontal, 6)
     }
@@ -1592,22 +1596,38 @@ func estimatedCardHeight(for discussion: MRDiscussion) -> CGFloat {
         // VStack spacing(4) between header and body.
         height += 4
         // Body wraps; count visual lines from explicit \n + width-based wrap.
+        // Markdown extras: GFM table rows (lines starting with `|`) render
+        // ~1.6× taller than plain text due to cell padding and borders, and
+        // each fenced ``` code block adds extra vertical chrome (padding +
+        // rounded background) — account for both so we don't underreserve
+        // when a comment has rich markdown.
         let segments = note.body.split(separator: "\n", omittingEmptySubsequences: false)
-        var lines = 0
+        var lines: CGFloat = 0
+        var codeFenceCount = 0
         for seg in segments {
-            let len = seg.count
-            if len == 0 {
-                lines += 1
-            } else {
-                lines += Int(ceil(Double(len) / Double(charsPerLine)))
+            let trimmed = seg.trimmingCharacters(in: .whitespaces)
+            if trimmed.hasPrefix("```") {
+                codeFenceCount += 1
             }
+            let len = seg.count
+            let baseLines: CGFloat
+            if len == 0 {
+                baseLines = 1
+            } else {
+                baseLines = ceil(CGFloat(len) / CGFloat(charsPerLine))
+            }
+            let multiplier: CGFloat = trimmed.hasPrefix("|") ? 1.6 : 1.0
+            lines += baseLines * multiplier
         }
-        if lines == 0 { lines = 1 }
-        height += CGFloat(lines) * bodyLineHeight
+        if lines < 1 { lines = 1 }
+        height += lines * bodyLineHeight
+        // One ``` block contributes one open + one close fence, so each pair
+        // adds the rounded-background chrome (~10pt) once.
+        height += CGFloat(codeFenceCount / 2) * 10
     }
-    // Small safety margin so anti-aliased edges and font ascenders aren't
+    // Safety margin so anti-aliased edges and markdown block margins aren't
     // clipped by the placeholder run.
-    height += 6
+    height += 12
     return height
 }
 
