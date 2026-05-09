@@ -396,7 +396,8 @@
         "notifications": "通知",
         "find": "検索",
         "terminal": "ターミナル",
-        "window": "ウィンドウ"
+        "window": "ウィンドウ",
+        "sessionPresets": "セッションプリセット"
       },
       "sc": {
         "ws-new": "新規ワークスペース",

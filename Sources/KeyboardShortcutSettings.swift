@@ -81,6 +81,14 @@ enum KeyboardShortcutSettings {
         case showBrowserJavaScriptConsole
         case toggleReactGrab
 
+        // Session presets
+        case saveSessionAsPreset
+        case updateActiveSessionPreset
+        case manageSessionPresets
+
+        // Workspace notes
+        case manageWorkspaceNotes
+
         var id: String { rawValue }
 
         var label: String {
@@ -141,6 +149,10 @@ enum KeyboardShortcutSettings {
             case .toggleBrowserDeveloperTools: return String(localized: "shortcut.toggleBrowserDevTools.label", defaultValue: "Toggle Browser Developer Tools")
             case .showBrowserJavaScriptConsole: return String(localized: "shortcut.showBrowserJSConsole.label", defaultValue: "Show Browser JavaScript Console")
             case .toggleReactGrab: return String(localized: "shortcut.toggleReactGrab.label", defaultValue: "Toggle React Grab")
+            case .saveSessionAsPreset: return String(localized: "shortcut.saveSessionAsPreset.label", defaultValue: "Save Session as Preset…")
+            case .updateActiveSessionPreset: return String(localized: "shortcut.updateActiveSessionPreset.label", defaultValue: "Update Current Preset")
+            case .manageSessionPresets: return String(localized: "shortcut.manageSessionPresets.label", defaultValue: "Manage Presets…")
+            case .manageWorkspaceNotes: return String(localized: "shortcut.manageWorkspaceNotes.label", defaultValue: "Manage Notes…")
             }
         }
 
@@ -266,6 +278,10 @@ enum KeyboardShortcutSettings {
                 return StoredShortcut(key: "c", command: true, shift: false, option: true, control: false)
             case .toggleReactGrab:
                 return StoredShortcut(key: "g", command: true, shift: true, option: false, control: false)
+            case .saveSessionAsPreset, .updateActiveSessionPreset, .manageSessionPresets,
+                 .manageWorkspaceNotes:
+                // No default — user-assignable from Settings → Keyboard Shortcuts.
+                return StoredShortcut(key: "", command: false, shift: false, option: false, control: false)
             }
         }
 

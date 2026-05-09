@@ -441,7 +441,8 @@
         "notifications": "Notifications",
         "find": "Find",
         "terminal": "Terminal",
-        "window": "Window"
+        "window": "Window",
+        "sessionPresets": "Session Presets"
       },
       "sc": {
         "ws-new": "New workspace",

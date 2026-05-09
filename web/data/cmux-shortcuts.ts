@@ -141,4 +141,34 @@ export const shortcutCategories: ShortcutCategory[] = [
       { id: "triggerFlash", combos: [["⌘", "⇧", "H"]], description: { en: "Flash focused panel", ja: "フォーカス中のパネルをフラッシュ" } },
     ],
   },
+  {
+    id: "session-presets",
+    titleKey: "sessionPresets",
+    shortcuts: [
+      {
+        id: "saveSessionAsPreset",
+        combos: [],
+        description: { en: "Save session as preset", ja: "セッションをプリセットとして保存" },
+        note: { en: "no default — assign in Settings", ja: "デフォルトなし — 設定で割り当て" },
+      },
+      {
+        id: "updateActiveSessionPreset",
+        combos: [],
+        description: { en: "Update current preset", ja: "現在のプリセットを更新" },
+        note: { en: "no default — assign in Settings", ja: "デフォルトなし — 設定で割り当て" },
+      },
+      {
+        id: "manageSessionPresets",
+        combos: [],
+        description: { en: "Manage presets", ja: "プリセットを管理" },
+        note: { en: "no default — assign in Settings", ja: "デフォルトなし — 設定で割り当て" },
+      },
+      {
+        id: "manageWorkspaceNotes",
+        combos: [],
+        description: { en: "Manage notes", ja: "メモを管理" },
+        note: { en: "no default — assign in Settings", ja: "デフォルトなし — 設定で割り当て" },
+      },
+    ],
+  },
 ];

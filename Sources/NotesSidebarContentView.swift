@@ -3,6 +3,7 @@ import AppKit
 
 struct NotesSidebarContentView: View {
     @ObservedObject var workspace: Workspace
+    @ObservedObject private var notesStore = WorkspaceNotesStore.shared
     @Binding var editingNoteId: UUID?
     @State private var draggedNoteId: UUID?
     @State private var dropTargetNoteId: UUID?
@@ -28,6 +29,8 @@ struct NotesSidebarContentView: View {
                     .id(workspace.id)
                     .frame(height: mrHeight)
             }
+            .background(Color.darculaSidebarBackground)
+            .preferredColorScheme(.dark)
         }
     }
 
@@ -45,7 +48,7 @@ struct NotesSidebarContentView: View {
 
     private func splitDivider(totalHeight: CGFloat) -> some View {
         Rectangle()
-            .fill(isDraggingSplitter ? Color.accentColor : Color(nsColor: .separatorColor))
+            .fill(isDraggingSplitter ? Color.darculaAccent : Color.darculaBorder)
             .frame(height: isDraggingSplitter ? 2 : 1)
             .frame(maxWidth: .infinity)
             .contentShape(Rectangle().inset(by: -4))
@@ -303,11 +306,11 @@ private struct NoteCardView: View {
         .padding(10)
         .background(
             RoundedRectangle(cornerRadius: 6)
-                .fill(Color(nsColor: NSColor(srgbRed: 0x4F/255, green: 0x50/255, blue: 0x52/255, alpha: 1)))
+                .fill(Color.darculaCardBackground)
         )
         .overlay(
             RoundedRectangle(cornerRadius: 6)
-                .strokeBorder(.separator, lineWidth: 0.5)
+                .strokeBorder(Color.darculaBorder, lineWidth: 0.5)
         )
         // While editing, do NOT install SwiftUI's tap/contentShape gestures —
         // they intercept mouseDown before the embedded NSTextView can take
@@ -739,4 +742,33 @@ private extension View {
             self
         }
     }
+}
+
+// MARK: - Darcula (IntelliJ) palette for the workspace sidebar
+
+extension Color {
+    /// Main IntelliJ Darcula tool-window background.
+    static let darculaSidebarBackground = Color(nsColor: NSColor(
+        srgbRed: 0x2B/255, green: 0x2B/255, blue: 0x2B/255, alpha: 1
+    ))
+    /// IntelliJ Darcula panel/card surface — sits on top of the sidebar bg.
+    static let darculaCardBackground = Color(nsColor: NSColor(
+        srgbRed: 0x3C/255, green: 0x3F/255, blue: 0x41/255, alpha: 1
+    ))
+    /// Slightly lighter card surface used on hover.
+    static let darculaCardHover = Color(nsColor: NSColor(
+        srgbRed: 0x4C/255, green: 0x50/255, blue: 0x52/255, alpha: 1
+    ))
+    /// Subtle separator/border tone consistent with Darcula.
+    static let darculaBorder = Color(nsColor: NSColor(
+        srgbRed: 0x32/255, green: 0x32/255, blue: 0x32/255, alpha: 1
+    ))
+    /// IntelliJ blue accent (selection / focus ring tone).
+    static let darculaAccent = Color(nsColor: NSColor(
+        srgbRed: 0x4B/255, green: 0x6E/255, blue: 0xAF/255, alpha: 1
+    ))
+    /// Soft Darcula foreground (`#A9B7C6`) for secondary chrome.
+    static let darculaForeground = Color(nsColor: NSColor(
+        srgbRed: 0xA9/255, green: 0xB7/255, blue: 0xC6/255, alpha: 1
+    ))
 }
