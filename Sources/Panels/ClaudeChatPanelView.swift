@@ -64,7 +64,7 @@ struct ChatPalette {
         // Slightly brighter than the terminal fg — chat messages are read
         // prose, not code, so a touch more contrast helps long-form
         // readability without diverging from the terminal palette.
-        isDark ? Color(nsColor: shifted(terminalFg, by: 0.08)) : .primary
+        isDark ? Color(nsColor: shifted(terminalFg, by: 0.14)) : .primary
     }
     func accent(_ isDark: Bool) -> Color {
         isDark ? Self.purple : cmuxAccentColor()
@@ -81,6 +81,167 @@ struct ChatPalette {
     }
 }
 
+// MARK: - Diff side pane
+
+/// Right-hand pane showing every Edit/Write/MultiEdit/NotebookEdit
+/// claude has emitted in the current (or just-finished) turn. Reuses
+/// `EditDiffView` & friends so the visual is identical to the in-line
+/// tool cards, just consolidated in one column.
+private struct DiffPaneView: View {
+    let edits: [ClaudeChatPanel.TurnEdit]
+    let isDark: Bool
+    let onClose: () -> Void
+
+    @Environment(\.chatPalette) private var palette
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Divider()
+            if edits.isEmpty {
+                emptyState
+            } else {
+                scrollList
+            }
+        }
+        .background(palette.headerBg(isDark))
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "doc.on.doc")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            Text(String(
+                localized: "claudeChat.diffPane.title",
+                defaultValue: "Last turn changes"
+            ))
+            .font(.system(size: 12, weight: .semibold))
+            if !edits.isEmpty {
+                Text("\(edits.count)")
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 5)
+                    .padding(.vertical, 1)
+                    .background(Capsule().fill(palette.cardBg(isDark)))
+            }
+            Spacer()
+            Button(action: onClose) {
+                Image(systemName: "xmark")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundColor(.secondary)
+            }
+            .buttonStyle(.borderless)
+            .help(String(
+                localized: "claudeChat.diffPane.close.tooltip",
+                defaultValue: "Hide diff pane"
+            ))
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+    }
+
+    private var emptyState: some View {
+        VStack(spacing: 6) {
+            Image(systemName: "tray")
+                .font(.system(size: 22))
+                .foregroundColor(.secondary)
+            Text(String(
+                localized: "claudeChat.diffPane.empty",
+                defaultValue: "No edits yet in this turn."
+            ))
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            .multilineTextAlignment(.center)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .padding(16)
+    }
+
+    private var scrollList: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 10) {
+                ForEach(edits) { edit in
+                    DiffPaneEditCard(edit: edit, isDark: isDark)
+                }
+            }
+            .padding(12)
+        }
+    }
+}
+
+private struct DiffPaneEditCard: View {
+    let edit: ClaudeChatPanel.TurnEdit
+    let isDark: Bool
+
+    @Environment(\.chatPalette) private var palette
+
+    private var parsed: [String: Any]? {
+        guard let data = edit.inputJSON.data(using: .utf8),
+              let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        return obj
+    }
+
+    private var headerSummary: String {
+        switch edit.toolName {
+        case "Edit", "Write", "NotebookEdit":
+            if let path = parsed?["file_path"] as? String {
+                return (path as NSString).lastPathComponent
+            }
+        case "MultiEdit":
+            if let path = parsed?["file_path"] as? String,
+               let edits = parsed?["edits"] as? [[String: Any]] {
+                return "\((path as NSString).lastPathComponent) · \(edits.count) edits"
+            }
+        default:
+            break
+        }
+        return edit.toolName
+    }
+
+    private var iconName: String {
+        switch edit.toolName {
+        case "Write": return "doc.badge.plus"
+        case "NotebookEdit": return "book"
+        default: return "pencil"
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 5) {
+                Image(systemName: iconName)
+                    .font(.system(size: 11))
+                    .foregroundColor(.secondary)
+                Text(edit.toolName)
+                    .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                Text(headerSummary)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+            }
+            ToolInputDetailView(
+                toolName: edit.toolName,
+                input: parsed,
+                rawJSON: edit.inputJSON,
+                isDark: isDark
+            )
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(palette.cardBg(isDark))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(palette.borderSubtle(isDark), lineWidth: 1)
+        )
+    }
+}
+
 // MARK: - Drop container (AppKit-backed)
 
 /// Wraps SwiftUI content in an `NSView` that doubles as an
@@ -91,17 +252,20 @@ struct ChatDropContainer<Content: View>: NSViewRepresentable {
     let onURLs: ([URL]) -> Void
     let onImageData: ([Data]) -> Void
     let onTargetedChange: (Bool) -> Void
+    let onPointerDown: (() -> Void)?
     let content: Content
 
     init(
         onURLs: @escaping ([URL]) -> Void,
         onImageData: @escaping ([Data]) -> Void,
         onTargetedChange: @escaping (Bool) -> Void,
+        onPointerDown: (() -> Void)? = nil,
         @ViewBuilder content: () -> Content
     ) {
         self.onURLs = onURLs
         self.onImageData = onImageData
         self.onTargetedChange = onTargetedChange
+        self.onPointerDown = onPointerDown
         self.content = content()
     }
 
@@ -110,6 +274,7 @@ struct ChatDropContainer<Content: View>: NSViewRepresentable {
         view.onURLs = onURLs
         view.onImageData = onImageData
         view.onTargetedChange = onTargetedChange
+        view.onPointerDown = onPointerDown
 
         let host = NSHostingView(rootView: AnyView(content))
         host.translatesAutoresizingMaskIntoConstraints = false
@@ -129,6 +294,7 @@ struct ChatDropContainer<Content: View>: NSViewRepresentable {
         nsView.onURLs = onURLs
         nsView.onImageData = onImageData
         nsView.onTargetedChange = onTargetedChange
+        nsView.onPointerDown = onPointerDown
     }
 }
 
@@ -137,6 +303,13 @@ final class ChatDropZoneNSView: NSView {
     var onURLs: (([URL]) -> Void)?
     var onImageData: (([Data]) -> Void)?
     var onTargetedChange: ((Bool) -> Void)?
+    /// Kept for source compatibility with `ChatDropContainer`. We no longer
+    /// install a global mouse-down monitor here because doing so was
+    /// stealing focus mid-drag-select and breaking text selection inside
+    /// the chat. The chat input's own `becomeFirstResponder` hook is enough
+    /// to keep bonsplit's focused-pane bookkeeping in sync for the typing
+    /// case (which was the only real leak).
+    var onPointerDown: (() -> Void)?
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
@@ -568,11 +741,28 @@ struct ClaudeChatPanelView: View {
     @State private var inputFocusToken: Int = 0
     /// Controls whether the always-allowed-tools popover is visible.
     @State private var showingAlwaysAllowedPopover: Bool = false
+    /// Whether the right-side diff pane is open. Persists for the
+    /// lifetime of this view; restart the panel to reset.
+    @State private var showingDiffPane: Bool = false
+    /// Mirror of `panel.lastTurnEdits.count` from the previous render —
+    /// used to detect 0→≥1 transitions and auto-open the side pane.
+    @State private var lastTurnEditsCountSeen: Int = 0
+    @State private var showingUndoConfirmation: Bool = false
+    /// Non-nil when the dialog is being raised from an inline rewind
+    /// button — the rewind targets that user message. nil means rewind
+    /// the last turn (header button).
+    @State private var pendingRewindUserMessageId: UUID? = nil
     /// Highlights the chat area while a drag is hovering.
     @State private var isDropTargeted: Bool = false
     @Environment(\.colorScheme) private var colorScheme
 
     private static let bottomSentinelId = "__claudechat_bottom__"
+
+    /// Cap the chat content width when the panel is unusually wide
+    /// (full-screen, large external displays). Prose at 1500pt wide is
+    /// uncomfortable to read; matches the convention used by ChatGPT,
+    /// Claude.ai, Slack thread panes, etc.
+    private static let maxContentWidth: CGFloat = 760
 
     /// Palette derived from the panel's terminal-config-driven base colors.
     /// Recomputed on every render — cheap, just two NSColors.
@@ -593,7 +783,14 @@ struct ClaudeChatPanelView: View {
                     _ = panel.attachImageData(data, suggestedExtension: "png", baseName: "drop")
                 }
             },
-            onTargetedChange: { value in isDropTargeted = value }
+            onTargetedChange: { value in isDropTargeted = value },
+            onPointerDown: {
+                // Any click anywhere in the chat panel area: tell the host
+                // that this pane should become bonsplit's focused pane, so
+                // subsequent keystrokes route here instead of leaking to a
+                // sibling terminal pane that bonsplit still remembers.
+                onRequestPanelFocus()
+            }
         ) {
             chatContent
         }
@@ -609,6 +806,8 @@ struct ClaudeChatPanelView: View {
         .onChange(of: panel.focusFlashToken) { _ in
             triggerFocusFlashAnimation()
         }
+        // (`.environment(\.chatPalette, palette)` deliberately moved into
+        // `chatContent` — see note there.)
         .onChange(of: panel.pendingAttachments.count) { newCount in
             // After a drop, AppKit leaves the dragging container as first
             // responder — and bonsplit's focus manager then routes the
@@ -619,13 +818,69 @@ struct ClaudeChatPanelView: View {
                 inputFocusToken &+= 1
             }
         }
-        .environment(\.chatPalette, palette)
+        .onChange(of: panel.lastTurnEdits.count) { newCount in
+            // 0 → ≥1: claude just produced the first edit of this turn.
+            // Auto-open the side pane so the user sees the diffs without
+            // hunting for the toggle. We only auto-open on the rising
+            // edge, so once the user closes it manually mid-turn we
+            // don't keep re-opening it on every additional edit.
+            if lastTurnEditsCountSeen == 0 && newCount > 0 && !showingDiffPane {
+                showingDiffPane = true
+            }
+            lastTurnEditsCountSeen = newCount
+        }
+        .onChange(of: panel.inputFocusRequestToken) { _ in
+            // Panel asked for keyboard focus (e.g. bonsplit selected this
+            // pane). Mirror it onto our local token so the input view
+            // claims first-responder.
+            inputFocusToken &+= 1
+        }
+        .onChange(of: panel.status) { newStatus in
+            // When a turn completes (.idle / .error after .sending) the
+            // user is almost always about to type the next prompt — make
+            // sure their keystrokes land in the input even if they had
+            // clicked away mid-turn.
+            if case .idle = newStatus {
+                inputFocusToken &+= 1
+            }
+        }
     }
 
     /// The actual SwiftUI tree of the chat panel, embedded inside the
     /// AppKit dragging container. Kept as a separate computed property so
     /// the body's outer view is just the container.
     private var chatContent: some View {
+        HStack(spacing: 0) {
+            chatColumn
+            if showingDiffPane {
+                Divider()
+                DiffPaneView(
+                    edits: panel.lastTurnEdits,
+                    isDark: colorScheme == .dark,
+                    onClose: { showingDiffPane = false }
+                )
+                .frame(minWidth: 280, idealWidth: 360, maxWidth: 480)
+                .transition(.move(edge: .trailing).combined(with: .opacity))
+            }
+        }
+        .overlay {
+            if isDropTargeted {
+                RoundedRectangle(cornerRadius: 0)
+                    .stroke(ChatPalette.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
+                    .background(ChatPalette.green.opacity(0.06))
+                    .allowsHitTesting(false)
+            }
+        }
+        .animation(.easeInOut(duration: 0.18), value: showingDiffPane)
+        // The chat palette must be injected here, INSIDE the AppKit
+        // hosting container — environments do not cross the
+        // NSHostingView boundary, so an outer `.environment` would never
+        // reach DiffPaneView/DiffBlock and they'd render with the static
+        // default palette.
+        .environment(\.chatPalette, palette)
+    }
+
+    private var chatColumn: some View {
         VStack(spacing: 0) {
             workingDirectoryHeader
             Divider()
@@ -639,14 +894,7 @@ struct ClaudeChatPanelView: View {
             }
             inputBar
         }
-        .overlay {
-            if isDropTargeted {
-                RoundedRectangle(cornerRadius: 0)
-                    .stroke(ChatPalette.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
-                    .background(ChatPalette.green.opacity(0.06))
-                    .allowsHitTesting(false)
-            }
-        }
+        .frame(maxWidth: .infinity)
     }
 
     // MARK: - Header
@@ -662,15 +910,6 @@ struct ClaudeChatPanelView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            if let model = panel.modelName, !model.isEmpty {
-                Text(model)
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
-                    .help(String(localized: "claudeChat.model.tooltip", defaultValue: "Active Claude model"))
-            }
             if panel.totalCostUSD > 0 {
                 Text(formatCost(panel.totalCostUSD))
                     .font(.system(size: 10, design: .monospaced))
@@ -686,11 +925,87 @@ struct ClaudeChatPanelView: View {
                     .foregroundColor(.secondary.opacity(0.7))
                     .help(String(localized: "claudeChat.sessionId.tooltip", defaultValue: "Claude session id (resumed across turns)"))
             }
+            undoButton
+            diffPaneButton
             alwaysAllowedButton
             clearButton
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .confirmationDialog(
+            pendingRewindUserMessageId == nil
+                ? String(localized: "claudeChat.undo.confirm.title", defaultValue: "Undo last turn?")
+                : String(localized: "claudeChat.rewind.confirm.title", defaultValue: "Rewind to this message?"),
+            isPresented: $showingUndoConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                pendingRewindUserMessageId == nil
+                    ? String(localized: "claudeChat.undo.confirm.action", defaultValue: "Undo")
+                    : String(localized: "claudeChat.rewind.confirm.action", defaultValue: "Rewind"),
+                role: .destructive
+            ) {
+                let restored: Int?
+                if let mid = pendingRewindUserMessageId {
+                    restored = panel.rewindTo(userMessageId: mid)
+                } else {
+                    restored = panel.undoLastTurn()
+                }
+                pendingRewindUserMessageId = nil
+                #if DEBUG
+                NSLog("ClaudeChatPanel.rewind restored \(restored ?? 0) file(s)")
+                #endif
+            }
+            Button(
+                String(localized: "claudeChat.undo.confirm.cancel", defaultValue: "Cancel"),
+                role: .cancel
+            ) {
+                pendingRewindUserMessageId = nil
+            }
+        } message: {
+            Text(String(
+                localized: "claudeChat.undo.confirm.message",
+                defaultValue: "This restores files claude edited (using Claude Code's file history) and removes its responses after the chosen point. The next prompt will start a fresh session."
+            ))
+        }
+    }
+
+    private var undoButton: some View {
+        let canUndo = !panel.undoCheckpoints.isEmpty
+        return Button {
+            showingUndoConfirmation = true
+        } label: {
+            Image(systemName: "arrow.uturn.backward")
+                .font(.system(size: 11))
+                .foregroundColor(canUndo ? .secondary : .secondary.opacity(0.35))
+        }
+        .buttonStyle(.borderless)
+        .disabled(!canUndo)
+        .help(String(
+            localized: "claudeChat.undo.tooltip",
+            defaultValue: "Undo the last turn — restores files claude edited and removes its replies"
+        ))
+    }
+
+    private var diffPaneButton: some View {
+        Button {
+            showingDiffPane.toggle()
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: showingDiffPane ? "sidebar.right" : "doc.on.doc")
+                    .font(.system(size: 11))
+                if !panel.lastTurnEdits.isEmpty {
+                    Text("\(panel.lastTurnEdits.count)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+            }
+            .foregroundColor(panel.lastTurnEdits.isEmpty ? .secondary : ChatPalette.green)
+        }
+        .buttonStyle(.borderless)
+        .help(String(
+            localized: "claudeChat.diffPane.tooltip",
+            defaultValue: "Show a side panel with the edits from the last turn"
+        ))
     }
 
     private var alwaysAllowedButton: some View {
@@ -785,7 +1100,7 @@ struct ClaudeChatPanelView: View {
                         .id("question-\(request.id)")
                     }
                     if case .sending = panel.status {
-                        thinkingIndicator
+                        statusIndicator
                     }
 
                     // Sentinel pinned to the bottom of the content. Its
@@ -798,8 +1113,10 @@ struct ClaudeChatPanelView: View {
                         .onAppear { isAtBottom = true }
                         .onDisappear { isAtBottom = false }
                 }
-                .padding(.horizontal, 24)
                 .padding(.vertical, 16)
+                .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
+                .frame(maxWidth: .infinity, alignment: .center)
+                .padding(.horizontal, 24)
             }
             .overlay(alignment: .bottomTrailing) {
                 if !isAtBottom {
@@ -835,6 +1152,18 @@ struct ClaudeChatPanelView: View {
             .onChange(of: forceScrollToBottomToken) { _ in
                 scrollToBottom(proxy: proxy)
             }
+            .onAppear {
+                // When the chat panel becomes visible (switching back from
+                // another tab/workspace, or first mount) the ScrollView's
+                // initial offset is the top of the LazyVStack. The user
+                // expects to land on the latest exchange instead. A tiny
+                // delay lets LazyVStack finish materialising rows before we
+                // jump.
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    isAtBottom = true
+                    proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
+                }
+            }
         }
     }
 
@@ -846,7 +1175,15 @@ struct ClaudeChatPanelView: View {
                 role: payload.role,
                 text: payload.text,
                 attachmentURLs: payload.attachmentURLs,
-                isDark: colorScheme == .dark
+                messageId: payload.messageId,
+                isDark: colorScheme == .dark,
+                canRewindToHere: panel.undoCheckpoints.contains(where: {
+                    $0.userMessageId == payload.messageId
+                }),
+                onRewindToHere: { messageId in
+                    pendingRewindUserMessageId = messageId
+                    showingUndoConfirmation = true
+                }
             )
         case .toolBatch(let batch):
             ToolBatchView(
@@ -875,15 +1212,34 @@ struct ClaudeChatPanelView: View {
         }
     }
 
-    private var thinkingIndicator: some View {
-        HStack(spacing: 8) {
-            ProgressView()
-                .controlSize(.small)
-            Text(String(localized: "claudeChat.status.thinking", defaultValue: "Thinking…"))
+    @ViewBuilder
+    private var statusIndicator: some View {
+        if !panel.pendingApprovals.isEmpty || !panel.pendingQuestions.isEmpty {
+            // Claude itself is paused — the daemon is waiting on the
+            // user's reply to the inline approval / question card. Show
+            // that explicitly so it doesn't look like a frozen "thinking".
+            HStack(spacing: 8) {
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 12))
+                    .foregroundColor(ChatPalette.orange)
+                Text(String(
+                    localized: "claudeChat.status.waitingForUser",
+                    defaultValue: "Waiting for your reply…"
+                ))
                 .font(.system(size: 12))
                 .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 4)
+        } else {
+            HStack(spacing: 8) {
+                ProgressView()
+                    .controlSize(.small)
+                Text(String(localized: "claudeChat.status.thinking", defaultValue: "Thinking…"))
+                    .font(.system(size: 12))
+                    .foregroundColor(.secondary)
+            }
+            .padding(.vertical, 4)
         }
-        .padding(.vertical, 4)
     }
 
     // MARK: - Attachments
@@ -899,8 +1255,10 @@ struct ClaudeChatPanelView: View {
                     )
                 }
             }
-            .padding(.horizontal, 12)
             .padding(.vertical, 6)
+            .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
+            .padding(.horizontal, 12)
         }
         .frame(maxHeight: 64)
         .background(headerBackground)
@@ -936,11 +1294,12 @@ struct ClaudeChatPanelView: View {
                 textColor: panel.terminalForegroundColor,
                 focusToken: inputFocusToken,
                 onSubmit: submit,
-                onCancel: cancelIfSending
+                onCancel: cancelIfSending,
+                onBecomeFirstResponder: { onRequestPanelFocus() }
             )
-            .frame(minHeight: 18, maxHeight: 60)
+            .frame(minHeight: 16, maxHeight: 48)
             .padding(.horizontal, 8)
-            .padding(.vertical, 2)
+            .padding(.vertical, 1)
             .background(
                 RoundedRectangle(cornerRadius: 8)
                     .fill(inputBackground)
@@ -952,12 +1311,26 @@ struct ClaudeChatPanelView: View {
 
             HStack(spacing: 8) {
                 permissionModePicker
+                if let model = panel.modelName, !model.isEmpty {
+                    Text(model)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
+                        .help(String(
+                            localized: "claudeChat.model.tooltip",
+                            defaultValue: "Active Claude model"
+                        ))
+                }
                 Spacer(minLength: 4)
                 actionButton
             }
         }
-        .padding(.horizontal, 12)
         .padding(.vertical, 6)
+        .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.horizontal, 12)
         .background(headerBackground)
     }
 
@@ -1511,35 +1884,28 @@ private struct DiffBlock: View {
     let isDark: Bool
 
     @Environment(\.chatPalette) private var palette
+    @State private var expandedGaps: Set<UUID> = []
 
-    /// Max diff lines to render per side. Beyond this we collapse the rest
-    /// into a "[N more lines hidden]" indicator. Without the cap, VStack
-    /// renders every Text synchronously on the main thread which can hang
-    /// the app for huge edits.
-    private static let maxLinesPerSide = 200
-    /// Max width per individual line — also a hard cap to keep Text layout
-    /// fast for files with very long lines.
+    /// Max characters per individual line — keeps Text layout fast for
+    /// files with very long lines (e.g. minified JSON).
     private static let maxLineCharWidth = 4_000
+    /// Surrounding context lines kept around each change.
+    private static let contextLines = 3
+
+    private var diffLines: [UnifiedDiffLine] {
+        UnifiedDiff.compute(old: old, new: new, context: Self.contextLines)
+    }
+
+    private var addColor: Color { ChatPalette.green }
+    private var removeColor: Color { ChatPalette.red }
 
     var body: some View {
-        let oldLines = capped(splitLines(old))
-        let newLines = capped(splitLines(new))
         VStack(alignment: .leading, spacing: 0) {
-            ForEach(Array(oldLines.lines.enumerated()), id: \.offset) { _, line in
-                diffLine(prefix: "-", text: line, color: removeColor)
-            }
-            if let extra = oldLines.hiddenCount {
-                truncationIndicator("removed", count: extra, color: removeColor)
-            }
-            ForEach(Array(newLines.lines.enumerated()), id: \.offset) { _, line in
-                diffLine(prefix: "+", text: line, color: addColor)
-            }
-            if let extra = newLines.hiddenCount {
-                truncationIndicator("added", count: extra, color: addColor)
+            ForEach(diffLines) { line in
+                row(for: line)
             }
         }
         .padding(.vertical, 4)
-        .padding(.horizontal, 8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(
             RoundedRectangle(cornerRadius: 6)
@@ -1547,53 +1913,116 @@ private struct DiffBlock: View {
         )
     }
 
-    private func splitLines(_ s: String) -> [String] {
-        if s.isEmpty { return [] }
-        return s.components(separatedBy: "\n")
-    }
-
-    private func capped(_ lines: [String]) -> (lines: [String], hiddenCount: Int?) {
-        guard lines.count > Self.maxLinesPerSide else {
-            return (lines.map { String($0.prefix(Self.maxLineCharWidth)) }, nil)
+    @ViewBuilder
+    private func row(for line: UnifiedDiffLine) -> some View {
+        switch line {
+        case .context(_, let text, let oldNo, let newNo):
+            diffLine(
+                marker: " ",
+                markerColor: .secondary,
+                text: text,
+                oldNo: oldNo,
+                newNo: newNo,
+                rowBackground: .clear
+            )
+        case .removed(_, let text, let oldNo):
+            diffLine(
+                marker: "-",
+                markerColor: removeColor,
+                text: text,
+                oldNo: oldNo,
+                newNo: nil,
+                rowBackground: removeColor.opacity(0.16)
+            )
+        case .added(_, let text, let newNo):
+            diffLine(
+                marker: "+",
+                markerColor: addColor,
+                text: text,
+                oldNo: nil,
+                newNo: newNo,
+                rowBackground: addColor.opacity(0.16)
+            )
+        case .gap(let id, let hiddenLines):
+            if expandedGaps.contains(id) {
+                ForEach(hiddenLines) { hidden in
+                    diffLine(
+                        marker: " ",
+                        markerColor: .secondary,
+                        text: hidden.text,
+                        oldNo: hidden.oldLineNo,
+                        newNo: hidden.newLineNo,
+                        rowBackground: .clear
+                    )
+                }
+            } else {
+                gapRow(id: id, count: hiddenLines.count)
+            }
         }
-        let kept = Array(lines.prefix(Self.maxLinesPerSide))
-            .map { String($0.prefix(Self.maxLineCharWidth)) }
-        return (kept, lines.count - Self.maxLinesPerSide)
     }
 
-    private func diffLine(prefix: String, text: String, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(prefix)
+    private func diffLine(
+        marker: String,
+        markerColor: Color,
+        text: String,
+        oldNo: Int?,
+        newNo: Int?,
+        rowBackground: Color
+    ) -> some View {
+        let truncated = String(text.prefix(Self.maxLineCharWidth))
+        return HStack(alignment: .top, spacing: 6) {
+            Text(oldNo.map { String($0) } ?? "")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary.opacity(0.7))
+                .frame(width: 30, alignment: .trailing)
+            Text(newNo.map { String($0) } ?? "")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary.opacity(0.7))
+                .frame(width: 30, alignment: .trailing)
+            Text(marker)
                 .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(color)
-                .frame(width: 12, alignment: .leading)
-            Text(text.isEmpty ? " " : text)
+                .foregroundColor(markerColor)
+                .frame(width: 10, alignment: .leading)
+            Text(truncated.isEmpty ? " " : truncated)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.primary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 1)
-        .background(color.opacity(0.10))
+        .padding(.horizontal, 4)
+        .background(rowBackground)
     }
 
-    private func truncationIndicator(_ kind: String, count: Int, color: Color) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text("…")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundColor(color)
-                .frame(width: 12, alignment: .leading)
-            Text("[\(count) more \(kind) lines hidden]")
+    private func gapRow(id: UUID, count: Int) -> some View {
+        Button {
+            expandedGaps.insert(id)
+        } label: {
+            HStack(alignment: .center, spacing: 6) {
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+                    .frame(width: 70, alignment: .center)
+                Text(String(
+                    localized: "claudeChat.diff.unmodifiedLines",
+                    defaultValue: "\(count) unmodified lines"
+                ))
                 .font(.system(size: 10, design: .monospaced))
                 .foregroundColor(.secondary)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 0)
+            }
+            .padding(.vertical, 3)
+            .padding(.horizontal, 4)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(palette.cardSubtleBg(isDark))
+            .contentShape(Rectangle())
         }
-        .padding(.vertical, 1)
-        .background(color.opacity(0.06))
+        .buttonStyle(.plain)
+        .help(String(
+            localized: "claudeChat.diff.unmodifiedLines.tooltip",
+            defaultValue: "Click to reveal unchanged surrounding lines"
+        ))
     }
-
-    private var addColor: Color { ChatPalette.green }
-    private var removeColor: Color { ChatPalette.red }
 }
 
 private struct ApprovalRequestCard: View {
@@ -1929,7 +2358,12 @@ private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme 
         .code {
             FontFamilyVariant(.monospaced)
             FontSize(12)
-            ForegroundColor(isDark ? ChatPalette.purple : Color(red: 0.6, green: 0.2, blue: 0.7))
+            // IntelliJ-Darcula-style: inline code uses the same blue as
+            // identifiers/keywords in the editor. Avoid the prior purple
+            // because it clashed with the rest of the palette. A brighter
+            // shade than `ChatPalette.blue` to read clearly against the
+            // terminal-bg-derived inline-code background.
+            ForegroundColor(isDark ? Color(red: 0x6F/255.0, green: 0xB1/255.0, blue: 0xFF/255.0) : Color(red: 0.18, green: 0.42, blue: 0.78))
             BackgroundColor(palette.codeBg(isDark))
         }
         .codeBlock { configuration in
@@ -1977,6 +2411,11 @@ struct ChatInputTextView: NSViewRepresentable {
     var focusToken: Int = 0
     let onSubmit: () -> Void
     let onCancel: () -> Void
+    /// Fired when the underlying NSTextView takes first-responder, so the
+    /// host can update bonsplit's "focused pane" bookkeeping. Without this,
+    /// clicking into the chat input does not unstick a stale focus that
+    /// still points at a sibling terminal pane, and keystrokes leak there.
+    var onBecomeFirstResponder: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2011,6 +2450,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.delegate = context.coordinator
         chatTextView.onSubmit = onSubmit
         chatTextView.onCancel = onCancel
+        chatTextView.onBecomeFirstResponder = onBecomeFirstResponder
         chatTextView.string = text
         chatTextView.placeholderString = placeholder
 
@@ -2029,6 +2469,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.insertionPointColor = isDark ? textColor : NSColor.labelColor
         chatTextView.onSubmit = onSubmit
         chatTextView.onCancel = onCancel
+        chatTextView.onBecomeFirstResponder = onBecomeFirstResponder
         // Honor an external focus request — bump the token via @State and
         // we steal first-responder on the next render.
         if context.coordinator.lastFocusToken != focusToken {
@@ -2059,10 +2500,21 @@ struct ChatInputTextView: NSViewRepresentable {
 final class ChatInputNSTextView: NSTextView {
     var onSubmit: (() -> Void)?
     var onCancel: (() -> Void)?
+    /// Fires when this view takes first-responder. cmux uses it to mark
+    /// the surrounding pane as the focused pane in bonsplit, preventing
+    /// keystrokes from leaking to a sibling terminal that bonsplit still
+    /// remembers as focused.
+    var onBecomeFirstResponder: (() -> Void)?
     var placeholderString: String = "" {
         didSet {
             needsDisplay = true
         }
+    }
+
+    override func becomeFirstResponder() -> Bool {
+        let ok = super.becomeFirstResponder()
+        if ok { onBecomeFirstResponder?() }
+        return ok
     }
 
     override func keyDown(with event: NSEvent) {
@@ -2118,6 +2570,9 @@ enum ChatRow {
         let role: ChatMessageRole
         let text: String
         let attachmentURLs: [URL]
+        /// Original `ChatMessage.id` — used by the inline rewind button
+        /// to look up the matching checkpoint on the panel.
+        let messageId: UUID
     }
 
     struct ToolBatch {
@@ -2155,7 +2610,8 @@ enum ChatRowBuilder {
                     id: "\(message.id.uuidString)-attachOnly",
                     role: message.role,
                     text: "",
-                    attachmentURLs: message.attachmentURLs
+                    attachmentURLs: message.attachmentURLs,
+                    messageId: message.id
                 )))
                 continue
             }
@@ -2172,7 +2628,8 @@ enum ChatRowBuilder {
                         id: "\(message.id.uuidString)-\(idx)",
                         role: message.role,
                         text: value,
-                        attachmentURLs: attachments
+                        attachmentURLs: attachments,
+                        messageId: message.id
                     )))
                 case .toolUse(let toolUse):
                     if batchAnchorId == nil {
@@ -2197,32 +2654,57 @@ private struct TextBlockRow: View {
     let role: ChatMessageRole
     let text: String
     var attachmentURLs: [URL] = []
+    var messageId: UUID? = nil
     let isDark: Bool
+    var canRewindToHere: Bool = false
+    var onRewindToHere: ((UUID) -> Void)? = nil
 
     @Environment(\.chatPalette) private var palette
+    @State private var isHovered: Bool = false
 
     var body: some View {
         Group {
             switch role {
             case .user:
-                VStack(alignment: .trailing, spacing: 6) {
-                    if !attachmentURLs.isEmpty {
-                        SentAttachmentsRow(urls: attachmentURLs, isDark: isDark)
+                HStack(alignment: .top, spacing: 6) {
+                    if canRewindToHere, isHovered, let id = messageId {
+                        Button {
+                            onRewindToHere?(id)
+                        } label: {
+                            Image(systemName: "arrow.uturn.backward.circle")
+                                .font(.system(size: 14))
+                                .foregroundColor(.secondary)
+                                .padding(.top, 6)
+                        }
+                        .buttonStyle(.plain)
+                        .help(String(
+                            localized: "claudeChat.rewindToHere.tooltip",
+                            defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
+                        ))
+                        .transition(.opacity)
                     }
-                    if !text.isEmpty {
-                        Text(text)
-                            .font(.system(size: 13))
-                            .foregroundColor(palette.fg(isDark))
-                            .padding(.horizontal, 12)
-                            .padding(.vertical, 8)
-                            .background(
-                                RoundedRectangle(cornerRadius: 12)
-                                    .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
-                            )
-                            .textSelection(.enabled)
+                    VStack(alignment: .trailing, spacing: 6) {
+                        if !attachmentURLs.isEmpty {
+                            SentAttachmentsRow(urls: attachmentURLs, isDark: isDark)
+                        }
+                        if !text.isEmpty {
+                            Text(text)
+                                .font(.system(size: 13))
+                                .foregroundColor(palette.fg(isDark))
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
+                                )
+                                .textSelection(.enabled)
+                        }
                     }
+                    .frame(maxWidth: .infinity, alignment: .trailing)
                 }
-                .frame(maxWidth: .infinity, alignment: .trailing)
+                .onHover { hovering in
+                    isHovered = hovering
+                }
             case .assistant, .system:
                 Markdown(text)
                     .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))

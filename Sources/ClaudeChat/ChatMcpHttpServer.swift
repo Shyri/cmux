@@ -257,6 +257,11 @@ final class ChatMcpHttpServer {
             inputJSON: inputJSON
         )
 
+        ChatRunnerDebugLog.shared.appendStdoutLine(
+            "MCP approval_prompt request id=\(request.id) tool=\(toolName)"
+        )
+        let startedAt = Date()
+
         DispatchQueue.main.async { [weak self] in
             guard let self, let delegate = self.delegate else {
                 self?.queue.async {
@@ -271,6 +276,10 @@ final class ChatMcpHttpServer {
             }
             delegate.server(self, didReceiveApproval: request) { response in
                 self.queue.async {
+                    let elapsed = Date().timeIntervalSince(startedAt)
+                    ChatRunnerDebugLog.shared.appendStdoutLine(
+                        String(format: "MCP approval_prompt resolved id=\(request.id) behavior=\(response.behavior.rawValue) waited=%.1fs", elapsed)
+                    )
                     self.replyApproval(
                         response,
                         originalInput: inputAny,
@@ -431,7 +440,17 @@ final class ChatMcpHttpServer {
         head += "\r\n"
         var data = Data(head.utf8)
         if let body { data.append(body) }
-        connection.send(content: data, completion: .contentProcessed { _ in
+        let bytesOut = data.count
+        connection.send(content: data, completion: .contentProcessed { error in
+            if let error {
+                ChatRunnerDebugLog.shared.appendStdoutLine(
+                    "MCP HTTP response send error: \(error.localizedDescription) (status=\(status))"
+                )
+            } else {
+                ChatRunnerDebugLog.shared.appendStdoutLine(
+                    "MCP HTTP response sent status=\(status) bytes=\(bytesOut)"
+                )
+            }
             connection.cancel()
         })
     }

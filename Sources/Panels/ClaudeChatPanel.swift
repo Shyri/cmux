@@ -176,6 +176,69 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// multimodal content blocks.
     @Published private(set) var pendingAttachments: [ChatAttachment] = []
 
+    /// Edits (Edit/MultiEdit/Write/NotebookEdit tool_use blocks) emitted
+    /// during the current — or just-finished — turn. Cleared when the user
+    /// sends a new message so the side pane always reflects "what claude
+    /// did since I last spoke."
+    @Published private(set) var lastTurnEdits: [TurnEdit] = []
+
+    /// Stack of rewind checkpoints, one per finished turn (oldest first).
+    /// The view layer reads this to expose a "↶" button next to every
+    /// user message. Each checkpoint anchors itself to the user message
+    /// that started the turn so the user can rewind to *just before
+    /// claude replied to this prompt*.
+    @Published private(set) var undoCheckpoints: [RewindCheckpoint] = []
+
+    struct RewindCheckpoint: Identifiable, Equatable {
+        let id: UUID
+        let userMessageId: UUID
+        let userMessageIndex: Int
+        let backupPaths: [String]
+        /// Internal handle used to actually restore. Equatable wraps the
+        /// session id + paths only; backup URLs are not part of identity.
+        fileprivate let backups: ClaudeSessionHistory.TurnFileBackups?
+
+        init(
+            userMessageId: UUID,
+            userMessageIndex: Int,
+            backups: ClaudeSessionHistory.TurnFileBackups?
+        ) {
+            self.id = UUID()
+            self.userMessageId = userMessageId
+            self.userMessageIndex = userMessageIndex
+            self.backupPaths = backups?.backups.keys.sorted() ?? []
+            self.backups = backups
+        }
+
+        static func == (lhs: Self, rhs: Self) -> Bool {
+            lhs.id == rhs.id
+                && lhs.userMessageId == rhs.userMessageId
+                && lhs.userMessageIndex == rhs.userMessageIndex
+                && lhs.backupPaths == rhs.backupPaths
+        }
+    }
+
+    struct TurnEdit: Identifiable, Equatable {
+        let id: UUID
+        let toolName: String
+        let inputJSON: String
+
+        init(toolName: String, inputJSON: String) {
+            self.id = UUID()
+            self.toolName = toolName
+            self.inputJSON = inputJSON
+        }
+    }
+
+    private static let editToolNames: Set<String> = [
+        "Edit", "MultiEdit", "Write", "NotebookEdit"
+    ]
+
+    /// Pre-staged turn anchor: the id and index of the user message that
+    /// started the in-flight turn. Filled in `send()` and consumed in
+    /// `handle(.result)` once we know which file backups claude wrote.
+    private var pendingTurnStaging: (userMessageId: UUID, userMessageIndex: Int)?
+
     /// Cached rules from `.claude/settings*.json`. Reloaded on every
     /// approval request so changes to the file are picked up live.
     private var cachedRulesCwd: String?
@@ -190,6 +253,12 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     /// Token incremented to trigger focus flash animation.
     @Published private(set) var focusFlashToken: Int = 0
+
+    /// Token bumped to ask the chat input view to claim first-responder.
+    /// Driven by `focus()` (called by bonsplit when the pane becomes
+    /// active) and by attachment drops, so keystrokes always land in the
+    /// chat — not in a sibling terminal pane.
+    @Published private(set) var inputFocusRequestToken: Int = 0
 
     /// User-overridable title (e.g. via tab "Rename"). When nil we derive
     /// the title from the first user message.
@@ -291,8 +360,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     // MARK: - Panel protocol
 
     func focus() {
-        // Input focus is handled by the SwiftUI view's @FocusState; nothing to
-        // do at the panel level for now.
+        // Bonsplit calls this when the chat tab becomes the active pane.
+        // Without an explicit focus pull the workspace's last-focused
+        // terminal can keep first-responder and steal subsequent keystrokes.
+        inputFocusRequestToken &+= 1
     }
 
     func unfocus() {
@@ -359,6 +430,15 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         localMessage.attachmentURLs = attachmentURLs
         messages.append(localMessage)
         pendingAttachments.removeAll()
+        // Each user prompt starts a new "turn" — drop the previous turn's
+        // edit list so the diff side pane always shows what claude did in
+        // response to the most recent message.
+        lastTurnEdits.removeAll()
+        // Stage a checkpoint anchored just AFTER the user message — an
+        // undo will keep the user prompt visible and remove only what
+        // claude streams below it. The file-backups are filled in once
+        // the turn finishes (we read them out of claude's session JSONL).
+        pendingTurnStaging = (userMessageId: localMessage.id, userMessageIndex: messages.count)
         status = .sending
 
         let cwd = workingDirectory
@@ -406,6 +486,55 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     func cancel() {
         runner.cancel()
+    }
+
+    /// Rewind the conversation to *just after* `userMessageId` was sent
+    /// — the prompt itself stays visible, every claude reply since is
+    /// removed, and the matching file-history backup is replayed onto
+    /// disk. Returns the number of files restored, or `nil` if no
+    /// checkpoint matches that message id.
+    ///
+    /// Side effects:
+    ///   - Drops every checkpoint at or after the rewind point (those
+    ///     futures no longer exist).
+    ///   - Clears the session id so the next prompt starts a fresh
+    ///     conversation (Claude Code's CLI does not expose a way to
+    ///     rewind its own memory mid-session).
+    @discardableResult
+    func rewindTo(userMessageId: UUID) -> Int? {
+        guard let checkpointIdx = undoCheckpoints.firstIndex(
+            where: { $0.userMessageId == userMessageId }
+        ) else { return nil }
+        let checkpoint = undoCheckpoints[checkpointIdx]
+
+        var restoredFiles = 0
+        if let backups = checkpoint.backups {
+            restoredFiles = ClaudeSessionHistory.restore(backups).count
+        }
+        if checkpoint.userMessageIndex < messages.count {
+            messages.removeSubrange(checkpoint.userMessageIndex ..< messages.count)
+        }
+        // Drop this checkpoint and every later one — they describe a
+        // future that no longer exists.
+        undoCheckpoints.removeSubrange(checkpointIdx ..< undoCheckpoints.count)
+
+        lastTurnEdits.removeAll()
+        toolResultsByToolUseId.removeAll()
+        pendingApprovals.removeAll()
+        pendingQuestions.removeAll()
+        approvalResolvers.removeAll()
+        questionResolvers.removeAll()
+        sessionId = nil
+        pendingTurnStaging = nil
+        if case .sending = status { status = .idle }
+        return restoredFiles
+    }
+
+    /// Convenience: rewind to the most recent checkpoint.
+    @discardableResult
+    func undoLastTurn() -> Int? {
+        guard let last = undoCheckpoints.last else { return nil }
+        return rewindTo(userMessageId: last.userMessageId)
     }
 
     // MARK: - Attachments
@@ -511,6 +640,9 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingQuestions.removeAll()
         toolResultsByToolUseId.removeAll()
         pendingAttachments.removeAll()
+        lastTurnEdits.removeAll()
+        undoCheckpoints.removeAll()
+        pendingTurnStaging = nil
         // Note: alwaysAllowedTools is intentionally preserved — it's persisted
         // in `.claude/settings.local.json` and represents user preferences
         // that should outlive a single conversation.
@@ -600,6 +732,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 )
                 messages.append(.text(.system, warning))
             }
+            // Pull every edit-shaped tool_use into the side-pane feed.
+            for case .toolUse(let toolUse) in blocks
+                where Self.editToolNames.contains(toolUse.name) {
+                lastTurnEdits.append(TurnEdit(
+                    toolName: toolUse.name,
+                    inputJSON: toolUse.inputJSON
+                ))
+            }
             messages.append(ChatMessage(role: .assistant, blocks: blocks))
         case .user(let blocks):
             guard !blocks.isEmpty else { return }
@@ -628,6 +768,20 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             }
             if isError, let errorMessage, !errorMessage.isEmpty {
                 status = .error(errorMessage)
+            }
+            // Persist a checkpoint for this turn so the user can rewind
+            // to it later (along with all the others piled up).
+            if let staging = pendingTurnStaging, let activeSid = sessionId {
+                let backups = ClaudeSessionHistory.latestTurnBackups(
+                    sessionId: activeSid,
+                    cwd: workingDirectory
+                )
+                undoCheckpoints.append(RewindCheckpoint(
+                    userMessageId: staging.userMessageId,
+                    userMessageIndex: staging.userMessageIndex,
+                    backups: backups
+                ))
+                pendingTurnStaging = nil
             }
         case .other:
             break
@@ -660,6 +814,17 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         didReceiveApproval request: ChatApprovalRequest,
         completion: @escaping (ChatApprovalResponse) -> Void
     ) {
+        // 0. Auto-allow cmux's own MCP tools. Claude should not need to
+        //    ask permission to use the very mechanism we exposed for it
+        //    (asking the user a question, etc.). Without this, every call
+        //    to `mcp__cmux__ask_user_question` first surfaces an approval
+        //    card — the user has to click Allow before the actual question
+        //    even appears, which feels like claude is hanging.
+        if request.toolName.hasPrefix("mcp__cmux__") {
+            completion(.allow)
+            return
+        }
+
         // 1. In-session "Allow always" by tool name.
         if alwaysAllowedTools.contains(request.toolName) {
             completion(.allow)

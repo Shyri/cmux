@@ -12922,6 +12922,31 @@ private struct TabItemView: View, Equatable {
                     .truncationMode(.tail)
                     .layoutPriority(1)
 
+                // Needs-input wins over running: if claude is paused
+                // waiting on a user reply, the spinner would imply "still
+                // thinking" which is exactly the confusion we want to
+                // avoid.
+                if tab.hasClaudeChatNeedsInput {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.orange)
+                        .frame(width: 14, height: 14)
+                        .help(String(
+                            localized: "sidebar.claudeChat.needsInput.tooltip",
+                            defaultValue: "Claude is waiting for your input on a chat in this workspace"
+                        ))
+                } else if tab.hasClaudeChatRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
+                        .frame(width: 14, height: 14)
+                        .foregroundColor(activeSecondaryColor(0.9))
+                        .help(String(
+                            localized: "sidebar.claudeChat.running.tooltip",
+                            defaultValue: "Claude is working on a chat in this workspace"
+                        ))
+                }
+
                 Spacer(minLength: 0)
 
                 ZStack(alignment: .trailing) {

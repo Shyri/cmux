@@ -6575,6 +6575,22 @@ final class Workspace: Identifiable, ObservableObject {
     /// burst of pending tool calls / questions.
     private var claudeChatNeedsInputPanelIds: Set<UUID> = []
 
+    /// Panels currently with `status == .sending`. Aggregated into
+    /// `hasClaudeChatRunning` so the sidebar can render a spinner next to
+    /// the workspace title while any chat is working.
+    private var claudeChatSendingPanelIds: Set<UUID> = []
+
+    /// True when at least one Claude Chat panel in this workspace is
+    /// currently streaming a response. Updated from the chat panel's
+    /// `$status` subscription.
+    @Published private(set) var hasClaudeChatRunning: Bool = false
+
+    /// True when at least one Claude Chat panel in this workspace is
+    /// waiting on the user (pending approval or open question). Updated
+    /// from the chat panel's `$pendingApprovals` / `$pendingQuestions`
+    /// subscriptions.
+    @Published private(set) var hasClaudeChatNeedsInput: Bool = false
+
     /// When true, suppresses auto-creation in didSplitPane (programmatic splits handle their own panels)
     private var isProgrammaticSplit = false
     private var debugStressPreloadSelectionDepth = 0
@@ -6747,6 +6763,8 @@ final class Workspace: Identifiable, ObservableObject {
             sidebarObservationSignal($remoteConnectionDetail),
             sidebarObservationSignal($activeRemoteTerminalSessionCount),
             sidebarObservationSignal($listeningPorts),
+            sidebarObservationSignal($hasClaudeChatRunning),
+            sidebarObservationSignal($hasClaudeChatNeedsInput),
         ]
 
         return Publishers.MergeMany(publishers).eraseToAnyPublisher()
@@ -7432,6 +7450,7 @@ final class Workspace: Identifiable, ObservableObject {
             .sink { [weak self, weak claudeChatPanel] _ in
                 guard let self, let panel = claudeChatPanel else { return }
                 self.refreshClaudeChatTabAppearance(panel)
+                self.refreshClaudeChatRunningAggregate(for: panel)
             }
         let approvalSub = claudeChatPanel.$pendingApprovals
             .map { $0.count }
@@ -7477,7 +7496,11 @@ final class Workspace: Identifiable, ObservableObject {
         let needsInput = !panel.pendingApprovals.isEmpty || !panel.pendingQuestions.isEmpty
         let isSending: Bool
         if case .sending = panel.status { isSending = true } else { isSending = false }
-        let isLoading = isSending || needsInput
+        // Only show the spinner when claude is actually working. While it
+        // is paused on an Allow/Deny or an ask_user_question, the badge
+        // alone communicates "needs you" without making the tab look
+        // like it's still busy thinking.
+        let isLoading = isSending && !needsInput
 
         let titleUpdate: String? = existing.title != resolvedTitle ? resolvedTitle : nil
         let hasCustomTitleUpdate: Bool? = titleUpdate != nil
@@ -7496,6 +7519,23 @@ final class Workspace: Identifiable, ObservableObject {
         )
     }
 
+    /// Maintain `hasClaudeChatRunning` from the per-panel `.sending`
+    /// state. Aggregated so the workspace sidebar can show a single
+    /// spinner regardless of how many chat panels live in this workspace.
+    private func refreshClaudeChatRunningAggregate(for panel: ClaudeChatPanel) {
+        let isSending: Bool
+        if case .sending = panel.status { isSending = true } else { isSending = false }
+        if isSending {
+            claudeChatSendingPanelIds.insert(panel.id)
+        } else {
+            claudeChatSendingPanelIds.remove(panel.id)
+        }
+        let next = !claudeChatSendingPanelIds.isEmpty
+        if hasClaudeChatRunning != next {
+            hasClaudeChatRunning = next
+        }
+    }
+
     /// Track 0 → >0 transitions for pending approvals/questions and fire a
     /// native notification (mirrors what Claude Code in a terminal does
     /// when it needs the user). Per-panel cooldown key keeps spam down if
@@ -7508,6 +7548,10 @@ final class Workspace: Identifiable, ObservableObject {
             postClaudeChatNeedsInputNotification(panel)
         } else if !needsInput && previously {
             claudeChatNeedsInputPanelIds.remove(panel.id)
+        }
+        let aggregate = !claudeChatNeedsInputPanelIds.isEmpty
+        if hasClaudeChatNeedsInput != aggregate {
+            hasClaudeChatNeedsInput = aggregate
         }
     }
 
@@ -9680,6 +9724,10 @@ final class Workspace: Identifiable, ObservableObject {
         terminalInheritanceFontPointsByPanelId.removeAll(keepingCapacity: false)
         lastTerminalConfigInheritancePanelId = nil
         lastTerminalConfigInheritanceFontPoints = nil
+        claudeChatNeedsInputPanelIds.removeAll(keepingCapacity: false)
+        claudeChatSendingPanelIds.removeAll(keepingCapacity: false)
+        if hasClaudeChatRunning { hasClaudeChatRunning = false }
+        if hasClaudeChatNeedsInput { hasClaudeChatNeedsInput = false }
     }
 
     /// Close a panel.
@@ -12138,6 +12186,17 @@ extension Workspace: BonsplitDelegate {
         restoredTerminalScrollbackByPanelId.removeValue(forKey: panelId)
         PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
         terminalInheritanceFontPointsByPanelId.removeValue(forKey: panelId)
+        // Drop chat-related aggregates so a panel that was sending while
+        // the user closed it does not leave the workspace stuck with a
+        // permanent spinner / needs-input indicator.
+        if claudeChatSendingPanelIds.remove(panelId) != nil {
+            let next = !claudeChatSendingPanelIds.isEmpty
+            if hasClaudeChatRunning != next { hasClaudeChatRunning = next }
+        }
+        if claudeChatNeedsInputPanelIds.remove(panelId) != nil {
+            let next = !claudeChatNeedsInputPanelIds.isEmpty
+            if hasClaudeChatNeedsInput != next { hasClaudeChatNeedsInput = next }
+        }
         if lastTerminalConfigInheritancePanelId == panelId {
             lastTerminalConfigInheritancePanelId = nil
         }
