@@ -1482,6 +1482,15 @@ struct ClaudeChatPanelView: View {
             if showingSlashPopup { showingSlashPopup = false }
             return
         }
+        // Lazy-load guard: SwiftUI does not guarantee `onAppear` runs
+        // before the first `onChange(of: panel.draft)`. If the user
+        // types `/star` before the registry has populated, our filter
+        // returns nothing and the popup never appears the first time.
+        // The list always contains the 7 built-ins once loaded, so an
+        // empty array reliably means "not loaded yet".
+        if slashAllCommands.isEmpty {
+            slashAllCommands = SlashCommandRegistry.availableCommands(cwd: panel.workingDirectory)
+        }
         let filtered = SlashCommandRegistry.filter(slashAllCommands, byPrefix: prefix)
         slashFilteredCommands = filtered
         if filtered.isEmpty {
@@ -3155,15 +3164,23 @@ private struct SlashCommandPopup: View {
         VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView(.vertical, showsIndicators: true) {
-                    LazyVStack(spacing: 0) {
-                        ForEach(Array(commands.enumerated()), id: \.element.id) { idx, cmd in
+                    // Plain VStack (not Lazy): we cap the list at a few
+                    // dozen commands so the lazy upside is negligible,
+                    // and LazyVStack inside an NSHostingView (the
+                    // ChatDropContainer wrapping the panel) recycles
+                    // rows aggressively when the data shrinks — which
+                    // produced ghost rows after filtering. Render
+                    // every row up-front instead.
+                    VStack(spacing: 0) {
+                        ForEach(commands) { cmd in
+                            let idx = commands.firstIndex(where: { $0.id == cmd.id }) ?? 0
                             SlashCommandRow(
                                 command: cmd,
                                 isSelected: idx == selectedIndex,
                                 palette: palette,
                                 isDark: isDark
                             )
-                            .id(idx)
+                            .id(cmd.id)
                             .contentShape(Rectangle())
                             .onTapGesture { onPick(idx) }
                             if idx < commands.count - 1 {
@@ -3175,9 +3192,13 @@ private struct SlashCommandPopup: View {
                 .frame(maxHeight: Self.maxListHeight)
                 .onChange(of: selectedIndex) { newValue in
                     // Keep the highlighted row visible while the user
-                    // arrows through a long list.
+                    // arrows through a long list. We scroll to the
+                    // command's stable id rather than the index so the
+                    // anchor stays valid across filter transitions.
+                    guard newValue >= 0, newValue < commands.count else { return }
+                    let target = commands[newValue].id
                     withAnimation(.easeOut(duration: 0.1)) {
-                        proxy.scrollTo(newValue, anchor: .center)
+                        proxy.scrollTo(target, anchor: .center)
                     }
                 }
             }
