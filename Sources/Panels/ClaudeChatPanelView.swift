@@ -1099,6 +1099,56 @@ struct ClaudeChatPanelView: View {
         return String(format: "$%.3f", usd)
     }
 
+    /// Pretty-print a token count in compact form (12.3k, 1.2M).
+    private func formatTokens(_ n: Int) -> String {
+        if n >= 1_000_000 {
+            return String(format: "%.1fM", Double(n) / 1_000_000)
+        }
+        if n >= 1_000 {
+            return String(format: "%.1fk", Double(n) / 1_000)
+        }
+        return "\(n)"
+    }
+
+    /// Best-effort context-window size for the active model. Anthropic
+    /// model ids that carry the `[1m]` suffix run with a 1M context;
+    /// everything else assumes the standard 200k window.
+    private func contextWindowTokens(forModel model: String?) -> Int {
+        guard let model, !model.isEmpty else { return 200_000 }
+        return model.contains("[1m]") ? 1_000_000 : 200_000
+    }
+
+    /// Chip showing "<used> / <context>" tokens, anchored next to the
+    /// model chip. The total counts every token claude reported so far
+    /// for this turn (input + output + cache create/read), which is
+    /// what the user thinks of as "tokens consumed".
+    private func tokenUsageChip(_ usage: ChatTokenUsage) -> some View {
+        let used = usage.total
+        let max = contextWindowTokens(forModel: panel.modelName)
+        let pct = Double(min(used, max)) / Double(max)
+        let color: Color = pct >= 0.85 ? ChatPalette.red
+            : pct >= 0.6 ? ChatPalette.orange
+            : .secondary
+        let label = "\(formatTokens(used)) / \(formatTokens(max))"
+        return Text(label)
+            .font(.system(size: 10, design: .monospaced))
+            .foregroundColor(color)
+            .padding(.horizontal, 6)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
+            .help(String(
+                format: String(
+                    localized: "claudeChat.tokens.tooltip",
+                    defaultValue: "Tokens used in this turn — input %d, output %d, cache create %d, cache read %d (context window %@)"
+                ),
+                usage.inputTokens,
+                usage.outputTokens,
+                usage.cacheCreationInputTokens,
+                usage.cacheReadInputTokens,
+                formatTokens(max)
+            ))
+    }
+
     private var permissionModePicker: some View {
         Picker("", selection: $panel.permissionMode) {
             ForEach(ChatPermissionMode.allCases) { mode in
@@ -1243,7 +1293,9 @@ struct ClaudeChatPanelView: View {
                 onRewindToHere: { messageId in
                     pendingRewindUserMessageId = messageId
                     showingUndoConfirmation = true
-                }
+                },
+                isCollapsedByDefault: payload.isCollapsedByDefault,
+                slashCommandName: payload.slashCommandName
             )
         case .toolBatch(let batch):
             ToolBatchView(
@@ -1403,6 +1455,9 @@ struct ClaudeChatPanelView: View {
                             localized: "claudeChat.model.tooltip",
                             defaultValue: "Active Claude model"
                         ))
+                }
+                if let usage = panel.lastUsage {
+                    tokenUsageChip(usage)
                 }
                 Spacer(minLength: 4)
                 actionButton
@@ -1571,15 +1626,21 @@ struct ClaudeChatPanelView: View {
             runBuiltinSlashCommand(key)
             panel.draft = ""
         case .sendAsPrompt:
-            // Replace the typed name with the canonical one (the user may
-            // have only typed a prefix), then send. Preserves any args
-            // they may have already added — but our prefix gate hides the
-            // popup as soon as a space appears, so in practice there
-            // aren't any args yet here.
-            let prefix = slashCommandPrefix(in: panel.draft) ?? ""
-            let rest = String(panel.draft.dropFirst(1 + prefix.count))
-            let canonical = "/" + cmd.name + rest
-            panel.send(canonical.trimmingCharacters(in: .whitespacesAndNewlines))
+            // Headless `claude -p` does not process slash commands —
+            // it would just see the literal "/start-task" as the user
+            // prompt and ask claude to interpret it (which usually
+            // produces nothing useful). Read the .md body ourselves,
+            // forward it as the actual prompt, and tag the local
+            // transcript message so the UI shows the original
+            // `/<name>` in a collapsed tool-card-style row.
+            let body = SlashCommandRegistry.readBody(of: cmd)
+            if body.isEmpty {
+                // Empty file or unreadable — fall back to sending the
+                // literal command (claude may at least echo something).
+                panel.send("/" + cmd.name)
+            } else {
+                panel.sendSlashCommand(name: cmd.name, expandedText: body)
+            }
             panel.draft = ""
             forceScrollToBottomToken &+= 1
         }
@@ -2876,6 +2937,14 @@ enum ChatRow {
         /// Original `ChatMessage.id` — used by the inline rewind button
         /// to look up the matching checkpoint on the panel.
         let messageId: UUID
+        /// Render the bubble collapsed (with a disclosure to expand).
+        /// True for slash-command expansions and any other stream-
+        /// injected user messages.
+        var isCollapsedByDefault: Bool = false
+        /// When this row was produced by invoking a slash command, the
+        /// `/`-less name of that command — surfaced in the collapsed
+        /// header so the user can tell which command produced it.
+        var slashCommandName: String? = nil
     }
 
     struct ToolBatch {
@@ -2914,7 +2983,9 @@ enum ChatRowBuilder {
                     role: message.role,
                     text: "",
                     attachmentURLs: message.attachmentURLs,
-                    messageId: message.id
+                    messageId: message.id,
+                    isCollapsedByDefault: message.isCollapsedByDefault,
+                    slashCommandName: message.slashCommandName
                 )))
                 continue
             }
@@ -2932,7 +3003,9 @@ enum ChatRowBuilder {
                         role: message.role,
                         text: value,
                         attachmentURLs: attachments,
-                        messageId: message.id
+                        messageId: message.id,
+                        isCollapsedByDefault: message.isCollapsedByDefault,
+                        slashCommandName: message.slashCommandName
                     )))
                 case .toolUse(let toolUse):
                     if batchAnchorId == nil {
@@ -2961,52 +3034,70 @@ private struct TextBlockRow: View {
     let isDark: Bool
     var canRewindToHere: Bool = false
     var onRewindToHere: ((UUID) -> Void)? = nil
+    /// True for stream-injected user messages (e.g. claude's expansion
+    /// of a slash command). Renders with a disclosure header so the
+    /// transcript stays compact.
+    var isCollapsedByDefault: Bool = false
+    /// When this row is a slash-command expansion, the original `/`-less
+    /// command name. Used as the header label so the user sees
+    /// `/start-task` instead of a generic "Slash command prompt".
+    var slashCommandName: String? = nil
 
     @Environment(\.chatPalette) private var palette
     @State private var isHovered: Bool = false
+    @State private var isExpanded: Bool = false
 
     var body: some View {
         Group {
             switch role {
             case .user:
-                HStack(alignment: .top, spacing: 6) {
-                    if canRewindToHere, isHovered, let id = messageId {
-                        Button {
-                            onRewindToHere?(id)
-                        } label: {
-                            Image(systemName: "arrow.uturn.backward.circle")
-                                .font(.system(size: 14))
-                                .foregroundColor(.secondary)
-                                .padding(.top, 6)
+                if isCollapsedByDefault {
+                    // Stream-injected user message (slash-command
+                    // expansion). Render full-width as a tool-card-style
+                    // collapsible block so it visually matches claude's
+                    // own tool cards instead of pretending to be a chat
+                    // bubble.
+                    streamUserPromptCard
+                } else {
+                    HStack(alignment: .top, spacing: 6) {
+                        if canRewindToHere, isHovered, let id = messageId {
+                            Button {
+                                onRewindToHere?(id)
+                            } label: {
+                                Image(systemName: "arrow.uturn.backward.circle")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .help(String(
+                                localized: "claudeChat.rewindToHere.tooltip",
+                                defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
+                            ))
+                            .transition(.opacity)
                         }
-                        .buttonStyle(.plain)
-                        .help(String(
-                            localized: "claudeChat.rewindToHere.tooltip",
-                            defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
-                        ))
-                        .transition(.opacity)
+                        VStack(alignment: .trailing, spacing: 6) {
+                            if !attachmentURLs.isEmpty {
+                                SentAttachmentsRow(urls: attachmentURLs, isDark: isDark)
+                            }
+                            if !text.isEmpty {
+                                Text(text)
+                                    .font(.system(size: 13))
+                                    .foregroundColor(palette.fg(isDark))
+                                    .padding(.horizontal, 12)
+                                    .padding(.vertical, 8)
+                                    .background(
+                                        RoundedRectangle(cornerRadius: 12)
+                                            .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
+                                    )
+                                    .textSelection(.enabled)
+                            }
+                        }
+                        .frame(maxWidth: .infinity, alignment: .trailing)
                     }
-                    VStack(alignment: .trailing, spacing: 6) {
-                        if !attachmentURLs.isEmpty {
-                            SentAttachmentsRow(urls: attachmentURLs, isDark: isDark)
-                        }
-                        if !text.isEmpty {
-                            Text(text)
-                                .font(.system(size: 13))
-                                .foregroundColor(palette.fg(isDark))
-                                .padding(.horizontal, 12)
-                                .padding(.vertical, 8)
-                                .background(
-                                    RoundedRectangle(cornerRadius: 12)
-                                        .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
-                                )
-                                .textSelection(.enabled)
-                        }
+                    .onHover { hovering in
+                        isHovered = hovering
                     }
-                    .frame(maxWidth: .infinity, alignment: .trailing)
-                }
-                .onHover { hovering in
-                    isHovered = hovering
                 }
             case .assistant, .system:
                 Markdown(text)
@@ -3015,6 +3106,100 @@ private struct TextBlockRow: View {
                     .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
+    }
+
+    /// Tool-card-style block for stream-injected user prompts (a slash
+    /// command's expansion lands here). Visual chrome matches claude's
+    /// own ToolUseCard so the user spots it as "the same kind of thing":
+    /// header row with an icon + label + truncated summary + chevron,
+    /// rounded card with a subtle border, body that appears below the
+    /// header when expanded.
+    private var streamUserPromptCard: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Button(action: { withAnimation(.easeInOut(duration: 0.15)) { isExpanded.toggle() } }) {
+                HStack(spacing: 5) {
+                    Image(systemName: "text.alignleft")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                        .frame(width: 12)
+                    Text(headerLabel)
+                        .font(.system(size: 11, weight: .semibold, design: .monospaced))
+                    if !collapsedSummary.isEmpty {
+                        Text(collapsedSummary)
+                            .font(.system(size: 11, design: .monospaced))
+                            .foregroundColor(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer(minLength: 4)
+                    Image(systemName: isExpanded ? "chevron.up" : "chevron.down")
+                        .font(.system(size: 9))
+                        .foregroundColor(.secondary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if isExpanded {
+                Text(text)
+                    .font(.system(size: 11, design: .monospaced))
+                    .foregroundColor(palette.fg(isDark))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(palette.codeBg(isDark))
+                    )
+                    .textSelection(.enabled)
+                    .transition(.opacity.combined(with: .move(edge: .top)))
+            }
+        }
+        .padding(.horizontal, 8)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(palette.cardBg(isDark))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(palette.borderSubtle(isDark), lineWidth: 1)
+        )
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    /// Header label shown on the collapsed card: the slash command
+    /// name when known, otherwise a generic "Slash command prompt".
+    private var headerLabel: String {
+        if let name = slashCommandName, !name.isEmpty {
+            return "/\(name)"
+        }
+        return String(
+            localized: "claudeChat.slashPrompt.label",
+            defaultValue: "Slash command prompt"
+        )
+    }
+
+    /// One-line summary for the collapsed header: the first non-empty
+    /// line, capped at 80 chars; or "(N lines)" when the first line is
+    /// empty (rare).
+    private var collapsedSummary: String {
+        let lineCount = text.components(separatedBy: "\n").count
+        let first = text
+            .components(separatedBy: "\n")
+            .first(where: { !$0.trimmingCharacters(in: .whitespaces).isEmpty })?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        if first.isEmpty {
+            return String(format: String(
+                localized: "claudeChat.collapsed.linesOnly",
+                defaultValue: "(%d lines)"
+            ), lineCount)
+        }
+        let cap = 80
+        let truncated = first.count > cap ? String(first.prefix(cap)) + "…" : first
+        if lineCount > 1 {
+            return "\(truncated)  ·  \(lineCount) lines"
+        }
+        return truncated
     }
 }
 

@@ -18,10 +18,57 @@ import Foundation
 /// crash the chat.
 enum ClaudeStreamEvent {
     case systemInit(sessionId: String, model: String?, cwd: String?)
-    case assistant(messageId: String?, blocks: [ChatMessageBlock])
+    case assistant(messageId: String?, blocks: [ChatMessageBlock], usage: ChatTokenUsage?)
     case user(blocks: [ChatMessageBlock])
-    case result(isError: Bool, sessionId: String?, errorMessage: String?, totalCostUSD: Double?)
+    case result(isError: Bool, sessionId: String?, errorMessage: String?, totalCostUSD: Double?, usage: ChatTokenUsage?)
     case other(typeName: String)
+}
+
+/// Token-usage snapshot reported by claude on each `assistant` message
+/// and the final `result`. The four counters mirror Anthropic's
+/// `Usage` object verbatim.
+struct ChatTokenUsage: Equatable {
+    var inputTokens: Int
+    var outputTokens: Int
+    var cacheCreationInputTokens: Int
+    var cacheReadInputTokens: Int
+
+    /// Sum of all four counters — what we display as "tokens consumed
+    /// in this turn" / running total.
+    var total: Int {
+        inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens
+    }
+
+    static let zero = ChatTokenUsage(
+        inputTokens: 0,
+        outputTokens: 0,
+        cacheCreationInputTokens: 0,
+        cacheReadInputTokens: 0
+    )
+
+    static func +(lhs: ChatTokenUsage, rhs: ChatTokenUsage) -> ChatTokenUsage {
+        ChatTokenUsage(
+            inputTokens: lhs.inputTokens + rhs.inputTokens,
+            outputTokens: lhs.outputTokens + rhs.outputTokens,
+            cacheCreationInputTokens: lhs.cacheCreationInputTokens + rhs.cacheCreationInputTokens,
+            cacheReadInputTokens: lhs.cacheReadInputTokens + rhs.cacheReadInputTokens
+        )
+    }
+
+    /// Decode from claude's stream-json `usage` dictionary. Missing
+    /// fields fall back to 0.
+    static func decode(_ dict: [String: Any]?) -> ChatTokenUsage? {
+        guard let dict else { return nil }
+        return ChatTokenUsage(
+            inputTokens: (dict["input_tokens"] as? Int) ?? 0,
+            outputTokens: (dict["output_tokens"] as? Int) ?? 0,
+            cacheCreationInputTokens: (dict["cache_creation_input_tokens"] as? Int) ?? 0,
+            cacheReadInputTokens: (dict["cache_read_input_tokens"] as? Int) ?? 0
+        )
+    }
+}
+
+extension ClaudeStreamEvent {
 
     enum ParseError: Error {
         case notJSON
@@ -80,7 +127,8 @@ enum ClaudeStreamEvent {
         let messageId = message["id"] as? String
         let contentArray = message["content"] as? [[String: Any]] ?? []
         let blocks = contentArray.compactMap { decodeContentBlock($0) }
-        return .assistant(messageId: messageId, blocks: blocks)
+        let usage = ChatTokenUsage.decode(message["usage"] as? [String: Any])
+        return .assistant(messageId: messageId, blocks: blocks, usage: usage)
     }
 
     private static func parseUser(_ dict: [String: Any]) -> ClaudeStreamEvent {
@@ -100,11 +148,13 @@ enum ClaudeStreamEvent {
             errorMessage = nil
         }
         let totalCostUSD = dict["total_cost_usd"] as? Double
+        let usage = ChatTokenUsage.decode(dict["usage"] as? [String: Any])
         return .result(
             isError: isError,
             sessionId: sessionId,
             errorMessage: errorMessage,
-            totalCostUSD: totalCostUSD
+            totalCostUSD: totalCostUSD,
+            usage: usage
         )
     }
 

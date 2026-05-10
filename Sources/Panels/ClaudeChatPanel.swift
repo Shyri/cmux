@@ -144,6 +144,12 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// events. Reset by `clearTranscript()`.
     @Published private(set) var totalCostUSD: Double = 0
 
+    /// Most recent token-usage snapshot from claude — assistant
+    /// messages and the final result both report usage; we keep the
+    /// latest as the displayed counter so the badge reflects the
+    /// current turn's actual context size, including cache hits.
+    @Published private(set) var lastUsage: ChatTokenUsage?
+
     /// Conversation status drives input affordances (send/cancel/error banner).
     @Published private(set) var status: ChatStatus = .idle
 
@@ -416,6 +422,68 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     // MARK: - Conversation
 
+    /// Send the body of a custom slash-command markdown file as a normal
+    /// prompt to claude, while showing the user a tool-card-style row in
+    /// the transcript labelled with the original `/<name>` and the body
+    /// initially collapsed. Headless `claude -p` does not process slash
+    /// commands itself (those are an interactive-mode feature), so we
+    /// expand the file ourselves and forward the contents.
+    func sendSlashCommand(name: String, expandedText: String) {
+        let trimmed = expandedText.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        if case .sending = status { return }
+
+        // Local transcript entry: collapsed by default with the slash
+        // command name in the header.
+        var localMessage = ChatMessage(
+            role: .user,
+            blocks: [.text(trimmed)],
+            isCollapsedByDefault: true,
+            slashCommandName: name
+        )
+        // Stable id so the row is deterministic in the transcript.
+        _ = localMessage.id
+        messages.append(localMessage)
+        lastTurnEdits.removeAll()
+        pendingTurnStaging = (userMessageId: localMessage.id, userMessageIndex: messages.count)
+        status = .sending
+
+        let cwd = workingDirectory
+        let resumeId = sessionId
+        let mode = permissionMode
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let mcpConfigPath: String?
+            do {
+                mcpConfigPath = try await self.ensureMcpServerStarted()
+            } catch {
+                self.status = .error(error.localizedDescription)
+                return
+            }
+            guard case .sending = self.status else { return }
+            self.runner.start(
+                userMessage: trimmed,
+                cwd: cwd,
+                sessionId: resumeId,
+                permissionMode: mode.claudeFlag,
+                mcpConfigPath: mcpConfigPath,
+                permissionPromptTool: mode.usesPermissionPromptTool ? "mcp__cmux__approval_prompt" : nil,
+                appendSystemPrompt: ClaudeChatPanel.cmuxToolsSystemPrompt,
+                onEvent: { event in
+                    Task { @MainActor [weak self] in
+                        self?.handle(event: event)
+                    }
+                },
+                onComplete: { result in
+                    Task { @MainActor [weak self] in
+                        self?.handle(completion: result)
+                    }
+                }
+            )
+        }
+    }
+
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         let consumedAttachments = pendingAttachments
@@ -651,6 +719,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         sessionId = nil
         modelName = nil
         totalCostUSD = 0
+        lastUsage = nil
         pendingApprovals.removeAll()
         pendingQuestions.removeAll()
         toolResultsByToolUseId.removeAll()
@@ -734,7 +803,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let model, !model.isEmpty, modelName != model {
                 modelName = model
             }
-        case .assistant(_, let blocks):
+        case .assistant(_, let blocks, let usage):
+            if let usage { lastUsage = usage }
             guard !blocks.isEmpty else { return }
             // Detect attempts to call the non-functional built-in
             // `AskUserQuestion` and warn the user. Surface the tool name so
@@ -772,15 +842,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 }
             }
             if !passthrough.isEmpty {
-                messages.append(ChatMessage(role: .user, blocks: passthrough))
+                // These come from the stream (typically claude's
+                // expansion of a slash command), not from the human
+                // typing in the input — collapse by default so the
+                // transcript stays readable.
+                messages.append(ChatMessage(
+                    role: .user,
+                    blocks: passthrough,
+                    isCollapsedByDefault: true
+                ))
             }
-        case .result(let isError, let sid, let errorMessage, let costUSD):
+        case .result(let isError, let sid, let errorMessage, let costUSD, let usage):
             if let sid, !sid.isEmpty, sessionId != sid {
                 sessionId = sid
             }
             if let costUSD, costUSD > 0 {
                 totalCostUSD += costUSD
             }
+            if let usage { lastUsage = usage }
             if isError, let errorMessage, !errorMessage.isEmpty {
                 status = .error(errorMessage)
             }

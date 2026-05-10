@@ -190,6 +190,41 @@ enum SlashCommandRegistry {
         }
     }
 
+    /// Read the body of a custom slash-command file (the prompt itself),
+    /// stripping any leading YAML frontmatter (between the opening `---`
+    /// and the closing `---`). Returns the trimmed body, or an empty
+    /// string if the file is missing/unreadable.
+    static func readBody(of command: SlashCommand) -> String {
+        let url: URL
+        switch command.source {
+        case .builtin: return ""
+        case .userCustom(let u), .projectCustom(let u): url = u
+        }
+        guard let data = try? Data(contentsOf: url),
+              let text = String(data: data, encoding: .utf8)
+        else { return "" }
+        let scanner = Scanner(string: text)
+        scanner.charactersToBeSkipped = nil
+        // If the file starts with `---\n`, skip everything up to (and
+        // including) the matching closing `---\n`. Otherwise return the
+        // whole file.
+        let lines = text.components(separatedBy: "\n")
+        guard lines.first?.trimmingCharacters(in: .whitespaces) == "---" else {
+            return text.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        var idx = 1
+        while idx < lines.count {
+            if lines[idx].trimmingCharacters(in: .whitespaces) == "---" {
+                let bodyLines = lines.dropFirst(idx + 1)
+                return bodyLines.joined(separator: "\n").trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            idx += 1
+        }
+        // No closing fence — treat the whole file as body to be safe.
+        _ = scanner
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
     /// Best-effort one-line description for a custom command markdown
     /// file. Tries: frontmatter `description:` → first non-empty non-`#`
     /// content line → empty string.

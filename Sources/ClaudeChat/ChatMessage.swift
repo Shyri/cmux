@@ -81,18 +81,32 @@ struct ChatMessage: Identifiable, Codable, Sendable, Equatable {
     /// of the text claude sees (that goes through `@<path>` mentions on
     /// the wire).
     var attachmentURLs: [URL] = []
+    /// True for messages that should render with a collapsed body and
+    /// a tool-card-style header — used for slash-command expansions
+    /// (we send the full prompt to claude, but don't want the entire
+    /// body to fill the transcript).
+    var isCollapsedByDefault: Bool = false
+    /// When set, the collapsed header surfaces the original slash
+    /// command name (e.g. `/start-release`) instead of a generic
+    /// "Slash command prompt" label, so the user can tell at a glance
+    /// which command produced the expansion.
+    var slashCommandName: String?
 
     init(
         id: UUID = UUID(),
         role: ChatMessageRole,
         blocks: [ChatMessageBlock],
         attachmentURLs: [URL] = [],
+        isCollapsedByDefault: Bool = false,
+        slashCommandName: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
         self.role = role
         self.blocks = blocks
         self.attachmentURLs = attachmentURLs
+        self.isCollapsedByDefault = isCollapsedByDefault
+        self.slashCommandName = slashCommandName
         self.createdAt = createdAt
     }
 
