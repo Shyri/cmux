@@ -91,6 +91,12 @@ struct ChatMessage: Identifiable, Codable, Sendable, Equatable {
     /// "Slash command prompt" label, so the user can tell at a glance
     /// which command produced the expansion.
     var slashCommandName: String?
+    /// The `message.id` claude reports in the stream-json. Multiple
+    /// stream events sometimes carry the same id with different
+    /// content blocks (claude streams a single response in chunks);
+    /// we use this to coalesce them back into one ChatMessage so
+    /// adjacent tool_use blocks fall into the same batch.
+    var claudeMessageId: String?
 
     init(
         id: UUID = UUID(),
@@ -99,6 +105,7 @@ struct ChatMessage: Identifiable, Codable, Sendable, Equatable {
         attachmentURLs: [URL] = [],
         isCollapsedByDefault: Bool = false,
         slashCommandName: String? = nil,
+        claudeMessageId: String? = nil,
         createdAt: Date = Date()
     ) {
         self.id = id
@@ -107,6 +114,7 @@ struct ChatMessage: Identifiable, Codable, Sendable, Equatable {
         self.attachmentURLs = attachmentURLs
         self.isCollapsedByDefault = isCollapsedByDefault
         self.slashCommandName = slashCommandName
+        self.claudeMessageId = claudeMessageId
         self.createdAt = createdAt
     }
 

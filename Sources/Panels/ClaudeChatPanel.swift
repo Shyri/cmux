@@ -176,6 +176,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Keyed by request id.
     private var approvalResolvers: [String: (ChatApprovalResponse) -> Void] = [:]
     private var questionResolvers: [String: (ChatUserQuestionResponse) -> Void] = [:]
+    /// Maps the `id` of a primary pending question to the ids of any
+    /// later questions claude fired with identical content. We keep the
+    /// resolvers alive so we can answer claude's duplicate `tool_use`
+    /// calls with the same answer when the user replies once — without
+    /// surfacing the duplicate in the UI. (Claude occasionally re-issues
+    /// `mcp__cmux__ask_user_question` mid-turn before the first call has
+    /// returned, producing the "duplicate question" the user sees.)
+    private var questionDedupeAliases: [String: [String]] = [:]
 
     /// Tools the user marked "Allow always" within this chat. Future
     /// approval requests for these tools auto-allow without surfacing the
@@ -599,6 +607,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingQuestions.removeAll()
         approvalResolvers.removeAll()
         questionResolvers.removeAll()
+        questionDedupeAliases.removeAll()
         sessionId = nil
         pendingTurnStaging = nil
         if case .sending = status { status = .idle }
@@ -722,6 +731,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         lastUsage = nil
         pendingApprovals.removeAll()
         pendingQuestions.removeAll()
+        questionDedupeAliases.removeAll()
         toolResultsByToolUseId.removeAll()
         pendingAttachments.removeAll()
         lastTurnEdits.removeAll()
@@ -784,12 +794,19 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     }
 
     func answer(questionId: String, answers: [[String]]) {
-        guard let resolver = questionResolvers.removeValue(forKey: questionId) else {
-            pendingQuestions.removeAll { $0.id == questionId }
-            return
+        let response = ChatUserQuestionResponse(answers: answers)
+        // Resolve the primary, then any deduped duplicates claude fired
+        // with the same content — they all expect the same answer.
+        let aliasIds = questionDedupeAliases.removeValue(forKey: questionId) ?? []
+        if let resolver = questionResolvers.removeValue(forKey: questionId) {
+            resolver(response)
+        }
+        for aliasId in aliasIds {
+            if let resolver = questionResolvers.removeValue(forKey: aliasId) {
+                resolver(response)
+            }
         }
         pendingQuestions.removeAll { $0.id == questionId }
-        resolver(ChatUserQuestionResponse(answers: answers))
     }
 
     // MARK: - Event handling
@@ -803,7 +820,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let model, !model.isEmpty, modelName != model {
                 modelName = model
             }
-        case .assistant(_, let blocks, let usage):
+        case .assistant(let claudeMid, let blocks, let usage):
             if let usage { lastUsage = usage }
             guard !blocks.isEmpty else { return }
             // Detect attempts to call the non-functional built-in
@@ -825,7 +842,23 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     inputJSON: toolUse.inputJSON
                 ))
             }
-            messages.append(ChatMessage(role: .assistant, blocks: blocks))
+            // Coalesce: stream-json sometimes splits a single assistant
+            // response across several events that share the same
+            // `message.id`. Without coalescing, every fragment becomes a
+            // separate ChatMessage and the tool-batch grouping breaks
+            // (each tool_use ends up in its own batch of 1).
+            if let claudeMid,
+               let lastIdx = messages.indices.last,
+               messages[lastIdx].role == .assistant,
+               messages[lastIdx].claudeMessageId == claudeMid {
+                messages[lastIdx].blocks.append(contentsOf: blocks)
+            } else {
+                messages.append(ChatMessage(
+                    role: .assistant,
+                    blocks: blocks,
+                    claudeMessageId: claudeMid
+                ))
+            }
         case .user(let blocks):
             guard !blocks.isEmpty else { return }
             // Synthetic user messages from claude are mostly tool_result
@@ -980,8 +1013,37 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         didReceiveQuestion request: ChatUserQuestionRequest,
         completion: @escaping (ChatUserQuestionResponse) -> Void
     ) {
+        // Dedupe: if claude is re-firing the same content while the
+        // first call is still pending, alias the new id onto the
+        // existing one and don't add another bubble to the UI.
+        if let existing = pendingQuestions.first(where: { Self.sameContent($0, request) }) {
+            questionResolvers[request.id] = completion
+            questionDedupeAliases[existing.id, default: []].append(request.id)
+            return
+        }
         questionResolvers[request.id] = completion
         pendingQuestions.append(request)
+    }
+
+    /// Two question requests are considered "duplicates" when their
+    /// sub-question payload (header + question text + options) matches
+    /// exactly. Ids and the wrapping request id are ignored — claude
+    /// generates a fresh `tool_use_id` every time, so identity won't
+    /// help us spot retries.
+    private static func sameContent(
+        _ a: ChatUserQuestionRequest,
+        _ b: ChatUserQuestionRequest
+    ) -> Bool {
+        guard a.questions.count == b.questions.count else { return false }
+        for (lhs, rhs) in zip(a.questions, b.questions) {
+            if lhs.header != rhs.header { return false }
+            if lhs.question != rhs.question { return false }
+            if lhs.multiSelect != rhs.multiSelect { return false }
+            if lhs.options.map({ $0.label }) != rhs.options.map({ $0.label }) {
+                return false
+            }
+        }
+        return true
     }
 
     // MARK: - Welcome content

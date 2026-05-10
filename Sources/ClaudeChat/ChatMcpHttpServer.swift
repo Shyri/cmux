@@ -157,6 +157,7 @@ final class ChatMcpHttpServer {
         let method = json["method"] as? String ?? ""
         let requestId = json["id"]
         let params = json["params"] as? [String: Any]
+        let acceptsSSE = (parsed.headers["accept"] ?? "").lowercased().contains("text/event-stream")
 
         switch method {
         case "initialize":
@@ -167,7 +168,7 @@ final class ChatMcpHttpServer {
         case "tools/list":
             sendJsonRpcResult(requestId, result: makeToolsListResult(), on: connection)
         case "tools/call":
-            handleToolsCall(requestId: requestId, params: params, connection: connection)
+            handleToolsCall(requestId: requestId, params: params, connection: connection, acceptsSSE: acceptsSSE)
         case "ping":
             sendJsonRpcResult(requestId, result: [:], on: connection)
         default:
@@ -234,20 +235,30 @@ final class ChatMcpHttpServer {
         return ["tools": [approvalPrompt, askUser]]
     }
 
-    private func handleToolsCall(requestId: Any?, params: [String: Any]?, connection: NWConnection) {
+    private func handleToolsCall(requestId: Any?, params: [String: Any]?, connection: NWConnection, acceptsSSE: Bool) {
         let name = (params?["name"] as? String) ?? ""
         let args = (params?["arguments"] as? [String: Any]) ?? [:]
         switch name {
         case "approval_prompt":
-            handleApprovalPrompt(requestId: requestId, args: args, connection: connection)
+            handleApprovalPrompt(
+                requestId: requestId,
+                args: args,
+                connection: connection,
+                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+            )
         case "ask_user_question":
-            handleAskUserQuestion(requestId: requestId, args: args, connection: connection)
+            handleAskUserQuestion(
+                requestId: requestId,
+                args: args,
+                connection: connection,
+                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+            )
         default:
             sendJsonRpcError(requestId, code: -32602, message: "Unknown tool: \(name)", on: connection)
         }
     }
 
-    private func handleApprovalPrompt(requestId: Any?, args: [String: Any], connection: NWConnection) {
+    private func handleApprovalPrompt(requestId: Any?, args: [String: Any], connection: NWConnection, stream: SseStream?) {
         let toolName = (args["tool_name"] as? String) ?? "unknown"
         let inputAny = args["input"] ?? [:]
         let inputJSON = ChatMcpHttpServer.encodeJSONPretty(inputAny)
@@ -269,7 +280,8 @@ final class ChatMcpHttpServer {
                         .deny(reason: "cmux chat panel is not available"),
                         originalInput: inputAny,
                         requestId: requestId,
-                        on: connection
+                        on: connection,
+                        stream: stream
                     )
                 }
                 return
@@ -284,14 +296,15 @@ final class ChatMcpHttpServer {
                         response,
                         originalInput: inputAny,
                         requestId: requestId,
-                        on: connection
+                        on: connection,
+                        stream: stream
                     )
                 }
             }
         }
     }
 
-    private func handleAskUserQuestion(requestId: Any?, args: [String: Any], connection: NWConnection) {
+    private func handleAskUserQuestion(requestId: Any?, args: [String: Any], connection: NWConnection, stream: SseStream?) {
         let requestUUID = UUID().uuidString
         var subQuestions: [ChatUserQuestionRequest.SubQuestion] = []
 
@@ -323,14 +336,15 @@ final class ChatMcpHttpServer {
                     self?.replyAskUser(
                         ChatUserQuestionResponse(answers: Array(repeating: [], count: subQuestions.count)),
                         requestId: requestId,
-                        on: connection
+                        on: connection,
+                        stream: stream
                     )
                 }
                 return
             }
             delegate.server(self, didReceiveQuestion: request) { response in
                 self.queue.async {
-                    self.replyAskUser(response, requestId: requestId, on: connection)
+                    self.replyAskUser(response, requestId: requestId, on: connection, stream: stream)
                 }
             }
         }
@@ -366,7 +380,8 @@ final class ChatMcpHttpServer {
         _ response: ChatApprovalResponse,
         originalInput: Any,
         requestId: Any?,
-        on connection: NWConnection
+        on connection: NWConnection,
+        stream: SseStream?
     ) {
         // MCP tool result shape: { content: [{type:"text", text: "<json>"}], isError: false }
         // Claude Code's permission-prompt-tool requires:
@@ -395,10 +410,14 @@ final class ChatMcpHttpServer {
             "content": [["type": "text", "text": payloadText]],
             "isError": false
         ]
-        sendJsonRpcResult(requestId, result: result, on: connection)
+        if let stream {
+            stream.finish(with: makeJsonRpcResult(requestId, result: result))
+        } else {
+            sendJsonRpcResult(requestId, result: result, on: connection)
+        }
     }
 
-    private func replyAskUser(_ response: ChatUserQuestionResponse, requestId: Any?, on connection: NWConnection) {
+    private func replyAskUser(_ response: ChatUserQuestionResponse, requestId: Any?, on connection: NWConnection, stream: SseStream?) {
         // Each answers[i] is the labels selected for sub-question i. Flatten
         // into a structured payload claude can parse easily, plus a human
         // string for fallback rendering.
@@ -411,7 +430,19 @@ final class ChatMcpHttpServer {
             "content": [["type": "text", "text": payloadText]],
             "isError": false
         ]
-        sendJsonRpcResult(requestId, result: result, on: connection)
+        if let stream {
+            stream.finish(with: makeJsonRpcResult(requestId, result: result))
+        } else {
+            sendJsonRpcResult(requestId, result: result, on: connection)
+        }
+    }
+
+    /// Build the JSON-RPC envelope without writing to the wire — used by
+    /// `SseStream.finish` to ship the final message inside an SSE event.
+    private func makeJsonRpcResult(_ id: Any?, result: [String: Any]) -> Data {
+        var msg: [String: Any] = ["jsonrpc": "2.0", "result": result]
+        if let id { msg["id"] = id }
+        return (try? JSONSerialization.data(withJSONObject: msg, options: [])) ?? Data()
     }
 
     // MARK: - JSON-RPC response helpers
@@ -503,6 +534,93 @@ final class ChatMcpHttpServer {
             return ""
         }
         return String(data: data, encoding: .utf8) ?? ""
+    }
+}
+
+// MARK: - SSE keepalive stream
+
+/// Long-lived HTTP/SSE response used while we wait for the user to
+/// answer an interactive MCP tool call (`approval_prompt`,
+/// `ask_user_question`). Without this, Claude Code times out the
+/// blocking JSON response after ~60 seconds and retries the same tool
+/// call, which surfaces as duplicate prompts in the UI.
+///
+/// Lifecycle:
+/// 1. `openIfNeeded` writes the SSE response head and starts a
+///    keepalive timer that sends a `: ping` comment every 25 s. The
+///    comment is ignored by clients but resets the read timeout.
+/// 2. `finish(with:)` writes one final `event: message\ndata: <json>\n`
+///    block (the JSON-RPC response payload) and closes the connection.
+///
+/// If the client did not advertise `Accept: text/event-stream`, no
+/// SSE stream is opened and the existing one-shot JSON path is used.
+final class SseStream {
+    private let connection: NWConnection
+    private let queue: DispatchQueue
+    private var timer: DispatchSourceTimer?
+    private var finished = false
+
+    private init(connection: NWConnection, queue: DispatchQueue) {
+        self.connection = connection
+        self.queue = queue
+    }
+
+    static func openIfNeeded(
+        acceptsSSE: Bool,
+        on connection: NWConnection,
+        queue: DispatchQueue
+    ) -> SseStream? {
+        guard acceptsSSE else { return nil }
+        let stream = SseStream(connection: connection, queue: queue)
+        stream.writeHead()
+        stream.startKeepalive()
+        return stream
+    }
+
+    private func writeHead() {
+        var head = "HTTP/1.1 200 OK\r\n"
+        head += "Content-Type: text/event-stream\r\n"
+        head += "Cache-Control: no-cache\r\n"
+        head += "Connection: keep-alive\r\n"
+        head += "\r\n"
+        // SSE preamble: a comment line so any intermediary that buffers
+        // the first chunk gets it before our keepalive timer fires.
+        head += ": cmux mcp keepalive stream\n\n"
+        let data = Data(head.utf8)
+        connection.send(content: data, completion: .contentProcessed { _ in })
+    }
+
+    private func startKeepalive() {
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + 25, repeating: 25)
+        timer.setEventHandler { [weak self] in
+            guard let self, !self.finished else { return }
+            let comment = ": ping\n\n"
+            self.connection.send(content: Data(comment.utf8), completion: .contentProcessed { _ in })
+        }
+        timer.resume()
+        self.timer = timer
+    }
+
+    /// Send the JSON-RPC response body as a single SSE `message` event
+    /// and close the connection.
+    func finish(with body: Data) {
+        guard !finished else { return }
+        finished = true
+        timer?.cancel()
+        timer = nil
+        var event = "event: message\n"
+        event += "data: "
+        var payload = Data(event.utf8)
+        payload.append(body)
+        payload.append(Data("\n\n".utf8))
+        connection.send(content: payload, completion: .contentProcessed { [weak self] _ in
+            self?.connection.cancel()
+        })
+    }
+
+    deinit {
+        timer?.cancel()
     }
 }
 
