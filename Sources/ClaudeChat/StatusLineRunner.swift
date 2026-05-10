@@ -96,9 +96,12 @@ enum StatusLineRunner {
         guard process.terminationStatus == 0 else { return nil }
         let outData = stdout.fileHandleForReading.readDataToEndOfFile()
         guard let raw = String(data: outData, encoding: .utf8) else { return nil }
-        let cleaned = stripANSI(raw)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return cleaned.isEmpty ? nil : cleaned
+        // Keep ANSI/CSI/OSC escapes intact — the view layer parses
+        // them into an AttributedString so colors, bold, italic and
+        // underline render the way the user's status-line script
+        // intended. Just trim trailing whitespace/newlines.
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     // MARK: - Private
@@ -152,55 +155,4 @@ enum StatusLineRunner {
         return (try? JSONSerialization.data(withJSONObject: payload, options: [])) ?? Data()
     }
 
-    /// Drop ANSI/CSI escape sequences. Status-line scripts often emit
-    /// colors via escape codes; we render plain SwiftUI Text for now,
-    /// so the codes would otherwise show as garbage.
-    ///
-    /// Handles the common subset: `ESC [ <params> <final>` where
-    /// params are in 0x30–0x3F (digits / `;`) plus optional
-    /// intermediates 0x20–0x2F, and the final byte is 0x40–0x7E (e.g.
-    /// `m` for SGR). Also handles `ESC ]` OSC sequences terminated
-    /// by `BEL` or `ESC \` and the two-byte `ESC <final>` form.
-    private static func stripANSI(_ s: String) -> String {
-        var result = ""
-        result.reserveCapacity(s.count)
-        let scalars = Array(s.unicodeScalars)
-        var i = 0
-        while i < scalars.count {
-            let v = scalars[i].value
-            if v == 0x1B {  // ESC
-                let next = i + 1 < scalars.count ? scalars[i + 1].value : 0
-                if next == 0x5B {  // CSI: ESC [ <params> <final>
-                    i += 2
-                    while i < scalars.count {
-                        let cv = scalars[i].value
-                        i += 1
-                        if cv >= 0x40 && cv <= 0x7E { break }
-                    }
-                    continue
-                }
-                if next == 0x5D {  // OSC: ESC ] ... (BEL | ESC \)
-                    i += 2
-                    while i < scalars.count {
-                        let cv = scalars[i].value
-                        if cv == 0x07 { i += 1; break }  // BEL
-                        if cv == 0x1B,
-                           i + 1 < scalars.count,
-                           scalars[i + 1].value == 0x5C {  // ESC \
-                            i += 2
-                            break
-                        }
-                        i += 1
-                    }
-                    continue
-                }
-                // Two-byte ESC <final>
-                i += 2
-                continue
-            }
-            result.unicodeScalars.append(scalars[i])
-            i += 1
-        }
-        return result
-    }
 }

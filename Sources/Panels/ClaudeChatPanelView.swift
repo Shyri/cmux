@@ -963,12 +963,18 @@ struct ClaudeChatPanelView: View {
     /// One-line status row driven by the user's `statusLine.command`
     /// (read from `.claude/settings.json`). Sits between the chat
     /// transcript and the input — same vertical position Claude Code
-    /// interactive uses for its status line.
+    /// interactive uses for its status line. The output may contain
+    /// ANSI/SGR escapes (colors, bold, etc.); we parse them into an
+    /// AttributedString so the rendered chip matches what the script
+    /// intended.
     private func statusLineRow(_ text: String) -> some View {
-        HStack(spacing: 0) {
-            Text(text)
-                .font(.system(size: 11, design: .monospaced))
-                .foregroundColor(.secondary)
+        let attributed = ANSIRenderer.attributedString(
+            from: text,
+            baseFont: .system(size: 11, design: .monospaced),
+            defaultColor: .secondary
+        )
+        return HStack(spacing: 0) {
+            Text(attributed)
                 .lineLimit(1)
                 .truncationMode(.tail)
                 .textSelection(.enabled)
@@ -1147,7 +1153,7 @@ struct ClaudeChatPanelView: View {
     /// for this turn (input + output + cache create/read), which is
     /// what the user thinks of as "tokens consumed".
     private func tokenUsageChip(_ usage: ChatTokenUsage) -> some View {
-        let used = usage.total
+        let used = usage.contextWindowTokens
         let max = contextWindowTokens(forModel: panel.modelName)
         let pct = Double(min(used, max)) / Double(max)
         let color: Color = pct >= 0.85 ? ChatPalette.red
@@ -3509,5 +3515,255 @@ private struct SlashCommandRow: View {
                 .padding(.vertical, 1)
                 .background(Capsule().stroke(Color.secondary.opacity(0.4), lineWidth: 0.5))
         }
+    }
+}
+
+// MARK: - ANSI / SGR renderer
+
+/// Minimal ANSI escape-sequence parser that turns the output of a
+/// status-line script into a SwiftUI `AttributedString`. Honours the
+/// 30-bit-color SGR subset most shell scripts use:
+///   - reset (0)
+///   - bold (1), dim (2), italic (3), underline (4), strikethrough (9)
+///   - 16 base foreground/background colors (30-37, 40-47)
+///   - 16 bright foreground/background colors (90-97, 100-107)
+///   - 256-color (38;5;N / 48;5;N), 24-bit color (38;2;R;G;B / 48;2;…)
+///   - default fg/bg (39, 49)
+/// CSI sequences other than `m` (cursor moves, etc.) and OSC blocks
+/// are silently dropped.
+enum ANSIRenderer {
+    static func attributedString(
+        from text: String,
+        baseFont: Font,
+        defaultColor: Color
+    ) -> AttributedString {
+        var result = AttributedString()
+        var fg: Color? = nil
+        var bg: Color? = nil
+        var bold = false
+        var italic = false
+        var underline = false
+        var strikethrough = false
+        var dim = false
+
+        var buffer = ""
+        let scalars = Array(text.unicodeScalars)
+        var i = 0
+
+        func flush() {
+            guard !buffer.isEmpty else { return }
+            var part = AttributedString(buffer)
+            var attrs = AttributeContainer()
+            // Foreground: explicit > dim default > base default.
+            let resolvedFg = fg ?? (dim ? defaultColor.opacity(0.6) : defaultColor)
+            attrs.foregroundColor = resolvedFg
+            if let bg { attrs.backgroundColor = bg }
+            var f = baseFont
+            if bold { f = f.bold() }
+            if italic { f = f.italic() }
+            attrs.font = f
+            if underline { attrs.underlineStyle = .single }
+            if strikethrough { attrs.strikethroughStyle = .single }
+            part.setAttributes(attrs)
+            result.append(part)
+            buffer = ""
+        }
+
+        // NOTE: there used to be a `resetAll` closure captured by reference
+        // and forwarded into `applySGR` as `reset: () -> Void`. That tripped
+        // Swift's exclusivity checker — `applySGR` already holds inout
+        // access to `fg`, `bg`, `bold`, … and the closure tried to mutate
+        // the same variables through its capture list. Same memory,
+        // overlapping accesses → `Fatal access conflict detected`. The
+        // reset (SGR param 0) is now handled inline inside `applySGR`.
+
+        while i < scalars.count {
+            let v = scalars[i].value
+            if v == 0x1B {  // ESC
+                let next = i + 1 < scalars.count ? scalars[i + 1].value : 0
+                if next == 0x5B {  // CSI: ESC [ <params> <final>
+                    flush()
+                    i += 2
+                    var params = ""
+                    var finalByte: UInt32 = 0
+                    while i < scalars.count {
+                        let cv = scalars[i].value
+                        i += 1
+                        if cv >= 0x30 && cv <= 0x3F {
+                            params.unicodeScalars.append(scalars[i - 1])
+                            continue
+                        }
+                        if cv >= 0x40 && cv <= 0x7E {
+                            finalByte = cv
+                            break
+                        }
+                        // intermediates 0x20-0x2F or stray bytes — ignore.
+                    }
+                    if finalByte == 0x6D {  // 'm' = SGR
+                        applySGR(
+                            params: parseParams(params),
+                            fg: &fg, bg: &bg,
+                            bold: &bold, italic: &italic,
+                            underline: &underline,
+                            strikethrough: &strikethrough,
+                            dim: &dim
+                        )
+                    }
+                    continue
+                }
+                if next == 0x5D {  // OSC: ESC ] ... (BEL | ESC \)
+                    flush()
+                    i += 2
+                    while i < scalars.count {
+                        let cv = scalars[i].value
+                        if cv == 0x07 { i += 1; break }
+                        if cv == 0x1B,
+                           i + 1 < scalars.count,
+                           scalars[i + 1].value == 0x5C {
+                            i += 2
+                            break
+                        }
+                        i += 1
+                    }
+                    continue
+                }
+                // Two-byte ESC <final>
+                i += 2
+                continue
+            }
+            buffer.unicodeScalars.append(scalars[i])
+            i += 1
+        }
+        flush()
+        return result
+    }
+
+    private static func parseParams(_ s: String) -> [Int] {
+        if s.isEmpty { return [0] }  // bare `ESC[m` is reset
+        return s.split(separator: ";", omittingEmptySubsequences: false).map { piece in
+            Int(piece) ?? 0
+        }
+    }
+
+    private static func applySGR(
+        params: [Int],
+        fg: inout Color?,
+        bg: inout Color?,
+        bold: inout Bool,
+        italic: inout Bool,
+        underline: inout Bool,
+        strikethrough: inout Bool,
+        dim: inout Bool
+    ) {
+        var i = 0
+        while i < params.count {
+            let p = params[i]
+            switch p {
+            case 0:
+                // Reset every attribute. Inlined intentionally — passing
+                // this as a closure that captured the same vars by
+                // reference triggered Swift's exclusive-access checker
+                // because the inout parameters already hold exclusive
+                // access to the same memory.
+                fg = nil
+                bg = nil
+                bold = false
+                italic = false
+                underline = false
+                strikethrough = false
+                dim = false
+            case 1: bold = true
+            case 2: dim = true
+            case 3: italic = true
+            case 4: underline = true
+            case 9: strikethrough = true
+            case 22: bold = false; dim = false
+            case 23: italic = false
+            case 24: underline = false
+            case 29: strikethrough = false
+            case 30...37: fg = ansiBaseColor(p - 30, bright: false)
+            case 39: fg = nil
+            case 40...47: bg = ansiBaseColor(p - 40, bright: false)
+            case 49: bg = nil
+            case 90...97: fg = ansiBaseColor(p - 90, bright: true)
+            case 100...107: bg = ansiBaseColor(p - 100, bright: true)
+            case 38, 48:
+                // Extended color: 38;5;N (256-color) or 38;2;R;G;B.
+                let isFg = p == 38
+                guard i + 1 < params.count else { i += 1; continue }
+                let mode = params[i + 1]
+                if mode == 5, i + 2 < params.count {
+                    let n = params[i + 2]
+                    let c = xterm256(n)
+                    if isFg { fg = c } else { bg = c }
+                    i += 3
+                    continue
+                }
+                if mode == 2, i + 4 < params.count {
+                    let r = max(0, min(255, params[i + 2]))
+                    let g = max(0, min(255, params[i + 3]))
+                    let b = max(0, min(255, params[i + 4]))
+                    let c = Color(red: Double(r) / 255, green: Double(g) / 255, blue: Double(b) / 255)
+                    if isFg { fg = c } else { bg = c }
+                    i += 5
+                    continue
+                }
+                i += 2
+                continue
+            default:
+                break
+            }
+            i += 1
+        }
+    }
+
+    /// Standard 16-color ANSI palette (matches macOS Terminal defaults
+    /// closely). Index 0-7; `bright` selects the 8-15 bank.
+    private static func ansiBaseColor(_ idx: Int, bright: Bool) -> Color {
+        let basic: [(Double, Double, Double)] = [
+            (0.00, 0.00, 0.00),  // black
+            (0.80, 0.00, 0.00),  // red
+            (0.31, 0.61, 0.02),  // green
+            (0.77, 0.63, 0.00),  // yellow
+            (0.20, 0.40, 0.64),  // blue
+            (0.46, 0.31, 0.48),  // magenta
+            (0.02, 0.60, 0.60),  // cyan
+            (0.83, 0.84, 0.81),  // white
+        ]
+        let brightTable: [(Double, Double, Double)] = [
+            (0.33, 0.34, 0.32),  // bright black
+            (0.94, 0.16, 0.16),  // bright red
+            (0.54, 0.89, 0.20),  // bright green
+            (0.99, 0.91, 0.31),  // bright yellow
+            (0.45, 0.62, 0.81),  // bright blue
+            (0.68, 0.50, 0.66),  // bright magenta
+            (0.20, 0.89, 0.89),  // bright cyan
+            (0.93, 0.93, 0.93),  // bright white
+        ]
+        let table = bright ? brightTable : basic
+        let i = max(0, min(7, idx))
+        let (r, g, b) = table[i]
+        return Color(red: r, green: g, blue: b)
+    }
+
+    /// Resolve an xterm-256 index. 0-15 reuse the 16-color palette;
+    /// 16-231 form a 6×6×6 cube; 232-255 are a grayscale ramp.
+    private static func xterm256(_ n: Int) -> Color {
+        if n < 16 {
+            return ansiBaseColor(n & 7, bright: n >= 8)
+        }
+        if n >= 232 {
+            let level = Double(n - 232) * 10.0 / 255.0 + 8.0 / 255.0
+            return Color(red: level, green: level, blue: level)
+        }
+        let idx = n - 16
+        let r = idx / 36
+        let g = (idx / 6) % 6
+        let b = idx % 6
+        let toLinear = { (v: Int) -> Double in
+            // xterm cube: 0 → 0, then 95, 135, 175, 215, 255.
+            v == 0 ? 0 : Double(95 + (v - 1) * 40) / 255.0
+        }
+        return Color(red: toLinear(r), green: toLinear(g), blue: toLinear(b))
     }
 }

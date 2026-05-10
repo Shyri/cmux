@@ -39,6 +39,20 @@ struct ChatTokenUsage: Equatable {
         inputTokens + outputTokens + cacheCreationInputTokens + cacheReadInputTokens
     }
 
+    /// Tokens currently in claude's context window, i.e. everything in
+    /// the prompt for the request in question. Excludes `output_tokens`
+    /// (those are generated AFTER the prompt and don't sit in the
+    /// context window for this request).
+    ///
+    /// Use this for "X / 200k" style chips. Note the field is only
+    /// meaningful when the snapshot is per-request (assistant events);
+    /// the `result` event aggregates usage across every internal
+    /// round of the turn, so its `cache_read_input_tokens` happily
+    /// exceeds the model's context window after a long turn.
+    var contextWindowTokens: Int {
+        inputTokens + cacheCreationInputTokens + cacheReadInputTokens
+    }
+
     static let zero = ChatTokenUsage(
         inputTokens: 0,
         outputTokens: 0,

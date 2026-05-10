@@ -65,8 +65,11 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
     /// (Bash, etc.) still surfaces an Allow/Deny card.
     case acceptEdits
     /// `--permission-mode bypassPermissions`. All tools auto-execute; no
-    /// approval card surfaces. Equivalent of Claude Code's "Bypass" mode.
-    case bypass
+    /// approval card surfaces. Mirrors Claude Code 2.x's "Auto mode" —
+    /// the panel also auto-resolves any in-flight approvals as soon as
+    /// the user flips the picker into this mode, so it takes effect
+    /// without waiting for the next turn.
+    case auto
 
     var id: String { rawValue }
 
@@ -75,7 +78,7 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
         case .plan: return "plan"
         case .normal: return "default"
         case .acceptEdits: return "acceptEdits"
-        case .bypass: return "bypassPermissions"
+        case .auto: return "bypassPermissions"
         }
     }
 
@@ -84,7 +87,7 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
     var usesPermissionPromptTool: Bool {
         switch self {
         case .normal, .acceptEdits: return true
-        case .plan, .bypass: return false
+        case .plan, .auto: return false
         }
     }
 
@@ -96,8 +99,8 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
             return String(localized: "claudeChat.mode.normal", defaultValue: "Normal")
         case .acceptEdits:
             return String(localized: "claudeChat.mode.acceptEdits", defaultValue: "Auto-edits")
-        case .bypass:
-            return String(localized: "claudeChat.mode.bypass", defaultValue: "Bypass")
+        case .auto:
+            return String(localized: "claudeChat.mode.auto", defaultValue: "Auto")
         }
     }
 
@@ -106,7 +109,7 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
         case .plan: return "list.bullet.rectangle"
         case .normal: return "hand.raised"
         case .acceptEdits: return "pencil"
-        case .bypass: return "bolt.fill"
+        case .auto: return "bolt.fill"
         }
     }
 }
@@ -292,7 +295,38 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     /// Permission mode used for the next turn. Persists across turns within
     /// the same panel; the UI exposes a 4-way picker in the input bar.
-    @Published var permissionMode: ChatPermissionMode = .normal
+    /// When the user flips the picker into `.auto` mid-turn, the panel
+    /// blanket-allows every approval still waiting in the chat — claude
+    /// `-p` cannot change its `--permission-mode` after launch, so the
+    /// panel applies the new policy itself by short-circuiting the
+    /// approval pipeline.
+    @Published var permissionMode: ChatPermissionMode = .normal {
+        didSet {
+            guard permissionMode == .auto else { return }
+            // Defer the flush so we don't mutate other @Published
+            // properties (`pendingApprovals`) inside this @Published's
+            // didSet — Swift's exclusive-access checker treats that as
+            // a reentrant write and aborts the process.
+            DispatchQueue.main.async { [weak self] in
+                self?.flushPendingApprovalsAsAutoAllow()
+            }
+        }
+    }
+
+    /// Resolve every approval still waiting and clear the UI list,
+    /// mirroring what Claude Code does when you flip into Auto mode.
+    /// Made nonprivate so it can be called from the deferred dispatch
+    /// in the `permissionMode` didSet.
+    private func flushPendingApprovalsAsAutoAllow() {
+        guard !pendingApprovals.isEmpty else { return }
+        let snapshot = pendingApprovals
+        pendingApprovals.removeAll()
+        for request in snapshot {
+            if let resolver = approvalResolvers.removeValue(forKey: request.id) {
+                resolver(.allow)
+            }
+        }
+    }
 
     /// Terminal background/foreground sourced from `~/.config/ghostty/config`
     /// so the chat panel matches whatever theme the user uses for terminals.
@@ -849,23 +883,21 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     inputJSON: toolUse.inputJSON
                 ))
             }
-            // Coalesce: stream-json sometimes splits a single assistant
-            // response across several events that share the same
-            // `message.id`. Without coalescing, every fragment becomes a
-            // separate ChatMessage and the tool-batch grouping breaks
-            // (each tool_use ends up in its own batch of 1).
-            if let claudeMid,
-               let lastIdx = messages.indices.last,
-               messages[lastIdx].role == .assistant,
-               messages[lastIdx].claudeMessageId == claudeMid {
-                messages[lastIdx].blocks.append(contentsOf: blocks)
-            } else {
-                messages.append(ChatMessage(
-                    role: .assistant,
-                    blocks: blocks,
-                    claudeMessageId: claudeMid
-                ))
-            }
+            // Stream-json sometimes splits a single assistant response
+            // across several events that share the same `message.id`.
+            // We keep each fragment as its own ChatMessage rather than
+            // mutating the previous one in place — `@Published var
+            // messages` only tolerates whole-element replacement
+            // safely; mutating `messages[i].blocks` mid-render trips
+            // SwiftUI's reentrant-layout guard and aborts the process.
+            // The tool-batch builder still groups consecutive
+            // `tool_use` blocks across messages, so the on-screen
+            // grouping is unaffected.
+            messages.append(ChatMessage(
+                role: .assistant,
+                blocks: blocks,
+                claudeMessageId: claudeMid
+            ))
         case .user(let blocks):
             guard !blocks.isEmpty else { return }
             // Synthetic user messages from claude are mostly tool_result
@@ -899,7 +931,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let costUSD, costUSD > 0 {
                 totalCostUSD += costUSD
             }
-            if let usage { lastUsage = usage }
+            // Deliberately skip `lastUsage = usage` here: the `result`
+            // event reports a cumulative tally across every internal
+            // round of the turn (it can exceed the context window
+            // many times over after a long run). We only trust per-
+            // request usage from `.assistant` events for the chip.
             if isError, let errorMessage, !errorMessage.isEmpty {
                 status = .error(errorMessage)
             }
@@ -974,12 +1010,21 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         didReceiveApproval request: ChatApprovalRequest,
         completion: @escaping (ChatApprovalResponse) -> Void
     ) {
-        // 0. Auto-allow cmux's own MCP tools. Claude should not need to
-        //    ask permission to use the very mechanism we exposed for it
-        //    (asking the user a question, etc.). Without this, every call
-        //    to `mcp__cmux__ask_user_question` first surfaces an approval
-        //    card — the user has to click Allow before the actual question
-        //    even appears, which feels like claude is hanging.
+        // 0a. Auto mode short-circuit. The user may have flipped the
+        //     picker to `.auto` after the in-flight claude was launched
+        //     with a different `--permission-mode`; honour the live
+        //     setting so the change takes effect without restarting
+        //     the turn — same UX as Claude Code 2.x's Auto mode.
+        if permissionMode == .auto {
+            completion(.allow)
+            return
+        }
+        // 0b. Auto-allow cmux's own MCP tools. Claude should not need to
+        //     ask permission to use the very mechanism we exposed for it
+        //     (asking the user a question, etc.). Without this, every call
+        //     to `mcp__cmux__ask_user_question` first surfaces an approval
+        //     card — the user has to click Allow before the actual question
+        //     even appears, which feels like claude is hanging.
         if request.toolName.hasPrefix("mcp__cmux__") {
             completion(.allow)
             return
