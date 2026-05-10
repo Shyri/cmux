@@ -723,9 +723,20 @@ struct ClaudeChatPanelView: View {
     let isFocused: Bool
     let isVisibleInUI: Bool
     let portalPriority: Int
+    /// Mirror of the same prop the terminal panel receives — driven by
+    /// `TerminalNotificationStore` via WorkspaceContentView. We use this
+    /// (rather than the panel's local pendingApprovals/pendingQuestions)
+    /// so the blue ring follows the exact same lifecycle as in a Claude
+    /// Code terminal session: appears when claude posts a notification,
+    /// disappears when the user marks it read by interacting with the
+    /// pane.
+    let hasUnreadNotification: Bool
     let onRequestPanelFocus: () -> Void
 
-    @State private var draft: String = ""
+    // (`draft` lives on `panel` — see `ClaudeChatPanel.draft`. Read/write
+    // it as `panel.draft` and pass `Binding($panel.draft)` to the input
+    // view. Lifting it onto the panel keeps the in-progress message
+    // alive across workspace switches.)
     @State private var focusFlashOpacity: Double = 0.0
     @State private var focusFlashAnimationGeneration: Int = 0
     /// True when the bottom sentinel is currently visible in the scroll
@@ -761,6 +772,10 @@ struct ClaudeChatPanelView: View {
     @State private var slashFilteredCommands: [SlashCommand] = []
     @State private var slashSelectedIndex: Int = 0
     @State private var showingSlashPopup: Bool = false
+    /// Mirror of the global "show blue ring on panes that need attention"
+    /// preference (same key the terminal panel uses).
+    @AppStorage(NotificationPaneRingSettings.enabledKey)
+    private var notificationPaneRingEnabled = NotificationPaneRingSettings.defaultEnabled
     @Environment(\.colorScheme) private var colorScheme
 
     private static let bottomSentinelId = "__claudechat_bottom__"
@@ -770,6 +785,17 @@ struct ClaudeChatPanelView: View {
     /// uncomfortable to read; matches the convention used by ChatGPT,
     /// Claude.ai, Slack thread panes, etc.
     private static let maxContentWidth: CGFloat = 760
+
+    /// Drives the blue notification ring around the chat panel. We follow
+    /// the same path as the terminal panel: the host (WorkspaceContentView)
+    /// computes `hasUnreadNotification` from the global
+    /// `TerminalNotificationStore` and passes it down. When the user
+    /// directly interacts with the pane, cmux's `dismissNotificationOnDirectInteraction`
+    /// flips it back to false — exactly as in a Claude Code terminal
+    /// session.
+    private var showsNotificationRing: Bool {
+        notificationPaneRingEnabled && hasUnreadNotification
+    }
 
     /// Palette derived from the panel's terminal-config-driven base colors.
     /// Recomputed on every render — cheap, just two NSColors.
@@ -809,6 +835,20 @@ struct ClaudeChatPanelView: View {
                 .shadow(color: palette.accent(colorScheme == .dark).opacity(focusFlashOpacity * 0.35), radius: 10)
                 .padding(FocusFlashPattern.ringInset)
                 .allowsHitTesting(false)
+        }
+        .overlay {
+            // Pendant of the terminal panel's "unread notification" blue
+            // ring: when claude needs the user (pending approval or open
+            // ask_user_question) we draw the same ring around the chat
+            // panel so the user spots it from anywhere on screen, just
+            // like in their terminal claude sessions.
+            if showsNotificationRing {
+                RoundedRectangle(cornerRadius: PanelOverlayRingMetrics.cornerRadius)
+                    .stroke(Color(nsColor: .systemBlue), lineWidth: PanelOverlayRingMetrics.lineWidth)
+                    .shadow(color: Color(nsColor: .systemBlue).opacity(0.35), radius: 3)
+                    .padding(PanelOverlayRingMetrics.inset)
+                    .allowsHitTesting(false)
+            }
         }
         .onChange(of: panel.focusFlashToken) { _ in
             triggerFocusFlashAnimation()
@@ -853,15 +893,15 @@ struct ClaudeChatPanelView: View {
         }
         .onAppear {
             slashAllCommands = SlashCommandRegistry.availableCommands(cwd: panel.workingDirectory)
-            updateSlashPopupForDraft(draft)
+            updateSlashPopupForDraft(panel.draft)
         }
         .onChange(of: panel.workingDirectory) { newCwd in
             // The cwd governs which project-scope custom commands the
             // registry includes; refresh on rare changes.
             slashAllCommands = SlashCommandRegistry.availableCommands(cwd: newCwd)
-            updateSlashPopupForDraft(draft)
+            updateSlashPopupForDraft(panel.draft)
         }
-        .onChange(of: draft) { newValue in
+        .onChange(of: panel.draft) { newValue in
             updateSlashPopupForDraft(newValue)
         }
     }
@@ -1323,7 +1363,7 @@ struct ClaudeChatPanelView: View {
                 .transition(.opacity)
             }
             ChatInputTextView(
-                text: $draft,
+                text: $panel.draft,
                 placeholder: String(
                     localized: "claudeChat.input.placeholder",
                     defaultValue: "Ask Claude…"
@@ -1391,7 +1431,7 @@ struct ClaudeChatPanelView: View {
                     .frame(width: 12, height: 12)
             }
             .buttonStyle(.borderedProminent)
-            .disabled(draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            .disabled(panel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             .help(String(localized: "claudeChat.send.button", defaultValue: "Send (Enter)"))
         }
     }
@@ -1419,11 +1459,11 @@ struct ClaudeChatPanelView: View {
             confirmSlashSelection()
             return
         }
-        let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = panel.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
         if case .sending = panel.status { return }
         panel.send(trimmed)
-        draft = ""
+        panel.draft = ""
         // Sending always means the user wants to follow the conversation
         // again — jump to the latest, even if they were reading history.
         forceScrollToBottomToken &+= 1
@@ -1486,16 +1526,16 @@ struct ClaudeChatPanelView: View {
         if slashFilteredCommands.count == 1 {
             // One match — fully complete (without confirming) so the user
             // can still hit Enter or add args.
-            draft = "/" + slashFilteredCommands[0].name
+            panel.draft = "/" + slashFilteredCommands[0].name
             return true
         }
         // Multiple matches — extend the typed prefix to the longest
         // common name prefix, like a shell.
         let names = slashFilteredCommands.map { $0.name }
         let common = longestCommonPrefix(of: names)
-        let typed = slashCommandPrefix(in: draft) ?? ""
+        let typed = slashCommandPrefix(in: panel.draft) ?? ""
         if common.count > typed.count {
-            draft = "/" + common
+            panel.draft = "/" + common
         }
         return true
     }
@@ -1520,18 +1560,18 @@ struct ClaudeChatPanelView: View {
         switch cmd.action {
         case .runBuiltin(let key):
             runBuiltinSlashCommand(key)
-            draft = ""
+            panel.draft = ""
         case .sendAsPrompt:
             // Replace the typed name with the canonical one (the user may
             // have only typed a prefix), then send. Preserves any args
             // they may have already added — but our prefix gate hides the
             // popup as soon as a space appears, so in practice there
             // aren't any args yet here.
-            let prefix = slashCommandPrefix(in: draft) ?? ""
-            let rest = String(draft.dropFirst(1 + prefix.count))
+            let prefix = slashCommandPrefix(in: panel.draft) ?? ""
+            let rest = String(panel.draft.dropFirst(1 + prefix.count))
             let canonical = "/" + cmd.name + rest
             panel.send(canonical.trimmingCharacters(in: .whitespacesAndNewlines))
-            draft = ""
+            panel.draft = ""
             forceScrollToBottomToken &+= 1
         }
     }

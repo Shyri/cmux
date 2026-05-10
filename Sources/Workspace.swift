@@ -6580,6 +6580,11 @@ final class Workspace: Identifiable, ObservableObject {
     /// the workspace title while any chat is working.
     private var claudeChatSendingPanelIds: Set<UUID> = []
 
+    /// Per-panel snapshot of the most recently observed status, so the
+    /// status subscription can detect transitions (e.g. sending → idle)
+    /// rather than just reacting to the new value in isolation.
+    private var lastClaudeChatStatus: [UUID: ChatStatus] = [:]
+
     /// True when at least one Claude Chat panel in this workspace is
     /// currently streaming a response. Updated from the chat panel's
     /// `$status` subscription.
@@ -7444,13 +7449,25 @@ final class Workspace: Identifiable, ObservableObject {
                 guard let self, let panel = claudeChatPanel else { return }
                 self.refreshClaudeChatTabAppearance(panel)
             }
+        // Track the previous status so we can fire a "Claude finished"
+        // notification on the sending → idle transition (mirroring what
+        // Claude Code in a terminal does via OSC notify when a turn
+        // completes). Without this, only the pending-approval /
+        // pending-question paths post to the notification store, so
+        // simple replies like "Hola" never light up the blue ring.
+        lastClaudeChatStatus[claudeChatPanel.id] = claudeChatPanel.status
         let statusSub = claudeChatPanel.$status
             .removeDuplicates()
             .receive(on: DispatchQueue.main)
-            .sink { [weak self, weak claudeChatPanel] _ in
+            .sink { [weak self, weak claudeChatPanel] newStatus in
                 guard let self, let panel = claudeChatPanel else { return }
+                let previous = self.lastClaudeChatStatus[panel.id]
+                self.lastClaudeChatStatus[panel.id] = newStatus
                 self.refreshClaudeChatTabAppearance(panel)
                 self.refreshClaudeChatRunningAggregate(for: panel)
+                if case .sending = previous, case .idle = newStatus {
+                    self.postClaudeChatTurnCompletedNotification(panel)
+                }
             }
         let approvalSub = claudeChatPanel.$pendingApprovals
             .map { $0.count }
@@ -7581,6 +7598,53 @@ final class Workspace: Identifiable, ObservableObject {
             subtitle: subtitle,
             body: body,
             cooldownKey: "claudeChat-needsInput-\(panel.id.uuidString)",
+            cooldownInterval: 1.5
+        )
+    }
+
+    /// Fired on the sending → idle transition: claude has finished a
+    /// turn (no error, no pending input). Mirrors the OSC notify a
+    /// Claude Code terminal session emits at end-of-turn so the blue
+    /// notification ring + native banner light up exactly the same
+    /// way the user expects from their terminal sessions.
+    ///
+    /// Skipped if the panel is the focused one in the active workspace
+    /// while the app is foregrounded — the user is already looking at
+    /// the reply, no need to nag.
+    private func postClaudeChatTurnCompletedNotification(_ panel: ClaudeChatPanel) {
+        if AppFocusState.isAppActive(),
+           AppDelegate.shared?.tabManager?.selectedTabId == id,
+           focusedPanelId == panel.id {
+            return
+        }
+        let title = String(
+            localized: "claudeChat.notification.turnCompleted.title",
+            defaultValue: "Claude replied"
+        )
+        let subtitle = panel.displayTitle
+        let body: String = {
+            // Try to use the most recent assistant text block as the
+            // notification body — same shape Claude Code's OSC notify
+            // gives the terminal: a one-line preview of the reply.
+            for message in panel.messages.reversed() where message.role == .assistant {
+                for block in message.blocks {
+                    if case .text(let text) = block {
+                        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                        if !trimmed.isEmpty {
+                            return String(trimmed.prefix(140))
+                        }
+                    }
+                }
+            }
+            return ""
+        }()
+        TerminalNotificationStore.shared.addNotification(
+            tabId: id,
+            surfaceId: panel.id,
+            title: title,
+            subtitle: subtitle,
+            body: body,
+            cooldownKey: "claudeChat-turnCompleted-\(panel.id.uuidString)",
             cooldownInterval: 1.5
         )
     }
@@ -9711,6 +9775,7 @@ final class Workspace: Identifiable, ObservableObject {
         let panelEntries = Array(panels)
         for (panelId, panel) in panelEntries {
             panelSubscriptions.removeValue(forKey: panelId)
+            lastClaudeChatStatus.removeValue(forKey: panelId)
             PortScanner.shared.unregisterPanel(workspaceId: id, panelId: panelId)
             panel.close()
         }
@@ -9726,6 +9791,7 @@ final class Workspace: Identifiable, ObservableObject {
         lastTerminalConfigInheritanceFontPoints = nil
         claudeChatNeedsInputPanelIds.removeAll(keepingCapacity: false)
         claudeChatSendingPanelIds.removeAll(keepingCapacity: false)
+        lastClaudeChatStatus.removeAll(keepingCapacity: false)
         if hasClaudeChatRunning { hasClaudeChatRunning = false }
         if hasClaudeChatNeedsInput { hasClaudeChatNeedsInput = false }
     }
@@ -12180,6 +12246,7 @@ extension Workspace: BonsplitDelegate {
         manualUnreadPanelIds.remove(panelId)
         manualUnreadMarkedAt.removeValue(forKey: panelId)
         panelSubscriptions.removeValue(forKey: panelId)
+        lastClaudeChatStatus.removeValue(forKey: panelId)
         panelShellActivityStates.removeValue(forKey: panelId)
         surfaceTTYNames.removeValue(forKey: panelId)
         syncRemotePortScanTTYs()

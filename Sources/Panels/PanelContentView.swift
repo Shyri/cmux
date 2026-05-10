@@ -62,6 +62,7 @@ struct PanelContentView: View {
                     isFocused: isFocused,
                     isVisibleInUI: isVisibleInUI,
                     portalPriority: portalPriority,
+                    hasUnreadNotification: hasUnreadNotification,
                     onRequestPanelFocus: onRequestPanelFocus
                 )
             }

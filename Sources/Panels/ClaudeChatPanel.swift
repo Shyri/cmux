@@ -147,6 +147,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Conversation status drives input affordances (send/cancel/error banner).
     @Published private(set) var status: ChatStatus = .idle
 
+    /// In-progress message the user is composing. Lives on the panel
+    /// (rather than as `@State` on the view) so it survives workspace
+    /// switches and other moments when SwiftUI tears down and rebuilds
+    /// the view tree — without this the user loses everything they
+    /// typed every time they peek at another workspace.
+    @Published var draft: String = ""
+
     /// Tool-use requests waiting for the user to allow/deny.
     @Published var pendingApprovals: [ChatApprovalRequest] = []
 
