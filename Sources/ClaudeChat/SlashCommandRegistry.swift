@@ -55,12 +55,14 @@ enum SlashCommandRegistry {
     static func availableCommands(cwd: String?) -> [SlashCommand] {
         var out = builtinCommands
         if let cwd, !cwd.isEmpty {
-            let projectDir = URL(fileURLWithPath: cwd)
-                .appendingPathComponent(".claude/commands", isDirectory: true)
+            let projectDir = URL(fileURLWithPath: cwd, isDirectory: true)
+                .appendingPathComponent(".claude", isDirectory: true)
+                .appendingPathComponent("commands", isDirectory: true)
             out.append(contentsOf: customCommands(in: projectDir, sourceForURL: { .projectCustom($0) }))
         }
         let userDir = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".claude/commands", isDirectory: true)
+            .appendingPathComponent(".claude", isDirectory: true)
+            .appendingPathComponent("commands", isDirectory: true)
         out.append(contentsOf: customCommands(in: userDir, sourceForURL: { .userCustom($0) }))
         return out
     }

@@ -285,48 +285,110 @@ final class ClaudeChatRunner {
             return cached
         }
 
-        // Fall back to running `command -v claude` in an interactive zsh so
-        // the user's PATH (homebrew, asdf, nvm, fnm, …) is respected. We
-        // also stash the resolved PATH so the spawned `claude` inherits it.
+        // Probe a few shells in turn to handle the typical install
+        // scenarios:
+        //   1. Login zsh — the conventional PATH; works for `npm
+        //      install -g`, brew, system installs.
+        //   2. Interactive zsh — needed when the user keeps `claude`
+        //      under `~/.local/bin` or similar via .zshrc, which a
+        //      login shell doesn't always source.
+        //   3. Login bash — fallback for users who haven't migrated
+        //      to zsh yet.
+        // We accept the first probe that returns an executable path
+        // OUTSIDE another `cmux.app` bundle (a sibling install often
+        // ships its own `claude` in Resources/bin which is not what the
+        // user means when they say "I have claude installed").
+        let attempts: [(shell: String, args: [String])] = [
+            ("/bin/zsh", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
+            ("/bin/zsh", ["-i", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
+            ("/bin/bash", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
+        ]
+
+        var lastUserPath = ""
+        for attempt in attempts {
+            let (foundPath, userPath) = try probeForClaude(shell: attempt.shell, arguments: attempt.args)
+            if !userPath.isEmpty { lastUserPath = userPath }
+            if !foundPath.isEmpty,
+               !pathLivesInsideAnotherCmuxBundle(foundPath),
+               FileManager.default.isExecutableFile(atPath: foundPath) {
+                Self.cacheLock.lock()
+                if !lastUserPath.isEmpty { Self.cachedUserPath = lastUserPath }
+                Self.cachedClaudePath = foundPath
+                Self.cacheLock.unlock()
+                return foundPath
+            }
+        }
+
+        // Last resort: check the conventional install directories
+        // directly. Covers users who keep claude on disk but whose
+        // shells don't include the dir in PATH (asdf shims, custom
+        // shell init files, …).
+        let home = FileManager.default.homeDirectoryForCurrentUser.path
+        let candidates = [
+            "\(home)/.local/bin/claude",
+            "\(home)/.npm-global/bin/claude",
+            "\(home)/.bun/bin/claude",
+            "\(home)/.volta/bin/claude",
+            "/opt/homebrew/bin/claude",
+            "/usr/local/bin/claude",
+            "/usr/bin/claude",
+        ]
+        for candidate in candidates {
+            if !pathLivesInsideAnotherCmuxBundle(candidate),
+               FileManager.default.isExecutableFile(atPath: candidate) {
+                Self.cacheLock.lock()
+                if !lastUserPath.isEmpty { Self.cachedUserPath = lastUserPath }
+                Self.cachedClaudePath = candidate
+                Self.cacheLock.unlock()
+                return candidate
+            }
+        }
+
+        Self.cacheLock.lock()
+        if !lastUserPath.isEmpty { Self.cachedUserPath = lastUserPath }
+        Self.cacheLock.unlock()
+        throw RunnerError.claudeNotFound
+    }
+
+    /// Spawn `shell` with `arguments` and parse the two-line stdout
+    /// (PATH on the first line, the `command -v claude` result on the
+    /// second). Returns `(foundPath, userPath)`; either may be empty.
+    private func probeForClaude(shell: String, arguments: [String]) throws -> (String, String) {
+        guard FileManager.default.isExecutableFile(atPath: shell) else {
+            return ("", "")
+        }
         let probe = Process()
         let stdoutPipe = Pipe()
         let stderrPipe = Pipe()
-        probe.executableURL = URL(fileURLWithPath: "/bin/zsh")
-        probe.arguments = ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]
+        probe.executableURL = URL(fileURLWithPath: shell)
+        probe.arguments = arguments
         probe.standardOutput = stdoutPipe
         probe.standardError = stderrPipe
 
         do {
             try probe.run()
         } catch {
-            throw RunnerError.spawnFailed("zsh probe: \(error.localizedDescription)")
+            return ("", "")
         }
         probe.waitUntilExit()
-
         let stdout = String(
             data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8
         ) ?? ""
         let lines = stdout.split(separator: "\n").map(String.init)
-        guard lines.count >= 1 else {
-            throw RunnerError.claudeNotFound
-        }
-        let userPath = lines[0].trimmingCharacters(in: .whitespacesAndNewlines)
+        let userPath = (lines.first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         let foundPath = (lines.dropFirst().first ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return (foundPath, userPath)
+    }
 
-        Self.cacheLock.lock()
-        if !userPath.isEmpty {
-            Self.cachedUserPath = userPath
-        }
-        if !foundPath.isEmpty {
-            Self.cachedClaudePath = foundPath
-        }
-        Self.cacheLock.unlock()
-
-        guard !foundPath.isEmpty,
-              FileManager.default.isExecutableFile(atPath: foundPath) else {
-            throw RunnerError.claudeNotFound
-        }
-        return foundPath
+    /// True if `path` is `claude` shipped inside some other `cmux.app`
+    /// bundle — i.e. it's the binary that the cmux installer drops into
+    /// `Resources/bin/`. We skip those in the fork because the binary
+    /// belongs to the sibling install, not to the user's "I installed
+    /// claude" expectation.
+    private func pathLivesInsideAnotherCmuxBundle(_ path: String) -> Bool {
+        guard path.contains(".app/Contents/Resources/bin/claude") else { return false }
+        let myBundlePath = Bundle.main.bundlePath
+        return !path.hasPrefix(myBundlePath)
     }
 }
