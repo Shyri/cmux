@@ -150,6 +150,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// current turn's actual context size, including cache hits.
     @Published private(set) var lastUsage: ChatTokenUsage?
 
+    /// Stdout of the user's `statusLine.command` (project or user
+    /// settings). `nil` when the user hasn't configured a status line
+    /// or the command failed; refreshed after every turn.
+    @Published private(set) var statusLineText: String?
+
     /// Conversation status drives input affordances (send/cancel/error banner).
     @Published private(set) var status: ChatStatus = .idle
 
@@ -338,6 +343,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 self?.refreshTerminalColors()
             }
         }
+        refreshStatusLine()
     }
 
     deinit {
@@ -422,6 +428,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let trimmed = newWorkingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != workingDirectory else { return }
         workingDirectory = trimmed
+        refreshStatusLine()
     }
 
     func setCustomTitle(_ title: String?) {
@@ -931,6 +938,32 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 defaultValue: "**Error:**"
             )
             messages.append(.text(.system, "\(prefix) \(message)"))
+        }
+        refreshStatusLine()
+    }
+
+    /// Resolve `statusLine.command` from settings.json (project +
+    /// user) and update `statusLineText` with its stdout. Runs the
+    /// shell command off the main actor so a slow script does not
+    /// block UI; the @Published assignment hops back to main.
+    func refreshStatusLine() {
+        let cwd = workingDirectory
+        let info = StatusLineRunner.SessionInfo(
+            sessionId: sessionId,
+            transcriptPath: nil,
+            cwd: cwd,
+            modelId: modelName,
+            totalCostUSD: totalCostUSD,
+            exceeds200kTokens: lastUsage.map { $0.total > 200_000 } ?? false,
+            version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
+        )
+        Task.detached { [weak self] in
+            guard let cfg = StatusLineRunner.loadConfig(cwd: cwd) else {
+                await MainActor.run { [weak self] in self?.statusLineText = nil }
+                return
+            }
+            let text = StatusLineRunner.run(config: cfg, info: info, userPATH: nil)
+            await MainActor.run { [weak self] in self?.statusLineText = text }
         }
     }
 

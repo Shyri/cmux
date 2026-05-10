@@ -949,12 +949,36 @@ struct ClaudeChatPanelView: View {
                 errorBanner(message)
             }
             Divider()
+            if let line = panel.statusLineText, !line.isEmpty {
+                statusLineRow(line)
+            }
             if !panel.pendingAttachments.isEmpty {
                 attachmentsRow
             }
             inputBar
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// One-line status row driven by the user's `statusLine.command`
+    /// (read from `.claude/settings.json`). Sits between the chat
+    /// transcript and the input — same vertical position Claude Code
+    /// interactive uses for its status line.
+    private func statusLineRow(_ text: String) -> some View {
+        HStack(spacing: 0) {
+            Text(text)
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .textSelection(.enabled)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .background(palette.headerBg(colorScheme == .dark))
     }
 
     // MARK: - Header
@@ -3222,7 +3246,12 @@ private struct ToolBatchView: View {
     @Environment(\.chatPalette) private var palette
     @State private var expanded: Bool = false
 
-    private static let inlineThreshold = 3
+    /// Tool batches with 2+ entries always render with a collapsible
+    /// header (a single tool stays inline as a regular card). Any
+    /// stream of consecutive `tool_use` blocks ends up under one
+    /// "N tools used" header so the transcript stays compact even on
+    /// short bursts.
+    private static let inlineThreshold = 1
 
     var body: some View {
         VStack(alignment: .leading, spacing: 4) {
