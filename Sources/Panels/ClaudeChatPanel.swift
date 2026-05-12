@@ -219,6 +219,23 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// claude replied to this prompt*.
     @Published private(set) var undoCheckpoints: [RewindCheckpoint] = []
 
+    /// Drafts the user submitted while the previous turn was still in
+    /// flight. Each entry carries the runner-bound text (with attachment
+    /// `@<path>` expansion) and the chat-message id that already appears
+    /// in the transcript (rendered as a "queued" bubble). Drained
+    /// first-in-first-out as soon as `handle(completion:)` transitions
+    /// the status back to `.idle`. Survives Stop so cancelling the
+    /// current turn does not silently throw away queued follow-ups.
+    @Published private(set) var pendingDrafts: [PendingDraft] = []
+
+    struct PendingDraft: Identifiable, Equatable {
+        /// Same UUID as the transcript ChatMessage so the view layer can
+        /// match them up and render the queued state on the right bubble.
+        let id: UUID
+        let userText: String
+        let attachmentURLs: [URL]
+    }
+
     struct RewindCheckpoint: Identifiable, Equatable {
         let id: UUID
         let userMessageId: UUID
@@ -541,7 +558,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // and just hit Enter) — claude can describe / OCR it without a
         // text prompt.
         guard !trimmed.isEmpty || !consumedAttachments.isEmpty else { return }
-        if case .sending = status { return }
 
         // The text claude sees is the user's prompt prefixed with @<path>
         // mentions for each attachment — that triggers Claude Code's
@@ -555,6 +571,27 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         localMessage.attachmentURLs = attachmentURLs
         messages.append(localMessage)
         pendingAttachments.removeAll()
+
+        if case .sending = status {
+            // Previous turn still in flight: stash this prompt and let
+            // handle(completion:) drain it once we go idle. The transcript
+            // already shows the bubble (marked as queued by the view).
+            pendingDrafts.append(PendingDraft(
+                id: localMessage.id,
+                userText: userText,
+                attachmentURLs: attachmentURLs
+            ))
+            return
+        }
+
+        dispatchTurn(messageId: localMessage.id, userText: userText)
+    }
+
+    /// Kick off a Claude turn for the given user message. Handles MCP
+    /// startup, status bookkeeping, and turn-edit/staging resets. Shared
+    /// between `send(_:)` and the queued-drafts drain in
+    /// `handle(completion:)`.
+    private func dispatchTurn(messageId: UUID, userText: String) {
         // Each user prompt starts a new "turn" — drop the previous turn's
         // edit list so the diff side pane always shows what claude did in
         // response to the most recent message.
@@ -563,7 +600,9 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // undo will keep the user prompt visible and remove only what
         // claude streams below it. The file-backups are filled in once
         // the turn finishes (we read them out of claude's session JSONL).
-        pendingTurnStaging = (userMessageId: localMessage.id, userMessageIndex: messages.count)
+        let messageIndex = messages.firstIndex(where: { $0.id == messageId }).map { $0 + 1 }
+            ?? messages.count
+        pendingTurnStaging = (userMessageId: messageId, userMessageIndex: messageIndex)
         status = .sending
 
         let cwd = workingDirectory
@@ -780,6 +819,48 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         messages.append(.text(.system, text))
     }
 
+    /// Serialize the current transcript into Markdown so the user can copy
+    /// the entire conversation to the clipboard. SwiftUI's per-Text
+    /// `textSelection(.enabled)` does not let drags cross views, so this
+    /// is the only way to grab the whole thing in one shot. Tool calls /
+    /// results are emitted as fenced blocks; attachments and pending
+    /// (queued) messages are surfaced too so the dump matches what the
+    /// user sees on screen.
+    func transcriptAsMarkdown() -> String {
+        var out: [String] = []
+        for message in messages {
+            let roleLabel: String
+            switch message.role {
+            case .user: roleLabel = "User"
+            case .assistant: roleLabel = "Assistant"
+            case .system: roleLabel = "System"
+            }
+            out.append("### \(roleLabel)")
+            if !message.attachmentURLs.isEmpty {
+                let names = message.attachmentURLs.map { $0.lastPathComponent }.joined(separator: ", ")
+                out.append("_Attachments: \(names)_")
+            }
+            for block in message.blocks {
+                switch block {
+                case .text(let value):
+                    out.append(value)
+                case .toolUse(let use):
+                    out.append("**Tool: `\(use.name)`**")
+                    out.append("```json")
+                    out.append(use.inputJSON)
+                    out.append("```")
+                case .toolResult(let result):
+                    out.append(result.isError ? "**Tool error:**" : "**Tool result:**")
+                    out.append("```")
+                    out.append(result.content)
+                    out.append("```")
+                }
+            }
+            out.append("")
+        }
+        return out.joined(separator: "\n")
+    }
+
     /// Reset the conversation: cancel any in-flight turn, drop the messages
     /// transcript, forget the session id (so the next turn starts a fresh
     /// claude session, not a `--resume`), and clear errors.
@@ -986,6 +1067,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 return
             }
             status = .idle
+            drainPendingDraftIfAny()
         case .failure(let error):
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             status = .error(message)
@@ -994,8 +1076,23 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 defaultValue: "**Error:**"
             )
             messages.append(.text(.system, "\(prefix) \(message)"))
+            // Stop is delivered here as a cancellation failure. Per the
+            // chosen UX, queued follow-ups survive Stop and run as soon as
+            // the session goes idle — dispatchTurn flips status back from
+            // .error to .sending so the visible error chrome clears
+            // naturally once the next turn begins streaming.
+            drainPendingDraftIfAny()
         }
         refreshStatusLine()
+    }
+
+    /// If the user piled up follow-up messages while the previous turn was
+    /// running, pop the oldest one and start its turn. Called after every
+    /// successful completion; no-op when the queue is empty.
+    private func drainPendingDraftIfAny() {
+        guard !pendingDrafts.isEmpty else { return }
+        let next = pendingDrafts.removeFirst()
+        dispatchTurn(messageId: next.id, userText: next.userText)
     }
 
     /// Resolve `statusLine.command` from settings.json (project +

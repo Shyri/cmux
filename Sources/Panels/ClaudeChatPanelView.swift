@@ -755,6 +755,14 @@ struct ClaudeChatPanelView: View {
     /// Whether the right-side diff pane is open. Persists for the
     /// lifetime of this view; restart the panel to reset.
     @State private var showingDiffPane: Bool = false
+    /// We only auto-open the diff pane on the *first* turn of this panel
+    /// session that produces edits. Subsequent turns leave the pane state
+    /// alone so the user keeps whatever they last set.
+    @State private var hasAutoOpenedDiffPaneThisSession: Bool = false
+    /// Confirmation dialog for the trash button / `/clear`. Mirrors the
+    /// pattern used by the undo/rewind dialog so destructive actions are
+    /// consistent.
+    @State private var showingClearConfirmation: Bool = false
     /// Mirror of `panel.lastTurnEdits.count` from the previous render —
     /// used to detect 0→≥1 transitions and auto-open the side pane.
     @State private var lastTurnEditsCountSeen: Int = 0
@@ -878,13 +886,16 @@ struct ClaudeChatPanelView: View {
             }
         }
         .onChange(of: panel.lastTurnEdits.count) { newCount in
-            // 0 → ≥1: claude just produced the first edit of this turn.
-            // Auto-open the side pane so the user sees the diffs without
-            // hunting for the toggle. We only auto-open on the rising
-            // edge, so once the user closes it manually mid-turn we
-            // don't keep re-opening it on every additional edit.
-            if lastTurnEditsCountSeen == 0 && newCount > 0 && !showingDiffPane {
+            // First time this panel session sees a turn produce edits,
+            // pop the side pane open so the user discovers it. From then
+            // on we leave the pane state alone — they can re-open it via
+            // the toolbar button whenever they want.
+            if !hasAutoOpenedDiffPaneThisSession,
+               lastTurnEditsCountSeen == 0,
+               newCount > 0,
+               !showingDiffPane {
                 showingDiffPane = true
+                hasAutoOpenedDiffPaneThisSession = true
             }
             lastTurnEditsCountSeen = newCount
         }
@@ -1070,6 +1081,36 @@ struct ClaudeChatPanelView: View {
                 defaultValue: "This restores files claude edited (using Claude Code's file history) and removes its responses after the chosen point. The next prompt will start a fresh session."
             ))
         }
+        .confirmationDialog(
+            String(
+                localized: "claudeChat.clear.confirm.title",
+                defaultValue: "Clear chat?"
+            ),
+            isPresented: $showingClearConfirmation,
+            titleVisibility: .visible
+        ) {
+            Button(
+                String(
+                    localized: "claudeChat.clear.confirm.action",
+                    defaultValue: "Clear"
+                ),
+                role: .destructive
+            ) {
+                panel.clearTranscript()
+            }
+            Button(
+                String(
+                    localized: "claudeChat.clear.confirm.cancel",
+                    defaultValue: "Cancel"
+                ),
+                role: .cancel
+            ) { }
+        } message: {
+            Text(String(
+                localized: "claudeChat.clear.confirm.message",
+                defaultValue: "This wipes the visible transcript and starts a fresh session. Files Claude already edited stay on disk."
+            ))
+        }
     }
 
     private var undoButton: some View {
@@ -1209,7 +1250,7 @@ struct ClaudeChatPanelView: View {
 
     private var clearButton: some View {
         Button {
-            panel.clearTranscript()
+            showingClearConfirmation = true
         } label: {
             Image(systemName: "trash")
                 .font(.system(size: 11))
@@ -1223,7 +1264,14 @@ struct ClaudeChatPanelView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                LazyVStack(alignment: .leading, spacing: 12) {
+                // VStack (not LazyVStack) so every row's true height is in
+                // the layout from the start. With LazyVStack the rows above
+                // the viewport are sized with placeholders, so scrollTo(
+                // .bottom) lands at an offset computed from estimated
+                // heights — once SwiftUI materialises the real rows the
+                // content grows underneath us and the visible area ends up
+                // in "void" until the user scrolls up and forces layout.
+                VStack(alignment: .leading, spacing: 12) {
                     let rows = ChatRowBuilder.buildRows(from: panel.messages)
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, row in
                         rowView(row, isLast: idx == rows.count - 1)
@@ -1307,11 +1355,10 @@ struct ClaudeChatPanelView: View {
             .onAppear {
                 // When the chat panel becomes visible (switching back from
                 // another tab/workspace, or first mount) the ScrollView's
-                // initial offset is the top of the LazyVStack. The user
-                // expects to land on the latest exchange instead. A tiny
-                // delay lets LazyVStack finish materialising rows before we
-                // jump.
-                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                // initial offset is the top of the content. The user
+                // expects to land on the latest exchange instead. One
+                // run-loop hop is enough now that rows are eager.
+                DispatchQueue.main.async {
                     isAtBottom = true
                     proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
                 }
@@ -1337,7 +1384,8 @@ struct ClaudeChatPanelView: View {
                     showingUndoConfirmation = true
                 },
                 isCollapsedByDefault: payload.isCollapsedByDefault,
-                slashCommandName: payload.slashCommandName
+                slashCommandName: payload.slashCommandName,
+                isPending: panel.pendingDrafts.contains(where: { $0.id == payload.messageId })
             )
         case .toolBatch(let batch):
             ToolBatchView(
@@ -1471,7 +1519,8 @@ struct ClaudeChatPanelView: View {
                 onBecomeFirstResponder: { onRequestPanelFocus() },
                 onArrowUp: { moveSlashSelection(by: -1) },
                 onArrowDown: { moveSlashSelection(by: +1) },
-                onTabKey: completeSlashCommandPrefixIfPossible
+                onTabKey: completeSlashCommandPrefixIfPossible,
+                onSelectAllWhenEmpty: copyEntireTranscriptToClipboard
             )
             .frame(height: min(max(inputMeasuredHeight, Self.inputMinHeight), Self.inputMaxHeight))
             .padding(.horizontal, 8)
@@ -1515,22 +1564,26 @@ struct ClaudeChatPanelView: View {
 
     @ViewBuilder
     private var actionButton: some View {
-        if case .sending = panel.status {
-            Button(action: panel.cancel) {
-                Image(systemName: "stop.fill")
-                    .frame(width: 12, height: 12)
+        HStack(spacing: 6) {
+            if case .sending = panel.status {
+                Button(action: panel.cancel) {
+                    Image(systemName: "stop.fill")
+                        .frame(width: 12, height: 12)
+                }
+                .buttonStyle(.borderedProminent)
+                .tint(.red)
+                .help(String(localized: "claudeChat.cancel.button", defaultValue: "Stop (Esc)"))
             }
-            .buttonStyle(.borderedProminent)
-            .tint(.red)
-            .help(String(localized: "claudeChat.cancel.button", defaultValue: "Stop (Esc)"))
-        } else {
             Button(action: submit) {
                 Image(systemName: "arrow.up")
                     .frame(width: 12, height: 12)
             }
             .buttonStyle(.borderedProminent)
             .disabled(panel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help(String(localized: "claudeChat.send.button", defaultValue: "Send (Enter)"))
+            .help(String(
+                localized: "claudeChat.send.button",
+                defaultValue: "Send (Enter) — queues if Claude is still replying"
+            ))
         }
     }
 
@@ -1538,6 +1591,21 @@ struct ClaudeChatPanelView: View {
         if case .sending = panel.status {
             panel.cancel()
         }
+    }
+
+    /// ⌘A on an empty composer dumps the whole transcript to the
+    /// clipboard as Markdown. SwiftUI's per-Text textSelection cannot
+    /// span bubbles, so this is the only one-shot "grab the chat" path
+    /// the user has.
+    private func copyEntireTranscriptToClipboard() {
+        let markdown = panel.transcriptAsMarkdown()
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(markdown, forType: .string)
+        panel.appendSystemNotice(String(
+            localized: "claudeChat.copyAll.confirmation",
+            defaultValue: "Copied the conversation to the clipboard."
+        ))
     }
 
     /// Esc: close the slash-command popup if it's up; otherwise fall
@@ -1559,7 +1627,9 @@ struct ClaudeChatPanelView: View {
         }
         let trimmed = panel.draft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
-        if case .sending = panel.status { return }
+        // Allow sending while the previous turn is still in flight —
+        // panel.send queues it and the panel drains the queue when the
+        // current turn completes (mirroring Claude Code's interactive UX).
         panel.send(trimmed)
         panel.draft = ""
         // Sending always means the user wants to follow the conversation
@@ -1693,7 +1763,10 @@ struct ClaudeChatPanelView: View {
     private func runBuiltinSlashCommand(_ key: String) {
         switch key {
         case SlashCommandRegistry.BuiltinKey.clear:
-            panel.clearTranscript()
+            // Route through the same confirmation flow as the trash
+            // button — clearing the transcript is destructive and the
+            // slash command should not bypass the safety prompt.
+            showingClearConfirmation = true
         case SlashCommandRegistry.BuiltinKey.rewind,
              SlashCommandRegistry.BuiltinKey.undo:
             if panel.undoCheckpoints.isEmpty {
@@ -2807,6 +2880,11 @@ struct ChatInputTextView: NSViewRepresentable {
     var onArrowUp: (() -> Bool)? = nil
     var onArrowDown: (() -> Bool)? = nil
     var onTabKey: (() -> Bool)? = nil
+    /// Invoked when the user presses ⌘A while the composer is empty.
+    /// We treat that as "copy the whole chat" — SwiftUI's per-Text
+    /// selection cannot cross bubbles, so this is the simplest way to
+    /// grab the whole transcript without a complicated drag.
+    var onSelectAllWhenEmpty: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2845,6 +2923,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
+        chatTextView.onSelectAllWhenEmpty = onSelectAllWhenEmpty
         chatTextView.string = text
         chatTextView.placeholderString = placeholder
 
@@ -2875,6 +2954,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
+        chatTextView.onSelectAllWhenEmpty = onSelectAllWhenEmpty
         // Honor an external focus request — bump the token via @State and
         // we steal first-responder on the next render.
         if context.coordinator.lastFocusToken != focusToken {
@@ -2961,6 +3041,10 @@ final class ChatInputNSTextView: NSTextView {
     var onArrowUp: (() -> Bool)?
     var onArrowDown: (() -> Bool)?
     var onTabKey: (() -> Bool)?
+    /// Fires on ⌘A while the composer is empty so the host can copy the
+    /// whole chat to the clipboard. When the composer has text we let
+    /// NSTextView's default selectAll take over.
+    var onSelectAllWhenEmpty: (() -> Void)?
     var placeholderString: String = "" {
         didSet {
             needsDisplay = true
@@ -2977,6 +3061,18 @@ final class ChatInputNSTextView: NSTextView {
         // Escape: cancel.
         if event.keyCode == 53 {  // 53 = escape
             onCancel?()
+            return
+        }
+        // ⌘A on an empty composer: hop out to the chat-level "copy whole
+        // transcript" handler. With text in the composer the default
+        // selectAll wins (so the user can select their draft).
+        let isCmdA = event.modifierFlags.contains(.command)
+            && !event.modifierFlags.contains(.shift)
+            && !event.modifierFlags.contains(.option)
+            && !event.modifierFlags.contains(.control)
+            && (event.charactersIgnoringModifiers?.lowercased() == "a")
+        if isCmdA, string.isEmpty, let onSelectAllWhenEmpty {
+            onSelectAllWhenEmpty()
             return
         }
         // Up/Down arrows: when a popup is up these navigate the popup
@@ -3142,6 +3238,10 @@ private struct TextBlockRow: View {
     /// command name. Used as the header label so the user sees
     /// `/start-task` instead of a generic "Slash command prompt".
     var slashCommandName: String? = nil
+    /// User message that was queued while a previous turn was still
+    /// running. Renders dimmed with a small ⏳ glyph so the user can tell
+    /// it has not been dispatched to claude yet.
+    var isPending: Bool = false
 
     @Environment(\.chatPalette) private var palette
     @State private var isHovered: Bool = false
@@ -3160,7 +3260,9 @@ private struct TextBlockRow: View {
                     streamUserPromptCard
                 } else {
                     HStack(alignment: .top, spacing: 6) {
-                        if canRewindToHere, isHovered, let id = messageId {
+                        // Don't expose rewind on a still-queued bubble: it
+                        // points at a turn that never happened.
+                        if !isPending, canRewindToHere, isHovered, let id = messageId {
                             Button {
                                 onRewindToHere?(id)
                             } label: {
@@ -3179,18 +3281,31 @@ private struct TextBlockRow: View {
                         VStack(alignment: .trailing, spacing: 6) {
                             if !attachmentURLs.isEmpty {
                                 SentAttachmentsRow(urls: attachmentURLs, isDark: isDark)
+                                    .opacity(isPending ? 0.55 : 1.0)
                             }
                             if !text.isEmpty {
-                                Text(text)
-                                    .font(.system(size: 13))
-                                    .foregroundColor(palette.fg(isDark))
-                                    .padding(.horizontal, 12)
-                                    .padding(.vertical, 8)
-                                    .background(
-                                        RoundedRectangle(cornerRadius: 12)
-                                            .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
-                                    )
-                                    .textSelection(.enabled)
+                                HStack(alignment: .center, spacing: 6) {
+                                    if isPending {
+                                        Image(systemName: "hourglass")
+                                            .font(.system(size: 10, weight: .semibold))
+                                            .foregroundColor(.secondary)
+                                            .help(String(
+                                                localized: "claudeChat.queuedMessage.tooltip",
+                                                defaultValue: "Queued — will be sent when the current turn finishes"
+                                            ))
+                                    }
+                                    Text(text)
+                                        .font(.system(size: 13))
+                                        .foregroundColor(palette.fg(isDark))
+                                }
+                                .padding(.horizontal, 12)
+                                .padding(.vertical, 8)
+                                .background(
+                                    RoundedRectangle(cornerRadius: 12)
+                                        .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
+                                )
+                                .opacity(isPending ? 0.55 : 1.0)
+                                .textSelection(.enabled)
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
