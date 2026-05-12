@@ -1,4 +1,5 @@
 import AppKit
+import Bonsplit
 import Combine
 import Foundation
 
@@ -736,14 +737,33 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         server.delegate = self
         mcpServer = server
 
-        let config: [String: Any] = [
-            "mcpServers": [
-                "cmux": [
-                    "type": "http",
-                    "url": server.endpointURL.absoluteString
-                ]
-            ]
+        var mergedServers: [String: Any] = [:]
+
+        let projectMcpURL = URL(fileURLWithPath: workingDirectory)
+            .appendingPathComponent(".mcp.json")
+        if FileManager.default.fileExists(atPath: projectMcpURL.path) {
+            do {
+                let raw = try Data(contentsOf: projectMcpURL)
+                if let obj = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
+                   let servers = obj["mcpServers"] as? [String: Any] {
+                    mergedServers = servers
+                    #if DEBUG
+                    dlog("claudechat.mcp.project loaded servers=\(Array(servers.keys)) path=\(projectMcpURL.path)")
+                    #endif
+                }
+            } catch {
+                #if DEBUG
+                dlog("claudechat.mcp.project parse_error path=\(projectMcpURL.path) error=\(error)")
+                #endif
+            }
+        }
+
+        mergedServers["cmux"] = [
+            "type": "http",
+            "url": server.endpointURL.absoluteString
         ]
+
+        let config: [String: Any] = ["mcpServers": mergedServers]
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted])
         let tmpDir = NSTemporaryDirectory()
         let path = (tmpDir as NSString).appendingPathComponent("cmux-claudechat-\(id.uuidString).json")
