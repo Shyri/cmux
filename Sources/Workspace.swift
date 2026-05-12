@@ -7487,12 +7487,20 @@ final class Workspace: Identifiable, ObservableObject {
                 self.handleClaudeChatPendingTransition(panel)
                 self.refreshClaudeChatTabAppearance(panel)
             }
+        let cwdSub = claudeChatPanel.$workingDirectory
+            .removeDuplicates()
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self, weak claudeChatPanel] newCwd in
+                guard let self, let panel = claudeChatPanel else { return }
+                self.updatePanelDirectory(panelId: panel.id, directory: newCwd)
+            }
 
         panelSubscriptions[claudeChatPanel.id] = AnyCancellable {
             titleSub.cancel()
             statusSub.cancel()
             approvalSub.cancel()
             questionSub.cancel()
+            cwdSub.cancel()
         }
     }
 
@@ -9730,6 +9738,12 @@ final class Workspace: Identifiable, ObservableObject {
         )
         panels[claudeChatPanel.id] = claudeChatPanel
         panelTitles[claudeChatPanel.id] = claudeChatPanel.displayTitle
+        // Seed panelDirectories before activation so the GitLab sidebar (which
+        // reads currentDirectory, populated from panelDirectories[panelId] in
+        // activatePanel/focusPanel) reflects the chat's cwd. Without this,
+        // ClaudeChatPanel never reports its cwd the way terminals do (OSC 7),
+        // so the sidebar appears empty when the chat tab becomes focused.
+        updatePanelDirectory(panelId: claudeChatPanel.id, directory: workingDirectory)
 
         guard let newTabId = bonsplitController.createTab(
             title: claudeChatPanel.displayTitle,
