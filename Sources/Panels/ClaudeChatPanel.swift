@@ -236,6 +236,20 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let attachmentURLs: [URL]
     }
 
+    /// Latest todo list emitted by Claude's `TodoWrite` tool. Replaced
+    /// in-place on every new `TodoWrite` call (matches the semantics of
+    /// the Claude Code TUI, where the checklist updates in place instead
+    /// of accumulating). `nil` until Claude calls the tool at least once.
+    @Published private(set) var currentTodos: [TodoItem]?
+
+    struct TodoItem: Equatable, Identifiable {
+        let id: Int
+        let content: String
+        let activeForm: String?
+        /// Raw status string ("pending" / "in_progress" / "completed").
+        let status: String
+    }
+
     struct RewindCheckpoint: Identifiable, Equatable {
         let id: UUID
         let userMessageId: UUID
@@ -280,6 +294,26 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     private static let editToolNames: Set<String> = [
         "Edit", "MultiEdit", "Write", "NotebookEdit"
     ]
+
+    /// Parse the JSON-encoded input of a `TodoWrite` tool call into the
+    /// typed `TodoItem` list the banner consumes. Returns `nil` if the
+    /// payload is malformed; callers leave the previous list intact when
+    /// that happens.
+    fileprivate static func parseTodos(fromInputJSON inputJSON: String) -> [TodoItem]? {
+        guard
+            let data = inputJSON.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+            let rawTodos = obj["todos"] as? [[String: Any]]
+        else { return nil }
+        return rawTodos.enumerated().map { idx, raw in
+            TodoItem(
+                id: idx,
+                content: (raw["content"] as? String) ?? "",
+                activeForm: raw["activeForm"] as? String,
+                status: (raw["status"] as? String) ?? "pending"
+            )
+        }
+    }
 
     /// Pre-staged turn anchor: the id and index of the user message that
     /// started the in-flight turn. Filled in `send()` and consumed in
@@ -879,6 +913,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         lastTurnEdits.removeAll()
         undoCheckpoints.removeAll()
         pendingTurnStaging = nil
+        currentTodos = nil
+        pendingDrafts.removeAll()
         // Note: alwaysAllowedTools is intentionally preserved — it's persisted
         // in `.claude/settings.local.json` and represents user preferences
         // that should outlive a single conversation.
@@ -983,6 +1019,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     toolName: toolUse.name,
                     inputJSON: toolUse.inputJSON
                 ))
+            }
+            // Refresh the persistent todo banner whenever Claude rewrites
+            // the list. We replace the whole array in place so the banner
+            // mirrors the in-place semantics of the Claude Code TUI.
+            for case .toolUse(let toolUse) in blocks where toolUse.name == "TodoWrite" {
+                if let parsed = Self.parseTodos(fromInputJSON: toolUse.inputJSON) {
+                    currentTodos = parsed
+                }
             }
             // Stream-json sometimes splits a single assistant response
             // across several events that share the same `message.id`.

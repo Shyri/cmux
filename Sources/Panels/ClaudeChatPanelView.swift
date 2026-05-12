@@ -763,6 +763,10 @@ struct ClaudeChatPanelView: View {
     /// pattern used by the undo/rewind dialog so destructive actions are
     /// consistent.
     @State private var showingClearConfirmation: Bool = false
+    /// Collapse state of the persistent todo banner that sits above the
+    /// status line. Default expanded so a freshly-emitted list is
+    /// immediately visible; the user can fold it after that.
+    @State private var todosBannerExpanded: Bool = true
     /// Mirror of `panel.lastTurnEdits.count` from the previous render —
     /// used to detect 0→≥1 transitions and auto-open the side pane.
     @State private var lastTurnEditsCountSeen: Int = 0
@@ -972,6 +976,9 @@ struct ClaudeChatPanelView: View {
                 errorBanner(message)
             }
             Divider()
+            if let todos = panel.currentTodos, !todos.isEmpty {
+                todosBanner(todos)
+            }
             if let line = panel.statusLineText, !line.isEmpty {
                 statusLineRow(line)
             }
@@ -981,6 +988,105 @@ struct ClaudeChatPanelView: View {
             inputBar
         }
         .frame(maxWidth: .infinity)
+    }
+
+    /// Persistent banner above the status line that mirrors Claude
+    /// Code's TUI todo list. Updates in place on every `TodoWrite`
+    /// (handled in ClaudeChatPanel.handle(event:)), can be collapsed via
+    /// the chevron, and disappears when the panel has no todos yet or
+    /// after `clearTranscript`.
+    @ViewBuilder
+    private func todosBanner(_ todos: [ClaudeChatPanel.TodoItem]) -> some View {
+        let total = todos.count
+        let done = todos.filter { $0.status == "completed" }.count
+        let inProgress = todos.filter { $0.status == "in_progress" }.count
+        VStack(alignment: .leading, spacing: 0) {
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    todosBannerExpanded.toggle()
+                }
+            } label: {
+                HStack(spacing: 6) {
+                    Image(systemName: todosBannerExpanded ? "chevron.down" : "chevron.right")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundColor(.secondary)
+                    Image(systemName: "checklist")
+                        .font(.system(size: 11))
+                        .foregroundColor(.secondary)
+                    Text(String(
+                        localized: "claudeChat.todos.summary",
+                        defaultValue: "Todos"
+                    ))
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundColor(.primary)
+                    Text("\(done)/\(total)")
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                    if inProgress > 0 {
+                        Text("· \(inProgress) in progress")
+                            .font(.system(size: 10))
+                            .foregroundColor(ChatPalette.cyan)
+                    }
+                    Spacer(minLength: 0)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .padding(.horizontal, 12)
+            .padding(.vertical, 6)
+
+            if todosBannerExpanded {
+                VStack(alignment: .leading, spacing: 3) {
+                    ForEach(todos) { todo in
+                        HStack(alignment: .top, spacing: 6) {
+                            Image(systemName: todoIcon(todo.status))
+                                .font(.system(size: 11))
+                                .foregroundColor(todoColor(todo.status))
+                                .padding(.top, 1)
+                            Text(todoDisplayText(todo))
+                                .font(.system(size: 11))
+                                .foregroundColor(todo.status == "completed" ? .secondary : .primary)
+                                .strikethrough(todo.status == "completed")
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                }
+                .padding(.horizontal, 12)
+                .padding(.bottom, 6)
+            }
+        }
+        .background(palette.cardBg(colorScheme == .dark))
+        .overlay(
+            Rectangle()
+                .fill(Color.secondary.opacity(0.15))
+                .frame(height: 1),
+            alignment: .bottom
+        )
+    }
+
+    private func todoIcon(_ status: String) -> String {
+        switch status {
+        case "completed": return "checkmark.square.fill"
+        case "in_progress": return "circle.dotted"
+        default: return "square"
+        }
+    }
+
+    private func todoColor(_ status: String) -> Color {
+        switch status {
+        case "completed": return ChatPalette.green
+        case "in_progress": return ChatPalette.cyan
+        default: return .secondary
+        }
+    }
+
+    private func todoDisplayText(_ todo: ClaudeChatPanel.TodoItem) -> String {
+        if todo.status == "in_progress",
+           let active = todo.activeForm,
+           !active.isEmpty {
+            return active
+        }
+        return todo.content
     }
 
     /// One-line status row driven by the user's `statusLine.command`
@@ -1041,6 +1147,7 @@ struct ClaudeChatPanelView: View {
             undoButton
             diffPaneButton
             alwaysAllowedButton
+            copyChatButton
             clearButton
         }
         .padding(.horizontal, 16)
@@ -1246,6 +1353,21 @@ struct ClaudeChatPanelView: View {
             defaultValue: "How tool calls are gated for the next turn. Plan = read-only, Normal = ask each tool, Auto-edits = edits auto + bash asks, Bypass = everything auto."
         ))
         .frame(maxWidth: 110)
+    }
+
+    private var copyChatButton: some View {
+        Button {
+            copyEntireTranscriptToClipboard()
+        } label: {
+            Image(systemName: "doc.on.clipboard")
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.borderless)
+        .disabled(panel.messages.isEmpty)
+        .help(String(
+            localized: "claudeChat.copyChat.tooltip",
+            defaultValue: "Copy the whole conversation as Markdown to the clipboard"
+        ))
     }
 
     private var clearButton: some View {
@@ -1519,8 +1641,7 @@ struct ClaudeChatPanelView: View {
                 onBecomeFirstResponder: { onRequestPanelFocus() },
                 onArrowUp: { moveSlashSelection(by: -1) },
                 onArrowDown: { moveSlashSelection(by: +1) },
-                onTabKey: completeSlashCommandPrefixIfPossible,
-                onSelectAllWhenEmpty: copyEntireTranscriptToClipboard
+                onTabKey: completeSlashCommandPrefixIfPossible
             )
             .frame(height: min(max(inputMeasuredHeight, Self.inputMinHeight), Self.inputMaxHeight))
             .padding(.horizontal, 8)
@@ -2880,11 +3001,6 @@ struct ChatInputTextView: NSViewRepresentable {
     var onArrowUp: (() -> Bool)? = nil
     var onArrowDown: (() -> Bool)? = nil
     var onTabKey: (() -> Bool)? = nil
-    /// Invoked when the user presses ⌘A while the composer is empty.
-    /// We treat that as "copy the whole chat" — SwiftUI's per-Text
-    /// selection cannot cross bubbles, so this is the simplest way to
-    /// grab the whole transcript without a complicated drag.
-    var onSelectAllWhenEmpty: (() -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -2923,7 +3039,6 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
-        chatTextView.onSelectAllWhenEmpty = onSelectAllWhenEmpty
         chatTextView.string = text
         chatTextView.placeholderString = placeholder
 
@@ -2954,7 +3069,6 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
-        chatTextView.onSelectAllWhenEmpty = onSelectAllWhenEmpty
         // Honor an external focus request — bump the token via @State and
         // we steal first-responder on the next render.
         if context.coordinator.lastFocusToken != focusToken {
@@ -3041,10 +3155,6 @@ final class ChatInputNSTextView: NSTextView {
     var onArrowUp: (() -> Bool)?
     var onArrowDown: (() -> Bool)?
     var onTabKey: (() -> Bool)?
-    /// Fires on ⌘A while the composer is empty so the host can copy the
-    /// whole chat to the clipboard. When the composer has text we let
-    /// NSTextView's default selectAll take over.
-    var onSelectAllWhenEmpty: (() -> Void)?
     var placeholderString: String = "" {
         didSet {
             needsDisplay = true
@@ -3061,18 +3171,6 @@ final class ChatInputNSTextView: NSTextView {
         // Escape: cancel.
         if event.keyCode == 53 {  // 53 = escape
             onCancel?()
-            return
-        }
-        // ⌘A on an empty composer: hop out to the chat-level "copy whole
-        // transcript" handler. With text in the composer the default
-        // selectAll wins (so the user can select their draft).
-        let isCmdA = event.modifierFlags.contains(.command)
-            && !event.modifierFlags.contains(.shift)
-            && !event.modifierFlags.contains(.option)
-            && !event.modifierFlags.contains(.control)
-            && (event.charactersIgnoringModifiers?.lowercased() == "a")
-        if isCmdA, string.isEmpty, let onSelectAllWhenEmpty {
-            onSelectAllWhenEmpty()
             return
         }
         // Up/Down arrows: when a popup is up these navigate the popup
