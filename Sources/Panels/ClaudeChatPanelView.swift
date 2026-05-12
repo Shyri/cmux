@@ -772,6 +772,11 @@ struct ClaudeChatPanelView: View {
     @State private var slashFilteredCommands: [SlashCommand] = []
     @State private var slashSelectedIndex: Int = 0
     @State private var showingSlashPopup: Bool = false
+    /// Measured intrinsic height of the chat input. The composer grows with
+    /// the text up to `Self.inputMaxHeight`, after which the NSTextView
+    /// scrolls internally. Initialized to the single-line height so the
+    /// frame does not jump on first render.
+    @State private var inputMeasuredHeight: CGFloat = Self.inputMinHeight
     /// Mirror of the global "show blue ring on panes that need attention"
     /// preference (same key the terminal panel uses).
     @AppStorage(NotificationPaneRingSettings.enabledKey)
@@ -785,6 +790,13 @@ struct ClaudeChatPanelView: View {
     /// uncomfortable to read; matches the convention used by ChatGPT,
     /// Claude.ai, Slack thread panes, etc.
     private static let maxContentWidth: CGFloat = 760
+
+    /// Composer auto-grow bounds. The input grows with the typed text from
+    /// `inputMinHeight` (one visible line, matching the previous fixed
+    /// height) up to `inputMaxHeight`, after which the NSTextView scrolls
+    /// internally instead of pushing the rest of the chat off-screen.
+    private static let inputMinHeight: CGFloat = 24
+    private static let inputMaxHeight: CGFloat = 220
 
     /// Drives the blue notification ring around the chat panel. We follow
     /// the same path as the terminal panel: the host (WorkspaceContentView)
@@ -1453,6 +1465,7 @@ struct ClaudeChatPanelView: View {
                 isDark: colorScheme == .dark,
                 textColor: panel.terminalForegroundColor,
                 focusToken: inputFocusToken,
+                measuredHeight: $inputMeasuredHeight,
                 onSubmit: submit,
                 onCancel: handleEscape,
                 onBecomeFirstResponder: { onRequestPanelFocus() },
@@ -1460,7 +1473,7 @@ struct ClaudeChatPanelView: View {
                 onArrowDown: { moveSlashSelection(by: +1) },
                 onTabKey: completeSlashCommandPrefixIfPossible
             )
-            .frame(minHeight: 16, maxHeight: 48)
+            .frame(height: min(max(inputMeasuredHeight, Self.inputMinHeight), Self.inputMaxHeight))
             .padding(.horizontal, 8)
             .padding(.vertical, 1)
             .background(
@@ -2778,6 +2791,10 @@ struct ChatInputTextView: NSViewRepresentable {
     /// drops an attachment, so the next keystroke goes to the input even
     /// if the panel was sharing a window with another focused pane).
     var focusToken: Int = 0
+    /// Reports the intrinsic content height (text + insets) so the host
+    /// can grow the composer until its own ceiling. Once the host caps the
+    /// frame, the NSTextView scrolls internally.
+    @Binding var measuredHeight: CGFloat
     let onSubmit: () -> Void
     let onCancel: () -> Void
     /// Fired when the underlying NSTextView takes first-responder, so the
@@ -2832,14 +2849,22 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.placeholderString = placeholder
 
         scrollView.documentView = chatTextView
+        // Measure once the scrollView has been sized by SwiftUI so the
+        // text container's width is non-zero and `usedRect` is accurate.
+        DispatchQueue.main.async { [weak chatTextView, weak scrollView] in
+            guard let tv = chatTextView, let sv = scrollView else { return }
+            Self.reportHeight(textView: tv, scrollView: sv, into: context.coordinator)
+        }
         return scrollView
     }
 
     func updateNSView(_ nsView: NSScrollView, context: Context) {
         guard let chatTextView = nsView.documentView as? ChatInputNSTextView else { return }
+        var textDidChange = false
         if chatTextView.string != text {
             chatTextView.string = text
             chatTextView.placeholderString = placeholder
+            textDidChange = true
         }
         chatTextView.placeholderString = placeholder
         chatTextView.textColor = isDark ? textColor : NSColor.labelColor
@@ -2858,6 +2883,44 @@ struct ChatInputTextView: NSViewRepresentable {
                 chatTextView.window?.makeFirstResponder(chatTextView)
             }
         }
+        // Re-measure whenever SwiftUI re-renders (width may have changed
+        // because the panel resized) or whenever the text was replaced
+        // programmatically (e.g. cleared after submit).
+        DispatchQueue.main.async { [weak chatTextView, weak nsView] in
+            guard let tv = chatTextView, let sv = nsView else { return }
+            Self.reportHeight(textView: tv, scrollView: sv, into: context.coordinator)
+            if textDidChange {
+                // Scroll the caret back into view in case the text was
+                // shortened and the document is no longer scrolled past
+                // the visible area.
+                tv.scrollRangeToVisible(NSRange(location: tv.string.count, length: 0))
+            }
+        }
+    }
+
+    /// Compute the height the NSTextView wants given its current text and
+    /// container width, then publish it through the binding (with a small
+    /// tolerance so we don't churn SwiftUI on sub-pixel deltas).
+    fileprivate static func reportHeight(
+        textView: NSTextView,
+        scrollView: NSScrollView,
+        into coordinator: Coordinator
+    ) {
+        guard let layoutManager = textView.layoutManager,
+              let textContainer = textView.textContainer else { return }
+        let containerWidth = max(scrollView.contentSize.width, 1)
+        if abs(textContainer.size.width - containerWidth) > 0.5 {
+            textContainer.size = NSSize(
+                width: containerWidth,
+                height: .greatestFiniteMagnitude
+            )
+        }
+        layoutManager.ensureLayout(for: textContainer)
+        let used = layoutManager.usedRect(for: textContainer)
+        let height = ceil(used.height + textView.textContainerInset.height * 2)
+        if abs(coordinator.parent.measuredHeight - height) > 0.5 {
+            coordinator.parent.measuredHeight = height
+        }
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
@@ -2872,6 +2935,13 @@ struct ChatInputTextView: NSViewRepresentable {
             guard let textView = notification.object as? NSTextView else { return }
             if parent.text != textView.string {
                 parent.text = textView.string
+            }
+            if let scrollView = textView.enclosingScrollView {
+                ChatInputTextView.reportHeight(
+                    textView: textView,
+                    scrollView: scrollView,
+                    into: self
+                )
             }
         }
     }
