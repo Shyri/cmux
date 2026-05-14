@@ -921,6 +921,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         status = .idle
     }
 
+    /// Hide the persistent todos banner without affecting the underlying
+    /// `TodoWrite` history — the next call from Claude repopulates it.
+    /// Used by the X button on the banner so the user can reclaim the
+    /// vertical real estate when the checklist is no longer interesting.
+    func dismissTodos() {
+        currentTodos = nil
+    }
+
     func approve(toolUseId: String) {
         guard let resolver = approvalResolvers.removeValue(forKey: toolUseId) else {
             pendingApprovals.removeAll { $0.id == toolUseId }

@@ -1023,37 +1023,55 @@ struct ClaudeChatPanelView: View {
         let done = todos.filter { $0.status == "completed" }.count
         let inProgress = todos.filter { $0.status == "in_progress" }.count
         VStack(alignment: .leading, spacing: 0) {
-            Button {
-                withAnimation(.easeInOut(duration: 0.15)) {
-                    todosBannerExpanded.toggle()
+            HStack(spacing: 6) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        todosBannerExpanded.toggle()
+                    }
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: todosBannerExpanded ? "chevron.down" : "chevron.right")
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundColor(.secondary)
+                        Image(systemName: "checklist")
+                            .font(.system(size: 11))
+                            .foregroundColor(.secondary)
+                        Text(String(
+                            localized: "claudeChat.todos.summary",
+                            defaultValue: "Todos"
+                        ))
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundColor(.primary)
+                        Text("\(done)/\(total)")
+                            .font(.system(size: 10, design: .monospaced))
+                            .foregroundColor(.secondary)
+                        if inProgress > 0 {
+                            Text("· \(inProgress) in progress")
+                                .font(.system(size: 10))
+                                .foregroundColor(ChatPalette.cyan)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
-            } label: {
-                HStack(spacing: 6) {
-                    Image(systemName: todosBannerExpanded ? "chevron.down" : "chevron.right")
+                .buttonStyle(.plain)
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) {
+                        panel.dismissTodos()
+                    }
+                } label: {
+                    Image(systemName: "xmark")
                         .font(.system(size: 9, weight: .semibold))
                         .foregroundColor(.secondary)
-                    Image(systemName: "checklist")
-                        .font(.system(size: 11))
-                        .foregroundColor(.secondary)
-                    Text(String(
-                        localized: "claudeChat.todos.summary",
-                        defaultValue: "Todos"
-                    ))
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundColor(.primary)
-                    Text("\(done)/\(total)")
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                    if inProgress > 0 {
-                        Text("· \(inProgress) in progress")
-                            .font(.system(size: 10))
-                            .foregroundColor(ChatPalette.cyan)
-                    }
-                    Spacer(minLength: 0)
+                        .padding(4)
+                        .contentShape(Rectangle())
                 }
-                .contentShape(Rectangle())
+                .buttonStyle(.plain)
+                .help(String(
+                    localized: "claudeChat.todos.dismiss.tooltip",
+                    defaultValue: "Hide the todo list — it reappears the next time Claude updates it."
+                ))
             }
-            .buttonStyle(.plain)
             .padding(.horizontal, 12)
             .padding(.vertical, 6)
 
@@ -1543,7 +1561,8 @@ struct ClaudeChatPanelView: View {
                 isDark: colorScheme == .dark,
                 onApprove: panel.approve(toolUseId:),
                 onDeny: { id, reason in panel.deny(toolUseId: id, reason: reason) },
-                onStopTurn: panel.cancel
+                onStopTurn: panel.cancel,
+                onExitPlanApprove: handleExitPlanApprove
             )
         }
     }
@@ -1889,6 +1908,22 @@ struct ClaudeChatPanelView: View {
         lastHistoryAppliedDraft = nil
     }
 
+    /// User clicked one of the inline ExitPlanMode buttons after Claude
+    /// surfaced a plan. Headless `claude -p --permission-mode plan` auto-
+    /// allows ExitPlanMode (we don't wire `--permission-prompt-tool` for
+    /// plan mode), so the SDK never asks us — the user is left looking at
+    /// the plan with no way to act on it. The buttons replicate Claude
+    /// Code interactive's three-choice prompt: flip the panel's permission
+    /// mode for subsequent turns and send a short follow-up so Claude
+    /// resumes (or stays in plan mode if the user declined).
+    private func handleExitPlanApprove(autoAcceptEdits: Bool) {
+        panel.permissionMode = autoAcceptEdits ? .acceptEdits : .normal
+        panel.send(String(
+            localized: "claudeChat.plan.approveMessage",
+            defaultValue: "Please proceed with the plan."
+        ))
+    }
+
     /// Cycle the chat permission mode through `ChatPermissionMode.allCases`
     /// (plan → normal → acceptEdits → auto → plan …) so the user can flip
     /// modes from the keyboard, matching Claude Code interactive's
@@ -2143,11 +2178,18 @@ private struct ToolUseCard: View {
     /// free-text reason flows back to Claude as part of the tool_result.
     let onDeny: (String?) -> Void
     let onStopTurn: () -> Void
+    /// Invoked by the inline ExitPlanMode buttons. `autoAcceptEdits == true`
+    /// switches the panel into `acceptEdits` mode before the follow-up turn
+    /// is sent (mirrors Claude Code's "Yes, and auto-accept edits" option).
+    let onExitPlanApprove: (Bool) -> Void
 
     @Environment(\.chatPalette) private var palette
     @State private var expanded: Bool
     @State private var denyReasonExpanded = false
     @State private var denyReason: String = ""
+    /// Set to true once the user clicks any of the plan buttons, so they
+    /// disappear after a single choice (matches Claude Code's behavior).
+    @State private var planResolved: Bool = false
 
     init(
         toolUse: ChatMessageBlock.ToolUse,
@@ -2156,7 +2198,8 @@ private struct ToolUseCard: View {
         isDark: Bool,
         onApprove: @escaping () -> Void,
         onDeny: @escaping (String?) -> Void,
-        onStopTurn: @escaping () -> Void
+        onStopTurn: @escaping () -> Void,
+        onExitPlanApprove: @escaping (Bool) -> Void
     ) {
         self.toolUse = toolUse
         self.pending = pending
@@ -2165,11 +2208,21 @@ private struct ToolUseCard: View {
         self.onApprove = onApprove
         self.onDeny = onDeny
         self.onStopTurn = onStopTurn
+        self.onExitPlanApprove = onExitPlanApprove
         // ExitPlanMode carries the actual plan markdown as its argument;
         // collapsing it by default would force the user to click before
         // seeing what claude wants to do. Every other tool stays
         // collapsed (the chat view favors a compact transcript).
         _expanded = State(initialValue: toolUse.name == "ExitPlanMode")
+    }
+
+    /// `true` while the ExitPlanMode card should advertise the three
+    /// approval buttons (auto-accept / approve / keep planning). We skip
+    /// them when an SDK-level approval is already pending — the normal
+    /// Allow/Deny row covers that case — and once the user has clicked
+    /// any plan button on this instance.
+    private var showsExitPlanButtons: Bool {
+        toolUse.name == "ExitPlanMode" && pending == nil && !planResolved
     }
 
     private var parsedInput: [String: Any]? {
@@ -2251,12 +2304,22 @@ private struct ToolUseCard: View {
     }
 
     var body: some View {
+        // While we're advertising the plan-approval buttons the card has
+        // to stay expanded so the user can read the plan they're about to
+        // accept or reject. Lock both the visible detail and the chevron
+        // toggle until they pick an option.
+        let lockedExpanded = showsExitPlanButtons
+        let isExpanded = expanded || lockedExpanded
         VStack(alignment: .leading, spacing: 4) {
-            Button(action: { expanded.toggle() }) {
+            Button(action: {
+                guard !lockedExpanded else { return }
+                expanded.toggle()
+            }) {
                 header
             }
             .buttonStyle(.plain)
-            if expanded {
+            .disabled(lockedExpanded)
+            if isExpanded {
                 detail
                 if let result {
                     Divider().opacity(0.4).padding(.vertical, 2)
@@ -2313,6 +2376,8 @@ private struct ToolUseCard: View {
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
                 }
+            } else if showsExitPlanButtons {
+                exitPlanActions
             }
         }
         .padding(.horizontal, 8)
@@ -2324,10 +2389,75 @@ private struct ToolUseCard: View {
         .overlay(
             RoundedRectangle(cornerRadius: 6)
                 .stroke(
-                    pending != nil ? ChatPalette.orange.opacity(0.6) : palette.borderSubtle(isDark),
+                    pending != nil || showsExitPlanButtons
+                        ? ChatPalette.orange.opacity(0.6)
+                        : palette.borderSubtle(isDark),
                     lineWidth: 1
                 )
         )
+    }
+
+    /// Three-option footer rendered under an ExitPlanMode tool card when
+    /// the SDK auto-allowed the tool (the `claude -p --permission-mode plan`
+    /// case). Mirrors Claude Code interactive's
+    /// "Yes/auto-accept · Yes/manual · No, keep planning" prompt.
+    private var exitPlanActions: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Divider().opacity(0.4)
+            Text(String(
+                localized: "claudeChat.plan.prompt",
+                defaultValue: "Proceed with this plan?"
+            ))
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                Button(action: {
+                    planResolved = true
+                }) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "list.bullet.rectangle")
+                        Text(String(
+                            localized: "claudeChat.plan.keepPlanning",
+                            defaultValue: "Keep planning"
+                        ))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(String(
+                    localized: "claudeChat.plan.keepPlanning.tooltip",
+                    defaultValue: "Dismiss these buttons and type your follow-up to keep refining the plan."
+                ))
+                Spacer()
+                Button(String(
+                    localized: "claudeChat.plan.approve",
+                    defaultValue: "Approve"
+                )) {
+                    planResolved = true
+                    onExitPlanApprove(false)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+                .help(String(
+                    localized: "claudeChat.plan.approve.tooltip",
+                    defaultValue: "Approve the plan and switch to Normal mode — subsequent edits will still ask for permission."
+                ))
+                Button(String(
+                    localized: "claudeChat.plan.autoAcceptEdits",
+                    defaultValue: "Auto-accept edits"
+                )) {
+                    planResolved = true
+                    onExitPlanApprove(true)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.small)
+                .help(String(
+                    localized: "claudeChat.plan.autoAcceptEdits.tooltip",
+                    defaultValue: "Approve the plan and auto-allow file edits — Bash and other tools still ask first."
+                ))
+            }
+        }
+        .padding(.top, 2)
     }
 
     private func handleDenyTap() {
@@ -2355,14 +2485,37 @@ private struct ToolUseCard: View {
                     .truncationMode(.middle)
             }
             Spacer(minLength: 4)
-            if let result {
+            if let result, toolUse.name != "ExitPlanMode" {
+                // Skip the success/error glyph for ExitPlanMode: in
+                // headless plan mode the SDK frequently returns an
+                // `isError` tool_result (because it can't actually swap
+                // permission modes after launch), which would render as a
+                // red ✖ and read as "the plan failed". The state we care
+                // about — "waiting for the user to click approve" vs.
+                // "user already chose" — is already conveyed by the
+                // orange badge / approval buttons below.
                 Image(systemName: result.isError ? "xmark.octagon.fill" : "checkmark.circle.fill")
                     .font(.system(size: 9))
                     .foregroundColor(result.isError ? ChatPalette.red : ChatPalette.green.opacity(0.85))
             }
-            Image(systemName: expanded ? "chevron.up" : "chevron.down")
-                .font(.system(size: 9))
-                .foregroundColor(.secondary)
+            if showsExitPlanButtons {
+                // Replace the chevron with the orange "needs you" glyph so
+                // the card visibly signals that it's waiting on approval
+                // — and that the user is not meant to collapse it.
+                Text(String(
+                    localized: "claudeChat.plan.awaitingBadge",
+                    defaultValue: "Awaiting approval"
+                ))
+                .font(.system(size: 9, weight: .semibold))
+                .foregroundColor(ChatPalette.orange)
+                Image(systemName: "hand.raised.fill")
+                    .font(.system(size: 9))
+                    .foregroundColor(ChatPalette.orange)
+            } else {
+                Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                    .font(.system(size: 9))
+                    .foregroundColor(.secondary)
+            }
         }
         .contentShape(Rectangle())
     }
@@ -3866,10 +4019,22 @@ enum ChatRowBuilder {
                         slashCommandName: message.slashCommandName
                     )))
                 case .toolUse(let toolUse):
-                    if batchAnchorId == nil {
+                    // ExitPlanMode is the user's gating moment — they need
+                    // to read the plan and pick an option. Force it into a
+                    // batch of one so the surrounding read tools can't drag
+                    // it under a "N tools used" collapse after the turn
+                    // settles. Solo batches stay inline (inlineThreshold=1).
+                    if toolUse.name == "ExitPlanMode" {
+                        flushBatch()
                         batchAnchorId = "batch-\(toolUse.id)"
+                        batchEntries.append(.init(messageId: message.id, toolUse: toolUse))
+                        flushBatch()
+                    } else {
+                        if batchAnchorId == nil {
+                            batchAnchorId = "batch-\(toolUse.id)"
+                        }
+                        batchEntries.append(.init(messageId: message.id, toolUse: toolUse))
                     }
-                    batchEntries.append(.init(messageId: message.id, toolUse: toolUse))
                 case .toolResult:
                     // Filtered into `toolResultsByToolUseId` at the panel
                     // level; if one slips through here we just ignore it.
@@ -4096,6 +4261,8 @@ private struct ToolBatchView: View {
     let onApprove: (String) -> Void
     let onDeny: (String, String?) -> Void
     let onStopTurn: () -> Void
+    /// Forwarded to each child `ToolUseCard`; see `ToolUseCard.onExitPlanApprove`.
+    let onExitPlanApprove: (Bool) -> Void
 
     @Environment(\.chatPalette) private var palette
     @State private var expanded: Bool = false
@@ -4145,7 +4312,8 @@ private struct ToolBatchView: View {
             isDark: isDark,
             onApprove: { onApprove(entry.toolUse.id) },
             onDeny: { reason in onDeny(entry.toolUse.id, reason) },
-            onStopTurn: onStopTurn
+            onStopTurn: onStopTurn,
+            onExitPlanApprove: onExitPlanApprove
         )
     }
 
