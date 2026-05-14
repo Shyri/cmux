@@ -789,6 +789,22 @@ struct ClaudeChatPanelView: View {
     /// scrolls internally. Initialized to the single-line height so the
     /// frame does not jump on first render.
     @State private var inputMeasuredHeight: CGFloat = Self.inputMinHeight
+    /// Index into `userHistoryEntries` while the user is navigating
+    /// previously-sent messages with ↑/↓. `nil` means "not browsing,
+    /// the draft is the user's own in-progress text". Set on the first
+    /// ↑ at the document edge, cleared when the user types anything new
+    /// (so the draft becomes the new in-progress text) or steps past
+    /// the most recent entry via ↓.
+    @State private var historyIndex: Int? = nil
+    /// Snapshot of the draft taken when the user entered history mode,
+    /// so ↓ past the newest entry can restore it instead of dropping
+    /// what they were typing.
+    @State private var historyDraftSnapshot: String? = nil
+    /// Last draft value we wrote programmatically while navigating
+    /// history. Lets the `onChange(of: panel.draft)` observer tell
+    /// "the user actually typed something" from "history just applied
+    /// a value" without comparing against an entire list each time.
+    @State private var lastHistoryAppliedDraft: String? = nil
     /// Mirror of the global "show blue ring on panes that need attention"
     /// preference (same key the terminal panel uses).
     @AppStorage(NotificationPaneRingSettings.enabledKey)
@@ -930,6 +946,12 @@ struct ClaudeChatPanelView: View {
         }
         .onChange(of: panel.draft) { newValue in
             updateSlashPopupForDraft(newValue)
+            // Drop out of history navigation as soon as the user types
+            // something — keeps the next ↑ honoring their new in-progress
+            // draft, the way Claude Code CLI behaves.
+            if historyIndex != nil, newValue != lastHistoryAppliedDraft {
+                exitHistoryMode()
+            }
         }
     }
 
@@ -1407,7 +1429,10 @@ struct ClaudeChatPanelView: View {
                             onApproveAlways: {
                                 panel.approveAlways(toolUseId: request.id, toolName: request.toolName)
                             },
-                            onDeny: { panel.deny(toolUseId: request.id, reason: nil) }
+                            onDeny: { reason in
+                                panel.deny(toolUseId: request.id, reason: reason)
+                            },
+                            onStopTurn: { panel.cancel() }
                         )
                         .id("approval-\(request.id)")
                     }
@@ -1517,7 +1542,8 @@ struct ClaudeChatPanelView: View {
                 isCurrentBatch: isLast && panel.status == .sending,
                 isDark: colorScheme == .dark,
                 onApprove: panel.approve(toolUseId:),
-                onDeny: { id in panel.deny(toolUseId: id, reason: nil) }
+                onDeny: { id, reason in panel.deny(toolUseId: id, reason: reason) },
+                onStopTurn: panel.cancel
             )
         }
     }
@@ -1639,9 +1665,16 @@ struct ClaudeChatPanelView: View {
                 onSubmit: submit,
                 onCancel: handleEscape,
                 onBecomeFirstResponder: { onRequestPanelFocus() },
-                onArrowUp: { moveSlashSelection(by: -1) },
-                onArrowDown: { moveSlashSelection(by: +1) },
-                onTabKey: completeSlashCommandPrefixIfPossible
+                onArrowUp: { ctx in
+                    if moveSlashSelection(by: -1) { return true }
+                    return tryNavigateHistory(direction: .older, context: ctx)
+                },
+                onArrowDown: { ctx in
+                    if moveSlashSelection(by: +1) { return true }
+                    return tryNavigateHistory(direction: .newer, context: ctx)
+                },
+                onTabKey: completeSlashCommandPrefixIfPossible,
+                onShiftTab: cyclePermissionMode
             )
             .frame(height: min(max(inputMeasuredHeight, Self.inputMinHeight), Self.inputMaxHeight))
             .padding(.horizontal, 8)
@@ -1753,9 +1786,122 @@ struct ClaudeChatPanelView: View {
         // current turn completes (mirroring Claude Code's interactive UX).
         panel.send(trimmed)
         panel.draft = ""
+        exitHistoryMode()
         // Sending always means the user wants to follow the conversation
         // again — jump to the latest, even if they were reading history.
         forceScrollToBottomToken &+= 1
+    }
+
+    // MARK: - Composer history navigation
+
+    private enum HistoryDirection {
+        case older
+        case newer
+    }
+
+    /// Past user prompts the composer can recall with ↑/↓, ordered
+    /// oldest → newest. Empty / attachment-only messages are skipped
+    /// (recalling a blank entry would be useless).
+    private var userHistoryEntries: [String] {
+        panel.messages.compactMap { message in
+            guard message.role == .user else { return nil }
+            let text = message.plainText.trimmingCharacters(in: .whitespacesAndNewlines)
+            return text.isEmpty ? nil : text
+        }
+    }
+
+    /// Attempt to step the composer one entry through the user history.
+    /// Returns `true` (= consume the keypress) when we either applied a
+    /// new entry, swallowed an edge press already in history mode, or
+    /// restored the snapshot. Returns `false` for the very first ↑ at a
+    /// non-edge caret position, so the NSTextView's normal caret movement
+    /// still wins inside multi-line drafts.
+    @discardableResult
+    private func tryNavigateHistory(
+        direction: HistoryDirection,
+        context: ChatInputArrowContext
+    ) -> Bool {
+        // Already browsing — every ↑/↓ stays in history mode until ↓
+        // walks off the newest entry. Otherwise only enter when the
+        // caret is at the matching edge of the draft (or the draft is
+        // empty), so ↑ on line 2 of a multi-line draft still moves the
+        // caret instead of swapping the content out from under the user.
+        let alreadyInHistory = historyIndex != nil
+        if !alreadyInHistory {
+            switch direction {
+            case .older:
+                guard context.isAtFirstLine || context.isEmpty else { return false }
+            case .newer:
+                // ↓ only meaningful when we're already replaying.
+                return false
+            }
+        }
+
+        let entries = userHistoryEntries
+        guard !entries.isEmpty else { return false }
+
+        // Index can go stale if claude streams a new response mid-replay
+        // (claude messages are filtered out but the user count is stable
+        // — still, an extra defensive clamp is cheap).
+        let current = min(historyIndex ?? entries.count, entries.count)
+
+        switch direction {
+        case .older:
+            guard current > 0 else { return true } // pinned to oldest
+            apply(historyEntry: entries[current - 1], newIndex: current - 1)
+        case .newer:
+            if current >= entries.count - 1 {
+                // Past the newest → drop back to whatever the user was
+                // typing before they hit ↑ the first time.
+                restoreHistorySnapshot()
+            } else {
+                apply(historyEntry: entries[current + 1], newIndex: current + 1)
+            }
+        }
+        return true
+    }
+
+    private func apply(historyEntry entry: String, newIndex: Int) {
+        if historyDraftSnapshot == nil {
+            historyDraftSnapshot = panel.draft
+        }
+        historyIndex = newIndex
+        lastHistoryAppliedDraft = entry
+        panel.draft = entry
+    }
+
+    private func restoreHistorySnapshot() {
+        let snapshot = historyDraftSnapshot ?? ""
+        historyIndex = nil
+        historyDraftSnapshot = nil
+        // Tag the value we are about to write so the draft observer's
+        // "user just typed" guard does not re-fire exitHistoryMode().
+        // The next user keystroke will diverge from this marker and the
+        // observer naturally ignores it because historyIndex is already
+        // nil anyway.
+        lastHistoryAppliedDraft = snapshot
+        panel.draft = snapshot
+    }
+
+    private func exitHistoryMode() {
+        historyIndex = nil
+        historyDraftSnapshot = nil
+        lastHistoryAppliedDraft = nil
+    }
+
+    /// Cycle the chat permission mode through `ChatPermissionMode.allCases`
+    /// (plan → normal → acceptEdits → auto → plan …) so the user can flip
+    /// modes from the keyboard, matching Claude Code interactive's
+    /// Shift+Tab behavior. Always returns `true` to swallow the key.
+    @discardableResult
+    private func cyclePermissionMode() -> Bool {
+        let modes = ChatPermissionMode.allCases
+        guard let current = modes.firstIndex(of: panel.permissionMode) else {
+            panel.permissionMode = modes.first ?? .normal
+            return true
+        }
+        panel.permissionMode = modes[(current + 1) % modes.count]
+        return true
     }
 
     // MARK: - Slash command autocomplete
@@ -1993,10 +2139,38 @@ private struct ToolUseCard: View {
     let result: ChatMessageBlock.ToolResult?
     let isDark: Bool
     let onApprove: () -> Void
-    let onDeny: () -> Void
+    /// See ApprovalRequestCard.onDeny — same semantics: an optional
+    /// free-text reason flows back to Claude as part of the tool_result.
+    let onDeny: (String?) -> Void
+    let onStopTurn: () -> Void
 
     @Environment(\.chatPalette) private var palette
-    @State private var expanded = false
+    @State private var expanded: Bool
+    @State private var denyReasonExpanded = false
+    @State private var denyReason: String = ""
+
+    init(
+        toolUse: ChatMessageBlock.ToolUse,
+        pending: ChatApprovalRequest?,
+        result: ChatMessageBlock.ToolResult?,
+        isDark: Bool,
+        onApprove: @escaping () -> Void,
+        onDeny: @escaping (String?) -> Void,
+        onStopTurn: @escaping () -> Void
+    ) {
+        self.toolUse = toolUse
+        self.pending = pending
+        self.result = result
+        self.isDark = isDark
+        self.onApprove = onApprove
+        self.onDeny = onDeny
+        self.onStopTurn = onStopTurn
+        // ExitPlanMode carries the actual plan markdown as its argument;
+        // collapsing it by default would force the user to click before
+        // seeing what claude wants to do. Every other tool stays
+        // collapsed (the chat view favors a compact transcript).
+        _expanded = State(initialValue: toolUse.name == "ExitPlanMode")
+    }
 
     private var parsedInput: [String: Any]? {
         guard let data = toolUse.inputJSON.data(using: .utf8),
@@ -2055,6 +2229,21 @@ private struct ToolUseCard: View {
             if let todos = parsedInput?["todos"] as? [[String: Any]] {
                 return "\(todos.count) todos"
             }
+        case "ExitPlanMode":
+            if let plan = parsedInput?["plan"] as? String {
+                // First non-empty line, stripped of leading markdown
+                // syntax, so the collapsed header shows the plan's
+                // headline rather than a `#` or `-` prefix.
+                let headline = plan
+                    .components(separatedBy: "\n")
+                    .lazy
+                    .map { $0.trimmingCharacters(in: .whitespaces) }
+                    .first(where: { !$0.isEmpty }) ?? ""
+                let stripped = headline.drop(while: { "#-*>•".contains($0) || $0 == " " })
+                let cap = 80
+                let result = String(stripped)
+                return result.count > cap ? String(result.prefix(cap)) + "…" : result
+            }
         default:
             break
         }
@@ -2075,10 +2264,51 @@ private struct ToolUseCard: View {
                 }
             }
             if pending != nil {
+                if denyReasonExpanded {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(spacing: 6) {
+                            TextField(
+                                String(
+                                    localized: "claudeChat.tool.denyReason.placeholder",
+                                    defaultValue: "e.g. \"use a different approach\" or leave empty"
+                                ),
+                                text: $denyReason
+                            )
+                            .textFieldStyle(.roundedBorder)
+                            .controlSize(.small)
+                            .onSubmit {
+                                let trimmed = denyReason.trimmingCharacters(in: .whitespacesAndNewlines)
+                                onDeny(trimmed.isEmpty ? nil : trimmed)
+                            }
+                            Button(String(
+                                localized: "claudeChat.tool.denyReason.cancel",
+                                defaultValue: "Cancel"
+                            )) {
+                                denyReasonExpanded = false
+                                denyReason = ""
+                            }
+                            .buttonStyle(.bordered)
+                            .controlSize(.small)
+                        }
+                    }
+                }
                 HStack(spacing: 6) {
-                    Button(String(localized: "claudeChat.tool.deny", defaultValue: "Deny"), action: onDeny)
-                        .buttonStyle(.bordered)
-                        .controlSize(.small)
+                    Button(action: onStopTurn) {
+                        Image(systemName: "stop.fill")
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
+                    .tint(.red)
+                    .help(String(
+                        localized: "claudeChat.tool.stopTurn.tooltip",
+                        defaultValue: "Cancel the current turn entirely — Claude stops thinking and waits for your next message."
+                    ))
+                    Spacer()
+                    Button(String(localized: "claudeChat.tool.deny", defaultValue: "Deny")) {
+                        handleDenyTap()
+                    }
+                    .buttonStyle(.bordered)
+                    .controlSize(.small)
                     Button(String(localized: "claudeChat.tool.allow", defaultValue: "Allow"), action: onApprove)
                         .buttonStyle(.borderedProminent)
                         .controlSize(.small)
@@ -2098,6 +2328,15 @@ private struct ToolUseCard: View {
                     lineWidth: 1
                 )
         )
+    }
+
+    private func handleDenyTap() {
+        if !denyReasonExpanded {
+            denyReasonExpanded = true
+            return
+        }
+        let trimmed = denyReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        onDeny(trimmed.isEmpty ? nil : trimmed)
     }
 
     private var header: some View {
@@ -2148,6 +2387,8 @@ private struct ToolUseCard: View {
             return "person.2"
         case "TodoWrite":
             return "checklist"
+        case "ExitPlanMode":
+            return "list.bullet.rectangle"
         default:
             return "wrench.and.screwdriver"
         }
@@ -2191,6 +2432,8 @@ private struct ToolInputDetailView: View {
             TaskInvocationView(input: input, isDark: isDark)
         case "TodoWrite":
             TodoWriteView(input: input, isDark: isDark)
+        case "ExitPlanMode":
+            ExitPlanModeView(input: input, isDark: isDark)
         default:
             Text(rawJSON)
                 .font(.system(size: 11, design: .monospaced))
@@ -2322,6 +2565,62 @@ private struct TodoWriteView: View {
         case "completed": return ChatPalette.green
         case "in_progress": return ChatPalette.cyan
         default: return .secondary
+        }
+    }
+}
+
+/// Renders the body of an `ExitPlanMode` tool call (Claude Code's
+/// "here's the plan I want to execute" handoff used in plan mode).
+/// Without this the panel falls back to the raw-JSON dump, which leaves
+/// the user staring at an escaped markdown blob; instead we feed the
+/// `plan` field straight to the chat markdown theme so headings, lists
+/// and code blocks render the same as a normal assistant message.
+private struct ExitPlanModeView: View {
+    let input: [String: Any]?
+    let isDark: Bool
+
+    @Environment(\.chatPalette) private var palette
+
+    private var planMarkdown: String {
+        (input?["plan"] as? String) ?? ""
+    }
+
+    var body: some View {
+        let trimmed = planMarkdown.trimmingCharacters(in: .whitespacesAndNewlines)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 6) {
+                Image(systemName: "list.bullet.rectangle")
+                    .font(.system(size: 10))
+                    .foregroundColor(ChatPalette.cyan)
+                Text(String(
+                    localized: "claudeChat.tool.plan.label",
+                    defaultValue: "Proposed plan"
+                ))
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundColor(.secondary)
+            }
+            if trimmed.isEmpty {
+                Text(String(
+                    localized: "claudeChat.tool.plan.empty",
+                    defaultValue: "(empty plan)"
+                ))
+                .font(.system(size: 11, design: .monospaced))
+                .foregroundColor(.secondary)
+            } else {
+                Markdown(trimmed)
+                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(10)
+                    .background(
+                        RoundedRectangle(cornerRadius: 6)
+                            .fill(palette.cardSubtleBg(isDark))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 6)
+                            .stroke(ChatPalette.cyan.opacity(0.35), lineWidth: 1)
+                    )
+            }
         }
     }
 }
@@ -2606,10 +2905,24 @@ private struct ApprovalRequestCard: View {
     let isDark: Bool
     let onApprove: () -> Void
     let onApproveAlways: () -> Void
-    let onDeny: () -> Void
+    /// Deny with an optional free-text reason that gets surfaced to
+    /// Claude as part of the tool_result. With a reason Claude usually
+    /// changes course (matches Claude Code's TUI prompt-on-deny UX);
+    /// without one (`nil`) Claude just sees a bare denial.
+    let onDeny: (String?) -> Void
+    /// Hard-stop the current turn (mirrors the trash/stop button on the
+    /// composer). Useful when Claude is in a loop the user wants to
+    /// abort rather than redirect.
+    let onStopTurn: () -> Void
 
     @Environment(\.chatPalette) private var palette
     @State private var expanded = true
+    /// Inline "tell Claude what to do instead" composer. Becomes visible
+    /// when the user clicks Deny once; clicking again with a non-empty
+    /// reason sends it. A second click with an empty reason sends a
+    /// bare deny (legacy behavior).
+    @State private var denyReasonExpanded = false
+    @State private var denyReason: String = ""
 
     /// Re-parse the inputJSON we received from the MCP server. The server
     /// pretty-prints it for display; here we want the structured form so we
@@ -2648,8 +2961,27 @@ private struct ApprovalRequestCard: View {
                     isDark: isDark
                 )
             }
+            if denyReasonExpanded {
+                denyReasonRow
+            }
             HStack(spacing: 8) {
-                Button(String(localized: "claudeChat.tool.deny", defaultValue: "Deny"), action: onDeny)
+                Button(action: onStopTurn) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "stop.fill")
+                        Text(String(
+                            localized: "claudeChat.tool.stopTurn",
+                            defaultValue: "Stop turn"
+                        ))
+                    }
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .help(String(
+                    localized: "claudeChat.tool.stopTurn.tooltip",
+                    defaultValue: "Cancel the current turn entirely — Claude stops thinking and waits for your next message."
+                ))
+                Spacer()
+                Button(String(localized: "claudeChat.tool.deny", defaultValue: "Deny"), action: handleDenyTap)
                     .buttonStyle(.bordered)
                 Button(action: onApproveAlways) {
                     Text(String(
@@ -2677,6 +3009,57 @@ private struct ApprovalRequestCard: View {
                 .stroke(ChatPalette.orange.opacity(0.5), lineWidth: 1)
         )
     }
+
+    /// Inline TextField that mirrors Claude Code's "tell Claude what to
+    /// do instead" prompt: appears after the first Deny click, and the
+    /// next Deny click sends the typed reason back to Claude as part of
+    /// the tool_result.
+    private var denyReasonRow: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text(String(
+                localized: "claudeChat.tool.denyReason.label",
+                defaultValue: "Tell Claude what to do instead (optional):"
+            ))
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            HStack(spacing: 6) {
+                TextField(
+                    String(
+                        localized: "claudeChat.tool.denyReason.placeholder",
+                        defaultValue: "e.g. \"use a different approach\" or leave empty"
+                    ),
+                    text: $denyReason
+                )
+                .textFieldStyle(.roundedBorder)
+                .controlSize(.small)
+                .onSubmit {
+                    let trimmed = denyReason.trimmingCharacters(in: .whitespacesAndNewlines)
+                    onDeny(trimmed.isEmpty ? nil : trimmed)
+                }
+                Button(String(
+                    localized: "claudeChat.tool.denyReason.cancel",
+                    defaultValue: "Cancel"
+                )) {
+                    denyReasonExpanded = false
+                    denyReason = ""
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.small)
+            }
+        }
+    }
+
+    /// First click expands the reason composer (replicates Claude Code's
+    /// inline "what should I do instead?" prompt). Second click either
+    /// sends the reason (if typed) or falls back to a bare deny.
+    private func handleDenyTap() {
+        if !denyReasonExpanded {
+            denyReasonExpanded = true
+            return
+        }
+        let trimmed = denyReason.trimmingCharacters(in: .whitespacesAndNewlines)
+        onDeny(trimmed.isEmpty ? nil : trimmed)
+    }
 }
 
 private struct UserQuestionCard: View {
@@ -2687,6 +3070,16 @@ private struct UserQuestionCard: View {
     @Environment(\.chatPalette) private var palette
     /// One Set per sub-question, indexed by sub-question position.
     @State private var selectedByIndex: [Set<String>] = []
+    /// Free-text answer for the "Other" row, one per sub-question.
+    /// Selecting Other without typing anything is treated as no answer
+    /// (the Submit button stays disabled for that sub-question).
+    @State private var otherTextByIndex: [String] = []
+
+    /// Sentinel label used in `selectedByIndex` to represent the "Other"
+    /// row. Picked to be highly unlikely to collide with a real option
+    /// label coming from Claude. Replaced by the typed text in
+    /// `submitAll()` before the answers go back over MCP.
+    private static let otherSentinel = "__cmux_other__"
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -2715,6 +3108,9 @@ private struct UserQuestionCard: View {
             if selectedByIndex.count != request.questions.count {
                 selectedByIndex = Array(repeating: Set<String>(), count: request.questions.count)
             }
+            if otherTextByIndex.count != request.questions.count {
+                otherTextByIndex = Array(repeating: "", count: request.questions.count)
+            }
         }
     }
 
@@ -2741,8 +3137,80 @@ private struct UserQuestionCard: View {
                 ForEach(sub.options) { option in
                     optionButton(index: index, sub: sub, option: option)
                 }
+                otherRow(index: index, sub: sub)
             }
         }
+    }
+
+    /// Trailing free-text row that mirrors Claude Code's "Other" option.
+    /// Selecting the row activates the inline TextField; typing into it
+    /// auto-selects the row. In single-select questions, picking Other
+    /// (or typing) clears the other selections. The typed text is what
+    /// gets sent back to Claude — the sentinel label never leaves this
+    /// view.
+    @ViewBuilder
+    private func otherRow(index: Int, sub: ChatUserQuestionRequest.SubQuestion) -> some View {
+        let isSelected = selectedByIndex.indices.contains(index)
+            && selectedByIndex[index].contains(Self.otherSentinel)
+        let otherTextBinding = Binding<String>(
+            get: {
+                otherTextByIndex.indices.contains(index)
+                    ? otherTextByIndex[index] : ""
+            },
+            set: { newValue in
+                guard otherTextByIndex.indices.contains(index) else { return }
+                otherTextByIndex[index] = newValue
+                let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard selectedByIndex.indices.contains(index) else { return }
+                if trimmed.isEmpty {
+                    selectedByIndex[index].remove(Self.otherSentinel)
+                } else {
+                    // Typing implicitly selects the Other row. In
+                    // single-select mode it also clears any previous
+                    // selection so the radio behavior stays consistent.
+                    if !sub.multiSelect {
+                        selectedByIndex[index] = []
+                    }
+                    selectedByIndex[index].insert(Self.otherSentinel)
+                }
+            }
+        )
+        HStack(alignment: .top, spacing: 8) {
+            Button {
+                toggle(index: index, sub: sub, label: Self.otherSentinel)
+            } label: {
+                HStack(alignment: .top, spacing: 8) {
+                    Image(systemName: optionIcon(sub: sub, isSelected: isSelected))
+                        .font(.system(size: 12))
+                        .foregroundColor(isSelected ? .accentColor : .secondary)
+                        .padding(.top, 2)
+                    Text(String(
+                        localized: "claudeChat.question.other",
+                        defaultValue: "Other"
+                    ))
+                    .font(.system(size: 12, weight: .medium))
+                    .foregroundColor(.primary)
+                    .padding(.top, 1)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            TextField(
+                String(
+                    localized: "claudeChat.question.other.placeholder",
+                    defaultValue: "Type your own answer…"
+                ),
+                text: otherTextBinding
+            )
+            .textFieldStyle(.roundedBorder)
+            .controlSize(.small)
+            .font(.system(size: 12))
+        }
+        .padding(8)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(isSelected ? ChatPalette.cyan.opacity(0.18) : Color.clear)
+        )
     }
 
     @ViewBuilder
@@ -2807,12 +3275,37 @@ private struct UserQuestionCard: View {
     }
 
     private var allAnswered: Bool {
-        selectedByIndex.count == request.questions.count
-            && !selectedByIndex.contains(where: { $0.isEmpty })
+        guard selectedByIndex.count == request.questions.count else { return false }
+        for (index, selection) in selectedByIndex.enumerated() {
+            if selection.isEmpty { return false }
+            // "Other" alone is only a real answer if the user typed
+            // something. With other concrete options also selected, the
+            // empty Other gets silently dropped at submit time.
+            if selection == [Self.otherSentinel] {
+                let typed = otherTextByIndex.indices.contains(index)
+                    ? otherTextByIndex[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                if typed.isEmpty { return false }
+            }
+        }
+        return true
     }
 
     private func submitAll() {
-        let answers: [[String]] = selectedByIndex.map { Array($0) }
+        let answers: [[String]] = selectedByIndex.enumerated().map { index, selection in
+            var labels = Array(selection)
+            if let otherIdx = labels.firstIndex(of: Self.otherSentinel) {
+                let typed = otherTextByIndex.indices.contains(index)
+                    ? otherTextByIndex[index].trimmingCharacters(in: .whitespacesAndNewlines)
+                    : ""
+                if typed.isEmpty {
+                    labels.remove(at: otherIdx)
+                } else {
+                    labels[otherIdx] = typed
+                }
+            }
+            return labels
+        }
         onAnswer(answers)
     }
 }
@@ -2971,10 +3464,24 @@ private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme 
 
 // MARK: - Chat input
 
+/// Context about the caret captured at the moment an arrow key is
+/// pressed. The chat composer uses it to decide whether ↑/↓ should
+/// step through the message history (only at the edge of the document,
+/// mirroring zsh/bash) or fall through to the NSTextView default
+/// caret movement.
+struct ChatInputArrowContext {
+    var isEmpty: Bool
+    var isAtFirstLine: Bool
+    var isAtLastLine: Bool
+}
+
 /// Multi-line text input with chat semantics:
 /// - Enter (Return alone) submits the message.
 /// - Shift+Enter inserts a newline.
 /// - Escape calls `onCancel` (used to stop an in-flight turn).
+/// - Ctrl+U kills from the caret to the start of the document
+///   (terminal-style `unix-line-discard`).
+/// - Shift+Tab cycles the permission mode via `onShiftTab`.
 /// - Auto-grows up to its frame height with internal scrolling.
 struct ChatInputTextView: NSViewRepresentable {
     @Binding var text: String
@@ -2996,11 +3503,15 @@ struct ChatInputTextView: NSViewRepresentable {
     /// clicking into the chat input does not unstick a stale focus that
     /// still points at a sibling terminal pane, and keystrokes leak there.
     var onBecomeFirstResponder: (() -> Void)? = nil
-    /// Popup-driven key intercepts (slash-command dropdown). Each returns
-    /// `true` to swallow the key, `false` to fall through to NSTextView.
-    var onArrowUp: (() -> Bool)? = nil
-    var onArrowDown: (() -> Bool)? = nil
+    /// Key intercepts for popup-driven UI (slash-command dropdown) and
+    /// for terminal-style affordances (history, mode cycling). Each
+    /// returns `true` to swallow the key, `false` to fall through to
+    /// NSTextView. The arrow handlers receive the caret context so the
+    /// host can scope history navigation to the document edges.
+    var onArrowUp: ((ChatInputArrowContext) -> Bool)? = nil
+    var onArrowDown: ((ChatInputArrowContext) -> Bool)? = nil
     var onTabKey: (() -> Bool)? = nil
+    var onShiftTab: (() -> Bool)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(self)
@@ -3039,6 +3550,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
+        chatTextView.onShiftTab = onShiftTab
         chatTextView.string = text
         chatTextView.placeholderString = placeholder
 
@@ -3069,6 +3581,7 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onArrowUp = onArrowUp
         chatTextView.onArrowDown = onArrowDown
         chatTextView.onTabKey = onTabKey
+        chatTextView.onShiftTab = onShiftTab
         // Honor an external focus request — bump the token via @State and
         // we steal first-responder on the next render.
         if context.coordinator.lastFocusToken != focusToken {
@@ -3150,11 +3663,16 @@ final class ChatInputNSTextView: NSTextView {
     /// remembers as focused.
     var onBecomeFirstResponder: (() -> Void)?
     /// Optional intercepts for popup-driven UI (e.g. slash-command
-    /// dropdown). Each handler returns `true` to swallow the key, `false`
-    /// to fall through to the normal NSTextView behavior.
-    var onArrowUp: (() -> Bool)?
-    var onArrowDown: (() -> Bool)?
+    /// dropdown) and terminal-style affordances. Each handler returns
+    /// `true` to swallow the key, `false` to fall through to the normal
+    /// NSTextView behavior. Arrow handlers receive the caret context so
+    /// the host can scope history navigation to the document edges.
+    var onArrowUp: ((ChatInputArrowContext) -> Bool)?
+    var onArrowDown: ((ChatInputArrowContext) -> Bool)?
     var onTabKey: (() -> Bool)?
+    /// Shift+Tab cycles the permission mode. Separate from `onTabKey`
+    /// because Tab alone is used for slash-command completion.
+    var onShiftTab: (() -> Bool)?
     var placeholderString: String = "" {
         didSet {
             needsDisplay = true
@@ -3173,14 +3691,33 @@ final class ChatInputNSTextView: NSTextView {
             onCancel?()
             return
         }
-        // Up/Down arrows: when a popup is up these navigate the popup
-        // selection; otherwise the NSTextView default (caret movement)
-        // applies. Use keyCode rather than chars so non-US layouts behave.
-        if event.keyCode == 126, let onArrowUp, onArrowUp() { return }    // up
-        if event.keyCode == 125, let onArrowDown, onArrowDown() { return } // down
-        // Tab: prefer-completion when a popup is up; otherwise default
-        // keyView/insert-tab behavior.
-        if event.keyCode == 48, let onTabKey, onTabKey() { return }
+        // Ctrl+U: terminal-style "kill to beginning of input" — delete
+        // everything from the start of the document up to the caret.
+        // Self-contained (no host callback) since it never modifies model
+        // state beyond the editing buffer; undo is wired via
+        // shouldChangeText/didChangeText so ⌘Z restores it.
+        if event.modifierFlags.contains(.control),
+           event.charactersIgnoringModifiers?.lowercased() == "u" {
+            killToBeginningOfDocument()
+            return
+        }
+        // Up/Down arrows: hosts get the caret context so they can choose
+        // to intercept only at the document edges (history navigation)
+        // and otherwise let the NSTextView default caret movement apply.
+        // Use keyCode rather than chars so non-US layouts behave.
+        let arrowContext = currentArrowContext()
+        if event.keyCode == 126, let onArrowUp, onArrowUp(arrowContext) { return }    // up
+        if event.keyCode == 125, let onArrowDown, onArrowDown(arrowContext) { return } // down
+        // Tab handling: Shift+Tab cycles the permission mode (a chat-
+        // wide action); Tab alone is reserved for slash-command prefix
+        // completion when the popup is up, otherwise default behavior.
+        if event.keyCode == 48 {
+            if event.modifierFlags.contains(.shift) {
+                if let onShiftTab, onShiftTab() { return }
+            } else if let onTabKey, onTabKey() {
+                return
+            }
+        }
         // Return: submit (unless Shift+Return, which inserts a newline).
         let isReturn = event.charactersIgnoringModifiers == "\r" || event.keyCode == 36
         if isReturn {
@@ -3192,6 +3729,33 @@ final class ChatInputNSTextView: NSTextView {
             return
         }
         super.keyDown(with: event)
+    }
+
+    /// Snapshot of where the caret sits relative to line breaks. Used by
+    /// the chat host to decide whether ↑/↓ should step through history
+    /// (only at the matching edge) or fall through to caret movement.
+    private func currentArrowContext() -> ChatInputArrowContext {
+        let ns = self.string as NSString
+        let loc = max(0, min(self.selectedRange().location, ns.length))
+        let before = ns.substring(to: loc)
+        let after = ns.substring(from: loc)
+        return ChatInputArrowContext(
+            isEmpty: ns.length == 0,
+            isAtFirstLine: !before.contains("\n"),
+            isAtLastLine: !after.contains("\n")
+        )
+    }
+
+    /// Remove characters [0, caret) using the standard editing pipeline
+    /// so undo registration, change notifications, and the delegate's
+    /// `textDidChange` all fire normally.
+    private func killToBeginningOfDocument() {
+        let loc = self.selectedRange().location
+        guard loc > 0 else { return }
+        let range = NSRange(location: 0, length: loc)
+        guard shouldChangeText(in: range, replacementString: "") else { return }
+        replaceCharacters(in: range, with: "")
+        didChangeText()
     }
 
     override func draw(_ dirtyRect: NSRect) {
@@ -3530,7 +4094,8 @@ private struct ToolBatchView: View {
     let isCurrentBatch: Bool
     let isDark: Bool
     let onApprove: (String) -> Void
-    let onDeny: (String) -> Void
+    let onDeny: (String, String?) -> Void
+    let onStopTurn: () -> Void
 
     @Environment(\.chatPalette) private var palette
     @State private var expanded: Bool = false
@@ -3579,7 +4144,8 @@ private struct ToolBatchView: View {
             result: toolResults[entry.toolUse.id],
             isDark: isDark,
             onApprove: { onApprove(entry.toolUse.id) },
-            onDeny: { onDeny(entry.toolUse.id) }
+            onDeny: { reason in onDeny(entry.toolUse.id, reason) },
+            onStopTurn: onStopTurn
         )
     }
 
