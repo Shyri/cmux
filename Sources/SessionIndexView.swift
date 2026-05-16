@@ -8,6 +8,22 @@ import UniformTypeIdentifiers
 @MainActor
 enum SessionEntryResumeCoordinator {
     static func resume(_ entry: SessionEntry, tabManager: TabManager) {
+        // Claude Code sessions open in cmux's in-app Claude Chat panel
+        // instead of a terminal running `claude --resume`. The panel
+        // hydrates from `~/.claude/projects/<encoded-cwd>/<id>.jsonl`
+        // so the previous conversation renders immediately, and the
+        // panel's runner picks `--resume <sessionId>` on the next user
+        // message — the conversation continues seamlessly without a
+        // separate terminal shell or having to wait for Claude Code to
+        // re-emit the history into stdout.
+        if case .claude = entry.agent, !entry.sessionId.isEmpty {
+            _ = tabManager.openClaudeChat(
+                resumingSessionId: entry.sessionId,
+                workingDirectory: entry.resumeWorkingDirectory
+            )
+            return
+        }
+
         guard let resumeCommand = entry.resumeCommandWithCwd else { return }
         let inputWithReturn = resumeCommand + "\n"
         let targetCwd = entry.resumeWorkingDirectory

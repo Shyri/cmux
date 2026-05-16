@@ -478,6 +478,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         }
     }
 
+    /// Replace the panel's transcript with one loaded from a Claude
+    /// Code JSONL — used when opening a Claude Chat panel from the
+    /// upstream Sessions panel. The panel was created empty (welcome
+    /// messages) so the UI mounts immediately; this swaps in the real
+    /// history asynchronously and sets the `sessionId` so the next
+    /// user message picks up the conversation via `--resume`.
+    func applyResumedTranscript(sessionId: String, messages: [ChatMessage]) {
+        guard !messages.isEmpty else { return }
+        self.sessionId = sessionId
+        self.messages = messages
+        // Cap the visible window the same way `init` does so a long
+        // resumed transcript doesn't materialize every row at once.
+        self.visibleMessageWindow = min(
+            ClaudeChatPanel.defaultVisibleMessageWindow,
+            messages.count
+        )
+    }
+
     /// Hydrate `alwaysAllowedTools` from `<cwd>/.claude/settings.local.json`
     /// only — that's the file cmux owns and writes to via "Allow always".
     /// Rules in `<cwd>/.claude/settings.json` (project shared) and

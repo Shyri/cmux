@@ -6013,29 +6013,46 @@ class TabManager: ObservableObject {
     /// Open a Claude Chat panel as a new tab in the focused pane of the
     /// currently selected workspace. Returns the new panel id, or nil if no
     /// workspace is available or pane creation failed.
+    ///
+    /// `resumingSessionId` + `workingDirectory` (the cwd the session was
+    /// originally launched in) drive the resume flow used by the upstream
+    /// Sessions panel: the chat panel is created with that session id so
+    /// the runner picks `--resume <id>` on the first user message, and
+    /// the JSONL transcript at `~/.claude/projects/<encoded>/<id>.jsonl`
+    /// is loaded asynchronously into `messages` so the UI shows the
+    /// previous conversation without an empty welcome screen.
     @discardableResult
-    func openClaudeChat() -> UUID? {
+    func openClaudeChat(
+        resumingSessionId: String? = nil,
+        workingDirectory: String? = nil
+    ) -> UUID? {
         guard let workspace = selectedWorkspace else { return nil }
         if selectedTabId != workspace.id {
             selectedTabId = workspace.id
         }
 
-        let cwd = workspace.focusedTerminalPanel?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
-            ?? workspace.panels.values
-                .compactMap({ $0 as? TerminalPanel })
-                .first?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
-        let workingDirectory: String
-        if let cwd, !cwd.isEmpty {
-            workingDirectory = cwd
+        let resolvedCwd: String
+        if let candidate = workingDirectory?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !candidate.isEmpty {
+            resolvedCwd = candidate
         } else {
-            workingDirectory = FileManager.default.homeDirectoryForCurrentUser.path
+            let cwd = workspace.focusedTerminalPanel?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+                ?? workspace.panels.values
+                    .compactMap({ $0 as? TerminalPanel })
+                    .first?.directory.trimmingCharacters(in: .whitespacesAndNewlines)
+            if let cwd, !cwd.isEmpty {
+                resolvedCwd = cwd
+            } else {
+                resolvedCwd = FileManager.default.homeDirectoryForCurrentUser.path
+            }
         }
 
         guard let paneId = workspace.bonsplitController.focusedPaneId
                 ?? workspace.bonsplitController.allPaneIds.first,
               let chatPanel = workspace.newClaudeChatSurface(
                   inPane: paneId,
-                  workingDirectory: workingDirectory,
+                  workingDirectory: resolvedCwd,
+                  resumingSessionId: resumingSessionId,
                   focus: true
               ) else {
             return nil

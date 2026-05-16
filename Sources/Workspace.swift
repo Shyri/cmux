@@ -11347,10 +11347,18 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     /// Create a new Claude Chat panel as a tab inside `paneId`.
+    ///
+    /// When `resumingSessionId` is non-nil, kick off a background load
+    /// of the matching JSONL transcript from `~/.claude/projects/...`
+    /// and hydrate the panel with it once available — the panel mounts
+    /// immediately with the welcome message and swaps to the real
+    /// history when the read completes, mirroring what Claude Code's
+    /// own resume flow shows.
     @discardableResult
     func newClaudeChatSurface(
         inPane paneId: PaneID,
         workingDirectory: String,
+        resumingSessionId: String? = nil,
         focus: Bool? = nil
     ) -> ClaudeChatPanel? {
         let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
@@ -11359,7 +11367,8 @@ final class Workspace: Identifiable, ObservableObject {
 
         let claudeChatPanel = ClaudeChatPanel(
             workspaceId: id,
-            workingDirectory: workingDirectory
+            workingDirectory: workingDirectory,
+            sessionId: resumingSessionId
         )
         panels[claudeChatPanel.id] = claudeChatPanel
         panelTitles[claudeChatPanel.id] = claudeChatPanel.displayTitle
@@ -11398,6 +11407,22 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installClaudeChatPanelSubscription(claudeChatPanel)
+
+        if let resumingSessionId, !resumingSessionId.isEmpty {
+            Task { [weak claudeChatPanel] in
+                guard let messages = await ClaudeSessionHistory.loadTranscript(
+                    sessionId: resumingSessionId,
+                    cwd: workingDirectory
+                ) else { return }
+                await MainActor.run {
+                    claudeChatPanel?.applyResumedTranscript(
+                        sessionId: resumingSessionId,
+                        messages: messages
+                    )
+                }
+            }
+        }
+
         return claudeChatPanel
     }
 

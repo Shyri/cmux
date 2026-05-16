@@ -73,19 +73,152 @@ enum ClaudeSessionHistory {
         return restored
     }
 
-    // MARK: - Private
+    /// Read the per-session JSONL transcript written by the Claude Code
+    /// CLI and return it as a list of `ChatMessage` ready to seed a
+    /// `ClaudeChatPanel`'s `initialMessages`. Used when the Sessions
+    /// panel asks us to resume a Claude Code session inside a chat
+    /// panel — the panel shows the full conversation immediately and
+    /// the runner picks up the same `--resume <sessionId>` from there.
+    ///
+    /// The JSONL written by Claude Code is *not* identical to the
+    /// stream-json `claude -p` emits: each line carries metadata
+    /// (parentUuid, timestamp, gitBranch…) and the `message.content`
+    /// of a user line can be a String *or* an array of blocks. We parse
+    /// it defensively — malformed lines are skipped, never abort the
+    /// load. Returns `nil` if the file doesn't exist or can't be read.
+    static func loadTranscript(sessionId: String, cwd: String) async -> [ChatMessage]? {
+        await Task.detached(priority: .userInitiated) { () -> [ChatMessage]? in
+            guard let jsonlURL = transcriptURL(sessionId: sessionId, cwd: cwd),
+                  FileManager.default.fileExists(atPath: jsonlURL.path),
+                  let data = try? Data(contentsOf: jsonlURL),
+                  let text = String(data: data, encoding: .utf8)
+            else { return nil }
+
+            var messages: [ChatMessage] = []
+            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+                guard let lineData = line.data(using: .utf8),
+                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+                else { continue }
+                if let message = decodeTranscriptLine(obj) {
+                    messages.append(message)
+                }
+            }
+            return messages.isEmpty ? nil : messages
+        }.value
+    }
 
     /// Compute the path of the JSONL transcript for a session given the
     /// chat's cwd. Claude Code stores transcripts under
     /// `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, where the
     /// encoded cwd replaces `/` with `-` and prefixes with `-`.
-    private static func transcriptURL(sessionId: String, cwd: String) -> URL? {
+    static func transcriptURL(sessionId: String, cwd: String) -> URL? {
         let encoded = encodeCwd(cwd)
         guard !encoded.isEmpty else { return nil }
         return FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/projects", isDirectory: true)
             .appendingPathComponent(encoded, isDirectory: true)
             .appendingPathComponent("\(sessionId).jsonl")
+    }
+
+    // MARK: - Private
+
+    /// Convert one decoded JSONL line into a `ChatMessage`. Returns nil
+    /// for metadata lines (worktree-state, file-history-snapshot,
+    /// attachment, last-prompt, system) and for `user`/`assistant`
+    /// lines whose content yields no blocks the chat panel can render.
+    private static func decodeTranscriptLine(_ obj: [String: Any]) -> ChatMessage? {
+        let type = obj["type"] as? String ?? ""
+        switch type {
+        case "user":
+            let message = obj["message"] as? [String: Any] ?? [:]
+            let blocks = decodeUserMessageContent(message["content"])
+            guard !blocks.isEmpty else { return nil }
+            return ChatMessage(role: .user, blocks: blocks)
+        case "assistant":
+            let message = obj["message"] as? [String: Any] ?? [:]
+            let contentArray = message["content"] as? [[String: Any]] ?? []
+            let blocks = contentArray.compactMap { decodeTranscriptContentBlock($0) }
+            guard !blocks.isEmpty else { return nil }
+            return ChatMessage(role: .assistant, blocks: blocks)
+        default:
+            return nil
+        }
+    }
+
+    /// `user.message.content` can be a plain string (typed prompt) or
+    /// an array of blocks (tool_result lines after the assistant ran
+    /// tools). Handle both.
+    private static func decodeUserMessageContent(_ raw: Any?) -> [ChatMessageBlock] {
+        if let str = raw as? String {
+            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return [] }
+            return [.text(str)]
+        }
+        if let array = raw as? [[String: Any]] {
+            return array.compactMap { decodeTranscriptContentBlock($0) }
+        }
+        return []
+    }
+
+    /// Mirrors `ClaudeStreamEvent.decodeContentBlock` but lives here so
+    /// the chat module can hydrate transcripts without depending on the
+    /// live stream parser. `thinking` blocks are persisted by Claude
+    /// Code but the chat panel doesn't render them, so they're skipped.
+    private static func decodeTranscriptContentBlock(_ block: [String: Any]) -> ChatMessageBlock? {
+        guard let type = block["type"] as? String else { return nil }
+        switch type {
+        case "text":
+            guard let text = block["text"] as? String,
+                  !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            else { return nil }
+            return .text(text)
+        case "tool_use":
+            let id = (block["id"] as? String) ?? ""
+            let name = (block["name"] as? String) ?? "unknown"
+            let inputAny = block["input"] ?? [:]
+            return .toolUse(.init(
+                id: id,
+                name: name,
+                inputJSON: encodeJSONValue(inputAny)
+            ))
+        case "tool_result":
+            let toolUseId = (block["tool_use_id"] as? String) ?? ""
+            let isError = (block["is_error"] as? Bool) ?? false
+            return .toolResult(.init(
+                toolUseId: toolUseId,
+                content: stringifyTranscriptToolResultContent(block["content"]),
+                isError: isError
+            ))
+        case "thinking":
+            return nil
+        default:
+            return nil
+        }
+    }
+
+    private static func stringifyTranscriptToolResultContent(_ raw: Any?) -> String {
+        if let s = raw as? String { return s }
+        if let array = raw as? [[String: Any]] {
+            return array.compactMap { item -> String? in
+                if let t = item["type"] as? String, t == "text" {
+                    return item["text"] as? String
+                }
+                return nil
+            }
+            .joined(separator: "\n")
+        }
+        return ""
+    }
+
+    private static func encodeJSONValue(_ value: Any) -> String {
+        if JSONSerialization.isValidJSONObject(value),
+           let data = try? JSONSerialization.data(
+               withJSONObject: value,
+               options: [.sortedKeys, .prettyPrinted]
+           ) {
+            return String(data: data, encoding: .utf8) ?? ""
+        }
+        return ""
     }
 
     private static func encodeCwd(_ path: String) -> String {
