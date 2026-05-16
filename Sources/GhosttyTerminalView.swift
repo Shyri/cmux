@@ -2188,16 +2188,21 @@ class GhosttyApp {
         let trimmed = contents.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return }
 
-        let syntheticPath = "/__cmux_inline__/\(prefix).conf"
-        trimmed.withCString { contents in
-            syntheticPath.withCString { path in
-                ghostty_config_load_string(
-                    config,
-                    contents,
-                    UInt(trimmed.lengthOfBytes(using: .utf8)),
-                    path
-                )
+        // The current GhosttyKit exposes `_load_file` but not
+        // `_load_string`, so route inline config through a short-lived
+        // file in the system temp directory. The file is deleted right
+        // after parsing — ghostty copies the contents into the config
+        // object so it doesn't need to outlive the call.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("__cmux_inline_\(prefix)_\(UUID().uuidString).conf")
+        do {
+            try trimmed.write(to: tmpURL, atomically: true, encoding: .utf8)
+            tmpURL.path.withCString { path in
+                ghostty_config_load_file(config, path)
             }
+            try? FileManager.default.removeItem(at: tmpURL)
+        } catch {
+            return
         }
     }
 

@@ -7600,13 +7600,8 @@ final class Workspace: Identifiable, ObservableObject {
         BonsplitConfiguration.SplitButtonTooltips(
             newTerminal: KeyboardShortcutSettings.Action.newSurface.tooltip("New Terminal"),
             newBrowser: KeyboardShortcutSettings.Action.openBrowser.tooltip("New Browser"),
-            newClaudeChat: String(localized: "bonsplit.newClaudeChat.tooltip", defaultValue: "New Claude Chat"),
             splitRight: KeyboardShortcutSettings.Action.splitRight.tooltip("Split Right"),
-            splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down"),
-            toggleNotes: String(localized: "bonsplit.toggleNotes.tooltip", defaultValue: "Toggle Notes"),
-            openInFinder: String(localized: "bonsplit.openInFinder.tooltip", defaultValue: "Open in Finder"),
-            openInIntelliJ: String(localized: "bonsplit.openInIntelliJ.tooltip", defaultValue: "Open in IntelliJ IDEA"),
-            openInAndroidStudio: String(localized: "bonsplit.openInAndroidStudio.tooltip", defaultValue: "Open in Android Studio")
+            splitDown: KeyboardShortcutSettings.Action.splitDown.tooltip("Split Down")
         )
     }
 
@@ -7774,63 +7769,15 @@ final class Workspace: Identifiable, ObservableObject {
         )
     }
 
-    fileprivate func syncBonsplitNotesButtonActive() {
-        var configuration = bonsplitController.configuration
-        guard configuration.appearance.notesButtonActive != notesSidebarVisible else { return }
-        configuration.appearance.notesButtonActive = notesSidebarVisible
-        bonsplitController.configuration = configuration
-    }
+    // Bonsplit tab-bar buttons that lived on the old fork-side
+    // BonsplitConfiguration.Appearance (notes toggle, open-in-finder,
+    // open-in-IDE) no longer exist after the move to manaflow/bonsplit
+    // 0fc0117. The equivalent functionality is being rebuilt through
+    // cmux.json tab-bar actions in a follow-up (see plan Fase 3).
+    // Keep these no-op stubs so existing call sites continue to compile.
+    fileprivate func syncBonsplitNotesButtonActive() {}
 
-    /// Recompute the open-in-IDE button's icon (IntelliJ vs Android Studio) and the
-    /// enabled state of the open-in-Finder/IDE buttons based on the focused pane's cwd.
-    /// Cheap to call repeatedly: only mutates `bonsplitController.configuration` when
-    /// the resolved values actually change.
-    func recomputeOpenInIDEKind() {
-        let trimmed: String? = {
-            let raw: String
-            if let panelId = focusedPanelId, let dir = panelDirectories[panelId] {
-                raw = dir
-            } else {
-                raw = currentDirectory
-            }
-            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            return t.isEmpty ? nil : t
-        }()
-
-        let directoryExists: Bool = {
-            guard let trimmed else { return false }
-            var isDir: ObjCBool = false
-            return FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDir) && isDir.boolValue
-        }()
-
-        let nextKind: String = {
-            guard directoryExists, let dir = trimmed else { return "intellij" }
-            let gradle = (dir as NSString).appendingPathComponent("build.gradle")
-            let gradleKts = (dir as NSString).appendingPathComponent("build.gradle.kts")
-            if FileManager.default.fileExists(atPath: gradle)
-                || FileManager.default.fileExists(atPath: gradleKts) {
-                return "androidStudio"
-            }
-            return "intellij"
-        }()
-
-        var configuration = bonsplitController.configuration
-        var changed = false
-        if configuration.appearance.openInIDEKind != nextKind {
-            configuration.appearance.openInIDEKind = nextKind
-            changed = true
-        }
-        if configuration.appearance.openButtonsEnabled != directoryExists {
-            configuration.appearance.openButtonsEnabled = directoryExists
-            changed = true
-        }
-        if changed {
-            bonsplitController.configuration = configuration
-#if DEBUG
-            dlog("openInIDE.kind=\(nextKind) enabled=\(directoryExists) dir=\(trimmed ?? "nil")")
-#endif
-        }
-    }
+    func recomputeOpenInIDEKind() {}
 
     /// Resolve the working directory for the given pane: cwd of the pane's selected
     /// terminal tab → fallback to the workspace's `currentDirectory`. Returns `nil`

@@ -15562,9 +15562,9 @@ extension AppDelegate {
 
         // Guard the autosave path during the transition so we don't overwrite
         // the live snapshot while the new windows are being created.
-        isApplyingStartupSessionRestore = true
+        isApplyingSessionRestore = true
         defer {
-            isApplyingStartupSessionRestore = false
+            isApplyingSessionRestore = false
             _ = saveSessionSnapshot(includeScrollback: false)
         }
 
