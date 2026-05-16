@@ -10,22 +10,30 @@ final class IssuesState: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
     @Published private(set) var projectWebURL: String?
+    /// Project label catalogue keyed by label name. Loaded lazily after the
+    /// issue list comes back so we can paint each label chip with its real
+    /// GitLab colour. Empty until labels finish loading or when the project
+    /// has no labels; chips fall back to the neutral style in that case.
+    @Published private(set) var labelsByName: [String: GitLabLabel] = [:]
 
     private var fetchTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
     private var relatedMRsTask: Task<Void, Never>?
+    private var labelsTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
         remoteTask?.cancel()
         relatedMRsTask?.cancel()
+        labelsTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
         if lastDirectory != directory {
             issues = []
             projectWebURL = nil
+            labelsByName = [:]
         }
         lastDirectory = directory
         isLoading = true
@@ -56,6 +64,7 @@ final class IssuesState: ObservableObject {
                 self.issues = items
                 self.errorMessage = nil
                 self.loadRelatedMRs(for: items, directory: directory, token: token)
+                self.loadProjectLabels(for: items, directory: directory, token: token)
             case .failure(let error):
                 self.issues = []
                 self.errorMessage = self.messageFor(error: error)
@@ -68,12 +77,56 @@ final class IssuesState: ObservableObject {
         fetchTask?.cancel()
         remoteTask?.cancel()
         relatedMRsTask?.cancel()
+        labelsTask?.cancel()
         requestCounter &+= 1
         issues = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
         projectWebURL = nil
+        labelsByName = [:]
+    }
+
+    /// Pulls the project's label catalogue (name + colour + text colour)
+    /// via `glab api projects/:id/labels` so each issue chip can be
+    /// rendered with its real GitLab colour. Picks the first non-zero
+    /// projectId from the loaded issues — every issue in a side-panel
+    /// listing belongs to the same project, so one call is enough.
+    private func loadProjectLabels(
+        for items: [GitLabIssue],
+        directory: String,
+        token: UInt64
+    ) {
+        guard let projectId = items.first(where: { $0.projectId > 0 })?.projectId else {
+            self.labelsByName = [:]
+            return
+        }
+        labelsTask = Task { [weak self] in
+            let result: Result<[GitLabLabel], Error>
+            do {
+                result = .success(try await fetchGitLabProjectLabels(
+                    projectId: projectId,
+                    in: directory
+                ))
+            } catch {
+                result = .failure(error)
+            }
+            guard let self else { return }
+            guard !Task.isCancelled,
+                  token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            switch result {
+            case .success(let labels):
+                self.labelsByName = Dictionary(
+                    labels.map { ($0.name, $0) },
+                    uniquingKeysWith: { lhs, _ in lhs }
+                )
+            case .failure:
+                // Best-effort: chips fall back to the neutral style when
+                // the catalogue can't be loaded (e.g. no network).
+                break
+            }
+        }
     }
 
     private func loadRelatedMRs(
@@ -585,6 +638,7 @@ struct IssuesListView: View {
             }
             .padding(.vertical, 6)
         }
+        .environment(\.gitlabLabelsByName, state.labelsByName)
     }
 
     private func refreshIfNeeded() {
@@ -614,6 +668,7 @@ struct IssuesListView: View {
 private struct IssueCardView: View {
     let issue: GitLabIssue
     @State private var isHovered = false
+    @Environment(\.gitlabLabelsByName) private var labelsByName
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -780,16 +835,7 @@ private struct IssueCardView: View {
         let displayed = Array(issue.labels.prefix(4))
         HStack(spacing: 4) {
             ForEach(displayed, id: \.self) { label in
-                Text(label)
-                    .font(.system(size: 9, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 5)
-                    .padding(.vertical, 1)
-                    .background(
-                        RoundedRectangle(cornerRadius: 3)
-                            .fill(.secondary.opacity(0.12))
-                    )
-                    .lineLimit(1)
+                labelChip(name: label)
             }
             if issue.labels.count > 4 {
                 Text("+\(issue.labels.count - 4)")
@@ -797,6 +843,30 @@ private struct IssueCardView: View {
                     .foregroundStyle(.quaternary)
             }
         }
+    }
+
+    /// Renders a single label chip. When the project labels catalogue
+    /// has loaded and reports a colour for `name`, we paint the chip in
+    /// that colour with the text colour GitLab paired with it (so
+    /// contrast matches what the user sees on gitlab.com). Otherwise we
+    /// fall back to the neutral `.secondary` style — same as before
+    /// colour support landed.
+    @ViewBuilder
+    private func labelChip(name: String) -> some View {
+        let descriptor = labelsByName[name]
+        let bg = descriptor.flatMap { Color(gitlabHex: $0.color) }
+        let fg = descriptor.flatMap { Color(gitlabHex: $0.textColor) }
+
+        Text(name)
+            .font(.system(size: 9, weight: .medium))
+            .foregroundStyle(fg ?? Color.secondary)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 3)
+                    .fill(bg ?? Color.secondary.opacity(0.12))
+            )
+            .lineLimit(1)
     }
 
     private func dueDateString(_ date: Date) -> String {
@@ -812,3 +882,39 @@ private struct IssueCardView: View {
     }
 }
 
+// MARK: - Label colour wiring
+
+private struct GitLabLabelsByNameKey: EnvironmentKey {
+    static let defaultValue: [String: GitLabLabel] = [:]
+}
+
+extension EnvironmentValues {
+    /// Project label catalogue keyed by name. Pushed by `IssuesListView`
+    /// so descendant rows can look up real GitLab colours without having
+    /// to plumb the dict through every initializer.
+    var gitlabLabelsByName: [String: GitLabLabel] {
+        get { self[GitLabLabelsByNameKey.self] }
+        set { self[GitLabLabelsByNameKey.self] = newValue }
+    }
+}
+
+extension Color {
+    /// Parses a `#RRGGBB` or `#RGB` hex string as written by the GitLab
+    /// labels API. Returns `nil` for anything else (empty, malformed,
+    /// `transparent` placeholders) so callers can fall back cleanly.
+    init?(gitlabHex raw: String) {
+        var hex = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard hex.hasPrefix("#") else { return nil }
+        hex.removeFirst()
+        if hex.count == 3 {
+            // Expand `#abc` to `#aabbcc`.
+            hex = hex.map { "\($0)\($0)" }.joined()
+        }
+        guard hex.count == 6,
+              let value = UInt32(hex, radix: 16) else { return nil }
+        let r = Double((value >> 16) & 0xFF) / 255.0
+        let g = Double((value >> 8) & 0xFF) / 255.0
+        let b = Double(value & 0xFF) / 255.0
+        self = Color(red: r, green: g, blue: b)
+    }
+}

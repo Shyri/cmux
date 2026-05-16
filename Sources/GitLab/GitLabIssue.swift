@@ -14,6 +14,19 @@ struct GitLabAssignee: Equatable, Hashable, Sendable {
     let username: String
 }
 
+/// Lightweight project-label payload — the side panel uses this to paint
+/// each label chip with its real GitLab colour instead of the generic
+/// `.secondary.opacity(0.12)` placeholder.
+struct GitLabLabel: Equatable, Hashable, Sendable {
+    let name: String
+    /// Background colour as returned by the API, e.g. `"#ed9121"`.
+    let color: String
+    /// Foreground/text colour the GitLab UI uses on top of `color`,
+    /// e.g. `"#FFFFFF"`. Always paired with `color` so contrast matches
+    /// what users see in the GitLab web UI.
+    let textColor: String
+}
+
 struct GitLabIssue: Identifiable, Equatable, Sendable {
     let id: Int
     let iid: Int
@@ -129,14 +142,48 @@ enum GitLabIssueFetchError: Error, Sendable {
 
 func fetchGitLabIssues(
     in directory: String,
-    perPage: Int = 30
+    perPage: Int = 100,
+    maxPages: Int = 10
 ) async throws -> [GitLabIssue] {
     let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabIssueFetchError.glabNotFound }
 
+    var all: [GitLabIssue] = []
+    var page = 1
+    // `glab issue list` defaults to sort=created_at desc, per-page=30. With
+    // many open issues this drops anything older than the top window — the
+    // side panel was showing only the newest few issues even though older
+    // ones were still in "opened" state. We page through up to
+    // `perPage * maxPages` issues, which covers all realistic active
+    // projects without unbounded paging on giant trackers.
+    while page <= maxPages {
+        let pageIssues = try await fetchGitLabIssuesPage(
+            glabPath: glabPath,
+            directory: directory,
+            perPage: perPage,
+            page: page
+        )
+        all.append(contentsOf: pageIssues)
+        if pageIssues.count < perPage { break }
+        page += 1
+    }
+    return all
+}
+
+private func fetchGitLabIssuesPage(
+    glabPath: String,
+    directory: String,
+    perPage: Int,
+    page: Int
+) async throws -> [GitLabIssue] {
     let process = Process()
     process.executableURL = URL(fileURLWithPath: glabPath)
-    process.arguments = ["issue", "list", "-O", "json", "--per-page", "\(perPage)"]
+    process.arguments = [
+        "issue", "list",
+        "-O", "json",
+        "--per-page", "\(perPage)",
+        "--page", "\(page)"
+    ]
     process.currentDirectoryURL = URL(fileURLWithPath: directory)
 
     var env = ProcessInfo.processInfo.environment
@@ -229,6 +276,112 @@ func fetchGitLabIssueOpenRelatedMRsCount(
     let trimmed = trimmingNonJSONPrefix(outData)
     let decoded = try JSONDecoder().decode([GLRelatedMRResponse].self, from: trimmed)
     return decoded.filter { $0.state == "opened" }.count
+}
+
+// MARK: - Project Labels
+
+private struct GLLabelResponse: Decodable {
+    let name: String?
+    let color: String?
+    let text_color: String?
+}
+
+/// Fetches the project's labels via `glab api --paginate projects/:id/labels`
+/// so the side panel can render each label chip with its real colour.
+/// Mirrors the `--paginate` concatenation strategy used by
+/// `MRDiscussions.fetchMRDiscussions`: glab joins page arrays back-to-back
+/// (`[...][...]`), so we try the single-array decode first and fall back to
+/// per-array splitting only if that fails.
+func fetchGitLabProjectLabels(
+    projectId: Int,
+    in directory: String,
+    perPage: Int = 100
+) async throws -> [GitLabLabel] {
+    guard let glabPath = findGlabPath() else {
+        throw GitLabIssueFetchError.glabNotFound
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = [
+        "api",
+        "--paginate",
+        "projects/\(projectId)/labels?per_page=\(perPage)",
+    ]
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        throw GitLabIssueFetchError.processError(errStr)
+    }
+    guard !outData.isEmpty else { return [] }
+
+    let decoder = JSONDecoder()
+    var decoded: [GLLabelResponse] = []
+    if let single = try? decoder.decode([GLLabelResponse].self, from: outData) {
+        decoded = single
+    } else {
+        for chunk in splitConcatenatedJSONArrays(outData) {
+            if let page = try? decoder.decode([GLLabelResponse].self, from: chunk) {
+                decoded.append(contentsOf: page)
+            }
+        }
+    }
+
+    return decoded.compactMap { raw in
+        guard let name = raw.name, !name.isEmpty else { return nil }
+        return GitLabLabel(
+            name: name,
+            color: raw.color ?? "",
+            textColor: raw.text_color ?? ""
+        )
+    }
+}
+
+/// `glab api --paginate` concatenates JSON arrays from successive pages
+/// (`[...][...]`). This splits them by tracking bracket depth so each
+/// page can be decoded independently. Copied from `MRDiscussions.swift`
+/// to keep this module self-contained.
+private func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
+    var results: [Data] = []
+    var depth = 0
+    var start: Int? = nil
+    var inString = false
+    var escape = false
+    let bytes = [UInt8](data)
+    for (i, b) in bytes.enumerated() {
+        if inString {
+            if escape { escape = false; continue }
+            if b == 0x5C /* \ */ { escape = true; continue }
+            if b == 0x22 /* " */ { inString = false }
+            continue
+        }
+        if b == 0x22 /* " */ { inString = true; continue }
+        if b == 0x5B /* [ */ {
+            if depth == 0 { start = i }
+            depth += 1
+        } else if b == 0x5D /* ] */ {
+            depth -= 1
+            if depth == 0, let s = start {
+                results.append(data.subdata(in: s ..< (i + 1)))
+                start = nil
+            }
+        }
+    }
+    return results
 }
 
 private func findGlabPath() -> String? {
