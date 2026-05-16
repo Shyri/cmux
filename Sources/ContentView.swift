@@ -1054,6 +1054,7 @@ struct ContentView: View {
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
     @EnvironmentObject var cmuxConfigStore: CmuxConfigStore
     @EnvironmentObject var fileExplorerState: FileExplorerState
+    @EnvironmentObject var notesSidebarState: NotesSidebarState
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("titlebarControlsStyle") private var titlebarControlsStyleRawValue = TitlebarControlsStyle.classic.rawValue
     @State private var sidebarWidth: CGFloat = 200
@@ -2335,6 +2336,12 @@ struct ContentView: View {
         tabManager.syncWorkspaceTabBarLeadingInset(inset)
     }
 
+    private func syncNotesSidebarStateFromSelectedWorkspace() {
+        let target = tabManager.selectedWorkspace?.notesSidebarVisible ?? false
+        guard notesSidebarState.isVisible != target else { return }
+        notesSidebarState.isVisible = target
+    }
+
     private func applyTitlebarDebugChromeChange() {
         if let observedWindow {
             AppDelegate.shared?.applyWindowDecorations(to: observedWindow)
@@ -2633,6 +2640,7 @@ struct ContentView: View {
             applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
             updateTitlebarText()
             syncTrafficLightInset()
+            syncNotesSidebarStateFromSelectedWorkspace()
 
             // Startup recovery (#399): if session restore or a race condition leaves the
             // view in a broken state (empty tabs, no selection, unmounted workspaces),
@@ -2703,6 +2711,18 @@ struct ContentView: View {
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == newValue }
             }
             updateTitlebarText()
+        })
+
+        view = AnyView(view.onChange(of: notesSidebarState.isVisible) { newValue in
+            tabManager.selectedWorkspace?.notesSidebarVisible = newValue
+        })
+
+        view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .cmuxWorkspaceRequestToggleNotesSidebar)) { notification in
+            guard
+                let workspaceId = notification.userInfo?[Workspace.toggleNotesWorkspaceIdKey] as? UUID,
+                workspaceId == tabManager.selectedTabId
+            else { return }
+            notesSidebarState.isVisible.toggle()
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) { _ in

@@ -7147,6 +7147,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .environmentObject(sidebarSelectionState)
             .environmentObject(fileExplorerState)
             .environmentObject(cmuxConfigStore)
+            .environmentObject(NotesSidebarState.shared)
+            .environmentObject(SessionPresetStore.shared)
 
         // Use the current key window's size for new windows so Cmd+Shift+N
         // creates a window matching the previous one's dimensions.
@@ -15465,4 +15467,235 @@ private extension NSWindow {
         return hitWebView === webView
     }
 
+}
+
+// MARK: - Session Presets
+
+extension AppDelegate {
+    enum PresetSavePromptResult {
+        case save
+        case discard
+        case cancel
+    }
+
+    /// Builds a snapshot of the current session (no scrollback) suitable for
+    /// saving as a preset. Returns nil if there are no main windows.
+    @MainActor
+    func currentSessionSnapshotForPreset() -> AppSessionSnapshot? {
+        return buildSessionSnapshot(includeScrollback: false)
+    }
+
+    @discardableResult
+    @MainActor
+    func saveCurrentSessionAsPreset(name: String) -> SessionPreset? {
+        guard let snapshot = currentSessionSnapshotForPreset() else { return nil }
+        let store = SessionPresetStore.shared
+        store.loadIfNeeded()
+        guard let preset = store.create(name: name, snapshot: snapshot) else { return nil }
+        store.setActive(preset.id)
+        return preset
+    }
+
+    @discardableResult
+    @MainActor
+    func updateActivePresetFromCurrentSession() -> Bool {
+        let store = SessionPresetStore.shared
+        store.loadIfNeeded()
+        guard let activeId = store.activePresetId else { return false }
+        guard let snapshot = currentSessionSnapshotForPreset() else { return false }
+        return store.update(id: activeId, snapshot: snapshot)
+    }
+
+    /// True if the live session differs from the active preset. False when no
+    /// active preset exists or the snapshot can't be built.
+    @MainActor
+    func isCurrentSessionModifiedFromActivePreset() -> Bool {
+        let store = SessionPresetStore.shared
+        store.loadIfNeeded()
+        guard let preset = store.activePreset else { return false }
+        guard let liveSnapshot = currentSessionSnapshotForPreset() else { return false }
+        let live = liveSnapshot.canonicalWindowsEncoded()
+        let saved = preset.snapshot.canonicalWindowsEncoded()
+        return live != saved
+    }
+
+    /// Replaces the live session with the given preset's contents. When the
+    /// active preset has unsaved changes and `confirmIfDirty` is true, prompts
+    /// the user (Save / Discard / Cancel). Returns false if cancelled.
+    @discardableResult
+    @MainActor
+    func loadSessionPreset(_ preset: SessionPreset, confirmIfDirty: Bool = true) -> Bool {
+        let store = SessionPresetStore.shared
+        store.loadIfNeeded()
+
+        if confirmIfDirty,
+           let active = store.activePreset,
+           active.id != preset.id,
+           isCurrentSessionModifiedFromActivePreset() {
+            let message = String(
+                format: String(
+                    localized: "presets.dialog.unsavedBeforeLoad.message.format",
+                    defaultValue: "Save changes to \u{201C}%1$@\u{201D} before loading \u{201C}%2$@\u{201D}?"
+                ),
+                active.name,
+                preset.name
+            )
+            switch promptSavePresetChanges(activeName: active.name, contextMessage: message) {
+            case .save:
+                _ = updateActivePresetFromCurrentSession()
+            case .discard:
+                break
+            case .cancel:
+                return false
+            }
+        }
+
+        applyPresetReplacingSession(preset)
+        store.setActive(preset.id)
+        return true
+    }
+
+    @MainActor
+    private func applyPresetReplacingSession(_ preset: SessionPreset) {
+        // Persist any pending note edits before tearing down the live windows.
+        WorkspaceNotesStore.shared.flush()
+
+        // Guard the autosave path during the transition so we don't overwrite
+        // the live snapshot while the new windows are being created.
+        isApplyingStartupSessionRestore = true
+        defer {
+            isApplyingStartupSessionRestore = false
+            _ = saveSessionSnapshot(includeScrollback: false)
+        }
+
+        // Snapshot the current window set before creating new ones, so we can
+        // tell which to close at the end.
+        let preExistingWindows: [NSWindow] = mainWindowContexts.values.compactMap { $0.window }
+
+        let snapshots = Array(
+            preset.snapshot.windows.prefix(SessionPersistencePolicy.maxWindowsPerSnapshot)
+        )
+
+        // Create the new windows first, then close the old ones. This avoids a
+        // transient zero-window state that AppKit might treat as "last window
+        // closed" and use as a hint to quit the app.
+        if snapshots.isEmpty {
+            _ = createMainWindow()
+        } else {
+            for windowSnapshot in snapshots {
+                _ = createMainWindow(sessionWindowSnapshot: windowSnapshot)
+            }
+        }
+
+        for window in preExistingWindows {
+            window.close()
+        }
+    }
+
+    @MainActor
+    func promptSavePresetChanges(
+        activeName: String,
+        contextMessage: String
+    ) -> PresetSavePromptResult {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = String(
+            format: String(
+                localized: "presets.dialog.unsaved.title.format",
+                defaultValue: "Save changes to preset \u{201C}%@\u{201D}?"
+            ),
+            activeName
+        )
+        alert.informativeText = contextMessage
+        alert.addButton(withTitle: String(localized: "common.save", defaultValue: "Save"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        alert.addButton(withTitle: String(localized: "common.discard", defaultValue: "Discard"))
+
+        let response = alert.runModal()
+        switch response {
+        case .alertFirstButtonReturn: return .save
+        case .alertThirdButtonReturn: return .discard
+        default: return .cancel
+        }
+    }
+
+    /// Modal name prompt → saves the current session as a new preset.
+    @MainActor
+    func presentSaveCurrentSessionAsPresetPrompt() {
+        guard currentSessionSnapshotForPreset() != nil else {
+            let alert = NSAlert()
+            alert.messageText = String(
+                localized: "presets.dialog.noSession.title",
+                defaultValue: "Nothing to save"
+            )
+            alert.informativeText = String(
+                localized: "presets.dialog.noSession.message",
+                defaultValue: "There are no open windows to save as a preset."
+            )
+            alert.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "presets.dialog.savePreset.title",
+            defaultValue: "Save Session as Preset"
+        )
+        alert.informativeText = String(
+            localized: "presets.dialog.savePreset.message",
+            defaultValue: "Choose a name for this preset."
+        )
+        let input = NSTextField(string: "")
+        input.placeholderString = String(
+            localized: "presets.dialog.savePreset.placeholder",
+            defaultValue: "Preset name"
+        )
+        input.frame = NSRect(x: 0, y: 0, width: 280, height: 22)
+        alert.accessoryView = input
+        alert.addButton(withTitle: String(localized: "common.save", defaultValue: "Save"))
+        alert.addButton(withTitle: String(localized: "common.cancel", defaultValue: "Cancel"))
+        alert.window.initialFirstResponder = input
+        let response = alert.runModal()
+        guard response == .alertFirstButtonReturn else { return }
+        let trimmed = input.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+        _ = saveCurrentSessionAsPreset(name: trimmed)
+    }
+
+    @MainActor
+    func presentManageSessionPresets() {
+        SessionPresetStore.shared.loadIfNeeded()
+        SessionPresetsWindowController.shared.show()
+    }
+
+    @MainActor
+    func presentManageWorkspaceNotes() {
+        WorkspaceNotesStore.shared.loadIfNeeded()
+        WorkspaceNotesManagerWindowController.shared.show()
+    }
+
+    struct WorkspaceListEntry: Identifiable, Hashable {
+        let id: UUID
+        let title: String
+    }
+
+    /// Snapshot of every live workspace across all main windows. Used by the
+    /// Manage Notes window to populate the "Restore to…" selector and to label
+    /// active sections.
+    @MainActor
+    func liveWorkspaceListSnapshot() -> [WorkspaceListEntry] {
+        var seen = Set<UUID>()
+        var result: [WorkspaceListEntry] = []
+        for context in mainWindowContexts.values {
+            for tab in context.tabManager.tabs {
+                guard !seen.contains(tab.id) else { continue }
+                seen.insert(tab.id)
+                let trimmed = tab.customTitle?.trimmingCharacters(in: .whitespacesAndNewlines)
+                let title = (trimmed?.isEmpty == false) ? trimmed! : tab.title
+                result.append(WorkspaceListEntry(id: tab.id, title: title))
+            }
+        }
+        result.sort { $0.title.localizedCaseInsensitiveCompare($1.title) == .orderedAscending }
+        return result
+    }
 }

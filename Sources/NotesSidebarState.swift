@@ -14,6 +14,12 @@ extension Notification.Name {
 
 @MainActor
 final class NotesSidebarState: ObservableObject {
+    /// Shared instance — after upstream moved the ContentView mount into
+    /// AppDelegate, environmentObject wiring needs a stable singleton to
+    /// hand to both the menu commands in `cmuxApp` and the rendered view
+    /// inside the main window.
+    static let shared = NotesSidebarState()
+
     /// Mirror of the *currently-selected* workspace's `notesSidebarVisible` flag for this window.
     /// Per-workspace persistence lives on `Workspace.notesSidebarVisible`; this value tracks the
     /// selected workspace so existing SwiftUI observers can drive sidebar layout unchanged.

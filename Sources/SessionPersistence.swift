@@ -216,6 +216,19 @@ struct SessionProgressSnapshot: Codable, Sendable {
     var label: String?
 }
 
+struct SessionNoteSnapshot: Codable, Sendable {
+    var id: UUID
+    var title: String
+    var content: String
+    var createdAt: TimeInterval
+    var isCompleted: Bool?
+}
+
+struct SessionNotesSidebarSnapshot: Codable, Sendable {
+    var isVisible: Bool
+    var width: Double?
+}
+
 struct SessionGitBranchSnapshot: Codable, Sendable {
     var branch: String
     var isDirty: Bool
@@ -248,6 +261,19 @@ struct SessionRightSidebarToolPanelSnapshot: Codable, Sendable {
     var mode: RightSidebarMode
 }
 
+/// Persisted state for a `ClaudeChatPanel`. Phase 1 of the MVP does not yet
+/// fill these in — chat panels are skipped from snapshots — but the field
+/// exists so phase 4 can wire in `--resume` without breaking decoding of
+/// snapshots written by intermediate builds.
+struct SessionClaudeChatPanelSnapshot: Codable, Sendable {
+    var sessionId: String?
+    var workingDirectory: String?
+    /// Path to the JSONL transcript file inside the app's Application Support
+    /// directory. Stored separately from the main snapshot to avoid bloating
+    /// it with full conversation logs.
+    var transcriptPath: String?
+}
+
 struct SessionPanelSnapshot: Codable, Sendable {
     var id: UUID
     var type: PanelType
@@ -265,6 +291,7 @@ struct SessionPanelSnapshot: Codable, Sendable {
     var markdown: SessionMarkdownPanelSnapshot?
     var filePreview: SessionFilePreviewPanelSnapshot?
     var rightSidebarTool: SessionRightSidebarToolPanelSnapshot?
+    var claudeChat: SessionClaudeChatPanelSnapshot?
 }
 
 enum SessionSplitOrientation: String, Codable, Sendable {
@@ -356,6 +383,8 @@ struct SessionWorkspaceSnapshot: Codable, Sendable {
     var progress: SessionProgressSnapshot?
     var gitBranch: SessionGitBranchSnapshot?
     var remote: SessionRemoteWorkspaceSnapshot?
+    var notes: [SessionNoteSnapshot]?
+    var notesSidebarVisible: Bool?
 }
 
 struct SessionTabManagerSnapshot: Codable, Sendable {
@@ -368,6 +397,7 @@ struct SessionWindowSnapshot: Codable, Sendable {
     var display: SessionDisplaySnapshot?
     var tabManager: SessionTabManagerSnapshot
     var sidebar: SessionSidebarSnapshot
+    var notesSidebar: SessionNotesSidebarSnapshot?
 }
 
 struct AppSessionSnapshot: Codable, Sendable {

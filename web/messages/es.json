@@ -421,7 +421,8 @@
         "notifications": "Notificaciones",
         "find": "Búsqueda",
         "terminal": "Terminal",
-        "window": "Ventana"
+        "window": "Ventana",
+        "sessionPresets": "Presets de sesión"
       },
       "sc": {
         "ws-new": "Nuevo workspace",

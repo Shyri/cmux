@@ -87,6 +87,17 @@ struct PanelContentView: View {
                     onRequestPanelFocus: onRequestPanelFocus
                 )
             }
+        case .claudeChat:
+            if let claudeChatPanel = panel as? ClaudeChatPanel {
+                ClaudeChatPanelView(
+                    panel: claudeChatPanel,
+                    isFocused: isFocused,
+                    isVisibleInUI: isVisibleInUI,
+                    portalPriority: portalPriority,
+                    hasUnreadNotification: hasUnreadNotification,
+                    onRequestPanelFocus: onRequestPanelFocus
+                )
+            }
         }
     }
 
@@ -106,7 +117,7 @@ struct PanelContentView: View {
         switch panel.panelType {
         case .markdown, .filePreview, .rightSidebarTool:
             return true
-        case .terminal, .browser:
+        case .terminal, .browser, .claudeChat:
             return false
         }
     }

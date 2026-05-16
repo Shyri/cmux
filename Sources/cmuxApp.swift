@@ -8,7 +8,11 @@ struct cmuxApp: App {
     @StateObject private var tabManager: TabManager
     @StateObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var sidebarState = SidebarState()
+    @StateObject private var sidebarSelectionState = SidebarSelectionState()
+    @ObservedObject private var notesSidebarState = NotesSidebarState.shared
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
+    @ObservedObject private var sessionPresetStore = SessionPresetStore.shared
+    private let primaryWindowId = UUID()
     @AppStorage(AppearanceSettings.appearanceModeKey) private var appearanceMode = AppearanceSettings.defaultMode.rawValue
     @AppStorage("titlebarControlsStyle") private var titlebarControlsStyle = TitlebarControlsStyle.classic.rawValue
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
@@ -383,6 +387,14 @@ struct cmuxApp: App {
                     ) {
                         StartupAppearanceDebugWindowController.shared.show()
                     }
+                    Button(
+                        String(
+                            localized: "debug.menu.diffConnectorsDebug",
+                            defaultValue: "Diff Connectors Debug…"
+                        )
+                    ) {
+                        DiffConnectorsDebugWindowController.shared.show()
+                    }
                     Button("Menu Bar Extra Debug…") {
                         MenuBarExtraDebugWindowController.shared.show()
                     }
@@ -507,6 +519,15 @@ struct cmuxApp: App {
                     AppDelegate.shared?.showOpenFolderInInlineVSCodePanel()
                 }
                 .disabled(!TerminalDirectoryOpenTarget.vscodeInline.isAvailable())
+
+                Button(
+                    String(
+                        localized: "menu.file.newClaudeChat",
+                        defaultValue: "New Claude Chat Tab"
+                    )
+                ) {
+                    _ = activeTabManager.openClaudeChat()
+                }
             }
 
             // Close tab/workspace
@@ -556,6 +577,10 @@ struct cmuxApp: App {
                 splitCommandButton(title: String(localized: "menu.file.reopenClosedBrowserPanel", defaultValue: "Reopen Closed Browser Panel"), shortcut: menuShortcut(for: .reopenClosedBrowserPanel)) {
                     _ = activeTabManager.reopenMostRecentlyClosedBrowserPanel()
                 }
+
+                Divider()
+
+                sessionPresetsFileMenuItems
             }
 
             // Find
@@ -664,6 +689,11 @@ struct cmuxApp: App {
                     }
                 }
             }
+
+            Button(String(localized: "menu.view.toggleNotes", defaultValue: "Toggle Notes")) {
+                notesSidebarState.toggle()
+            }
+
             Divider()
             splitCommandButton(title: String(localized: "menu.view.nextSurface", defaultValue: "Next Surface"), shortcut: menuShortcut(for: .nextSurface)) {
                 activeTabManager.selectNextSurface()
@@ -857,6 +887,72 @@ struct cmuxApp: App {
 
     private var notificationMenuSnapshot: NotificationMenuSnapshot {
         notificationStore.notificationMenuSnapshot
+    }
+
+    private struct SessionPresetsMenuSnapshot {
+        let presets: [SessionPreset]
+        let activePresetId: UUID?
+    }
+
+    private var sessionPresetsMenuSnapshot: SessionPresetsMenuSnapshot {
+        SessionPresetStore.shared.loadIfNeeded()
+        return SessionPresetsMenuSnapshot(
+            presets: sessionPresetStore.presets,
+            activePresetId: sessionPresetStore.activePresetId
+        )
+    }
+
+    @ViewBuilder
+    private var sessionPresetsFileMenuItems: some View {
+        let snapshot = sessionPresetsMenuSnapshot
+
+        splitCommandButton(
+            title: String(localized: "menu.file.saveSessionAsPreset", defaultValue: "Save Session as Preset…"),
+            shortcut: menuShortcut(for: .saveSessionAsPreset)
+        ) {
+            AppDelegate.shared?.presentSaveCurrentSessionAsPresetPrompt()
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.updateActivePreset", defaultValue: "Update Current Preset"),
+            shortcut: menuShortcut(for: .updateActiveSessionPreset)
+        ) {
+            _ = AppDelegate.shared?.updateActivePresetFromCurrentSession()
+        }
+        .disabled(snapshot.activePresetId == nil)
+
+        Menu(String(localized: "menu.file.loadPreset", defaultValue: "Load Preset")) {
+            if snapshot.presets.isEmpty {
+                Button(String(localized: "menu.file.loadPreset.empty", defaultValue: "No presets")) {}
+                    .disabled(true)
+            } else {
+                ForEach(snapshot.presets) { preset in
+                    Button {
+                        _ = AppDelegate.shared?.loadSessionPreset(preset)
+                    } label: {
+                        if snapshot.activePresetId == preset.id {
+                            Label(preset.name, systemImage: "checkmark")
+                        } else {
+                            Text(preset.name)
+                        }
+                    }
+                }
+            }
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.manageSessionPresets", defaultValue: "Manage Presets…"),
+            shortcut: menuShortcut(for: .manageSessionPresets)
+        ) {
+            AppDelegate.shared?.presentManageSessionPresets()
+        }
+
+        splitCommandButton(
+            title: String(localized: "menu.file.manageWorkspaceNotes", defaultValue: "Manage Notes…"),
+            shortcut: menuShortcut(for: .manageWorkspaceNotes)
+        ) {
+            AppDelegate.shared?.presentManageWorkspaceNotes()
+        }
     }
 
     var activeTabManager: TabManager {
@@ -1120,6 +1216,7 @@ struct cmuxApp: App {
         BrowserImportHintDebugWindowController.shared.show()
         BrowserProfilePopoverDebugWindowController.shared.show()
         AboutTitlebarDebugWindowController.shared.show()
+        DiffConnectorsDebugWindowController.shared.show()
         SidebarDebugWindowController.shared.show()
         BackgroundDebugWindowController.shared.show()
         StartupAppearanceDebugWindowController.shared.show()
@@ -1168,6 +1265,7 @@ private let cmuxAuxiliaryWindowIdentifiers: Set<String> = [
     "cmux.aboutTitlebarDebug",
     "cmux.debugWindowControls",
     "cmux.browserImportHintDebug",
+    "cmux.diffConnectorsDebug",
     "cmux.sidebarDebug",
     "cmux.menubarDebug",
     "cmux.backgroundDebug",
@@ -1745,6 +1843,14 @@ private struct DebugWindowControlsView: View {
                         ) {
                             AboutTitlebarDebugWindowController.shared.show()
                         }
+                        Button(
+                            String(
+                                localized: "debug.menu.diffConnectorsDebug",
+                                defaultValue: "Diff Connectors Debug…"
+                            )
+                        ) {
+                            DiffConnectorsDebugWindowController.shared.show()
+                        }
                         Button("Sidebar Debug…") {
                             SidebarDebugWindowController.shared.show()
                         }
@@ -1799,6 +1905,7 @@ private struct DebugWindowControlsView: View {
                             BrowserImportHintDebugWindowController.shared.show()
                             BrowserProfilePopoverDebugWindowController.shared.show()
                             AboutTitlebarDebugWindowController.shared.show()
+                            DiffConnectorsDebugWindowController.shared.show()
                             SidebarDebugWindowController.shared.show()
                             BackgroundDebugWindowController.shared.show()
                             BonsplitTabBarDebugWindowController.shared.show()
@@ -8235,3 +8342,144 @@ private struct SettingsSidebarEntryRow: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
+private final class DiffConnectorsDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = DiffConnectorsDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(
+            localized: "debug.windows.diffConnectors.title",
+            defaultValue: "Diff Connectors Debug"
+        )
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.diffConnectorsDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: DiffConnectorsDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct DiffConnectorsDebugView: View {
+    @AppStorage("diff.connector.enabled") private var enabled: Bool = true
+    @AppStorage("diff.connector.width") private var widthRaw: Double = 36
+    @AppStorage("diff.connector.detectMoves") private var detectMoves: Bool = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(
+                    String(
+                        localized: "debug.diffConnectors.heading",
+                        defaultValue: "Diff Connectors"
+                    )
+                )
+                .font(.headline)
+
+                Text(
+                    String(
+                        localized: "debug.diffConnectors.note",
+                        defaultValue: "IntelliJ-style ribbon connectors between the two diff panes."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                GroupBox(
+                    String(
+                        localized: "debug.diffConnectors.group.appearance",
+                        defaultValue: "Appearance"
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(
+                            String(
+                                localized: "debug.diffConnectors.toggle.enabled",
+                                defaultValue: "Show diff connectors"
+                            ),
+                            isOn: $enabled
+                        )
+
+                        HStack(spacing: 8) {
+                            Text(
+                                String(
+                                    localized: "debug.diffConnectors.label.width",
+                                    defaultValue: "Connector width"
+                                )
+                            )
+                            Slider(value: $widthRaw, in: 16...80)
+                                .disabled(!enabled)
+                            Text(String(format: "%.0fpt", widthRaw))
+                                .font(.caption)
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+
+                GroupBox(
+                    String(
+                        localized: "debug.diffConnectors.group.moves",
+                        defaultValue: "Moved Blocks"
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(
+                            String(
+                                localized: "debug.diffConnectors.toggle.detectMoves",
+                                defaultValue: "Detect moved blocks"
+                            ),
+                            isOn: $detectMoves
+                        )
+                        Text(
+                            String(
+                                localized: "debug.diffConnectors.detectMoves.note",
+                                defaultValue: "Reopens the file diff to take effect."
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                }
+
+                HStack(spacing: 12) {
+                    Button(
+                        String(
+                            localized: "debug.diffConnectors.reset",
+                            defaultValue: "Reset"
+                        )
+                    ) {
+                        enabled = true
+                        widthRaw = 36
+                        detectMoves = true
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
