@@ -133,7 +133,39 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     /// Chat transcript. Fase 1 ships with a small mock transcript; fase 2
     /// will replace this with live events from `ClaudeChatRunner`.
-    @Published private(set) var messages: [ChatMessage]
+    ///
+    /// `didSet` keeps `visibleMessageWindow` aligned with the new array
+    /// size: when the conversation grows (append/streaming), the window
+    /// grows by the same amount so the first visible message stays the
+    /// same (no "old messages slipping off the top" effect for a user
+    /// scrolled mid-transcript). When the conversation shrinks (rewind /
+    /// clear), the window clamps down so we don't render past the end.
+    @Published private(set) var messages: [ChatMessage] {
+        didSet {
+            let delta = messages.count - oldValue.count
+            if delta > 0 {
+                visibleMessageWindow += delta
+            } else if delta < 0 {
+                visibleMessageWindow = max(0, min(visibleMessageWindow, messages.count))
+            }
+        }
+    }
+
+    /// How many trailing messages the view layer should render. The chat
+    /// transcript keeps every turn in memory, but rendering every message
+    /// as eager SwiftUI rows (Markdown, syntax highlighting, tool cards)
+    /// makes the whole panel sluggish once a conversation grows. We cap
+    /// the visible window to the tail of the transcript and expose a
+    /// "load older" affordance for the rest.
+    @Published private(set) var visibleMessageWindow: Int = ClaudeChatPanel.defaultVisibleMessageWindow
+
+    /// Initial window size when a panel is first created or `clearTranscript`
+    /// runs. Picked to comfortably cover typical conversations while still
+    /// keeping the SwiftUI tree small.
+    static let defaultVisibleMessageWindow: Int = 120
+
+    /// How many additional older messages each "load older" click reveals.
+    static let visibleMessageWindowStep: Int = 100
 
     /// Session id emitted by Claude on the first `system/init` event of a
     /// conversation. Required for `--resume` on subsequent turns.
@@ -419,6 +451,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         self.workingDirectory = workingDirectory
         self.sessionId = sessionId
         self.messages = initialMessages
+        // Cap the initial render window so opening a chat with a long
+        // history doesn't have to lay out every prior message at once.
+        // If the transcript is shorter than the default, we just show
+        // everything (no banner appears).
+        self.visibleMessageWindow = min(
+            ClaudeChatPanel.defaultVisibleMessageWindow,
+            initialMessages.count
+        )
 
         bootstrapAlwaysAllowedFromSettings()
         refreshTerminalColors()
@@ -893,6 +933,22 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             out.append("")
         }
         return out.joined(separator: "\n")
+    }
+
+    /// Reveal more of the older transcript that the initial render window
+    /// kept hidden. Each call uncovers `visibleMessageWindowStep` more
+    /// messages; when there are fewer than that left, the rest are
+    /// revealed in one go and the "load older" banner disappears.
+    func revealOlderMessages(by step: Int = ClaudeChatPanel.visibleMessageWindowStep) {
+        let next = visibleMessageWindow + max(1, step)
+        visibleMessageWindow = min(next, messages.count)
+    }
+
+    /// Reveal the entire transcript at once. Used by the "show all"
+    /// affordance for users who'd rather pay the layout cost than click
+    /// through several pages of older history.
+    func revealAllMessages() {
+        visibleMessageWindow = messages.count
     }
 
     /// Reset the conversation: cancel any in-flight turn, drop the messages

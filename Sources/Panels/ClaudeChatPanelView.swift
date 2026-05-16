@@ -1434,7 +1434,16 @@ struct ClaudeChatPanelView: View {
                 // content grows underneath us and the visible area ends up
                 // in "void" until the user scrolls up and forces layout.
                 VStack(alignment: .leading, spacing: 12) {
-                    let rows = ChatRowBuilder.buildRows(from: panel.messages)
+                    // Older messages outside the render window get a
+                    // single banner instead of N hidden rows — this is
+                    // what keeps long chats from staying sluggish after
+                    // the panel re-opens.
+                    let hiddenOlderCount = max(0, panel.messages.count - panel.visibleMessageWindow)
+                    if hiddenOlderCount > 0 {
+                        loadOlderBanner(hiddenCount: hiddenOlderCount)
+                    }
+                    let visibleMessages = Array(panel.messages.suffix(panel.visibleMessageWindow))
+                    let rows = ChatRowBuilder.buildRows(from: visibleMessages)
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, row in
                         rowView(row, isLast: idx == rows.count - 1)
                             .id(row.id)
@@ -1552,11 +1561,25 @@ struct ClaudeChatPanelView: View {
                 slashCommandName: payload.slashCommandName,
                 isPending: panel.pendingDrafts.contains(where: { $0.id == payload.messageId })
             )
+            .equatable()
         case .toolBatch(let batch):
+            // Filter the global approval/result collections down to just
+            // the entries in this batch. Without this every row would
+            // re-render whenever an unrelated tool result lands, because
+            // the dictionary identity changes. Per-batch slices keep
+            // `ToolBatchView`'s Equatable conformance meaningful.
+            let toolIds = Set(batch.entries.map { $0.toolUse.id })
+            let approvals = panel.pendingApprovals.filter { toolIds.contains($0.id) }
+            let results = Dictionary(uniqueKeysWithValues:
+                batch.entries.compactMap { entry -> (String, ChatMessageBlock.ToolResult)? in
+                    guard let r = panel.toolResultsByToolUseId[entry.toolUse.id] else { return nil }
+                    return (entry.toolUse.id, r)
+                }
+            )
             ToolBatchView(
                 entries: batch.entries,
-                pendingApprovals: panel.pendingApprovals,
-                toolResults: panel.toolResultsByToolUseId,
+                pendingApprovals: approvals,
+                toolResults: results,
                 isCurrentBatch: isLast && panel.status == .sending,
                 isDark: colorScheme == .dark,
                 onApprove: panel.approve(toolUseId:),
@@ -1564,7 +1587,60 @@ struct ClaudeChatPanelView: View {
                 onStopTurn: panel.cancel,
                 onExitPlanApprove: handleExitPlanApprove
             )
+            .equatable()
         }
+    }
+
+    /// Compact banner shown above the message list when older messages
+    /// are hidden by the render window. Two affordances: reveal another
+    /// page (default step), or expand to the entire transcript at once.
+    @ViewBuilder
+    private func loadOlderBanner(hiddenCount: Int) -> some View {
+        HStack(spacing: 8) {
+            Image(systemName: "clock.arrow.circlepath")
+                .font(.system(size: 11))
+                .foregroundColor(.secondary)
+            Text(String(
+                format: String(
+                    localized: "claudeChat.loadOlder.label",
+                    defaultValue: "%d earlier messages hidden"
+                ),
+                hiddenCount
+            ))
+            .font(.system(size: 11))
+            .foregroundColor(.secondary)
+            Spacer(minLength: 8)
+            Button {
+                panel.revealOlderMessages()
+            } label: {
+                Text(String(
+                    localized: "claudeChat.loadOlder.loadMore",
+                    defaultValue: "Load older"
+                ))
+                .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+            Button {
+                panel.revealAllMessages()
+            } label: {
+                Text(String(
+                    localized: "claudeChat.loadOlder.showAll",
+                    defaultValue: "Show all"
+                ))
+                .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.borderless)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .background(
+            RoundedRectangle(cornerRadius: 6)
+                .fill(palette.cardSubtleBg(colorScheme == .dark))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 6)
+                .stroke(palette.borderSubtle(colorScheme == .dark), lineWidth: 1)
+        )
     }
 
     private func autoScrollIfStuck(proxy: ScrollViewProxy) {
@@ -3962,7 +4038,7 @@ enum ChatRow {
         let id: String
         let entries: [Entry]
 
-        struct Entry: Identifiable {
+        struct Entry: Identifiable, Equatable {
             var id: String { toolUse.id }
             let messageId: UUID
             let toolUse: ChatMessageBlock.ToolUse
@@ -4049,7 +4125,7 @@ enum ChatRowBuilder {
 
 // MARK: - Text block row
 
-private struct TextBlockRow: View {
+private struct TextBlockRow: View, Equatable {
     let role: ChatMessageRole
     let text: String
     var attachmentURLs: [URL] = []
@@ -4073,6 +4149,25 @@ private struct TextBlockRow: View {
     @Environment(\.chatPalette) private var palette
     @State private var isHovered: Bool = false
     @State private var isExpanded: Bool = false
+
+    /// Compare only data inputs so SwiftUI can skip `body` re-evaluation
+    /// when nothing visible changed. Closures (`onRewindToHere`) and the
+    /// environment-injected `palette` are intentionally ignored: closure
+    /// identity changes every parent render but the new closure is still
+    /// installed for future taps, and `palette` only mutates when the
+    /// terminal theme changes — which forces a re-render through the
+    /// environment regardless.
+    static func == (lhs: TextBlockRow, rhs: TextBlockRow) -> Bool {
+        lhs.role == rhs.role
+            && lhs.text == rhs.text
+            && lhs.attachmentURLs == rhs.attachmentURLs
+            && lhs.messageId == rhs.messageId
+            && lhs.isDark == rhs.isDark
+            && lhs.canRewindToHere == rhs.canRewindToHere
+            && lhs.isCollapsedByDefault == rhs.isCollapsedByDefault
+            && lhs.slashCommandName == rhs.slashCommandName
+            && lhs.isPending == rhs.isPending
+    }
 
     var body: some View {
         Group {
@@ -4252,7 +4347,7 @@ private struct TextBlockRow: View {
 /// collapse behind a "N tools used" header; if the batch is the current
 /// (turn still streaming) the most recent tool stays visible below the
 /// header so the user can see what's running.
-private struct ToolBatchView: View {
+private struct ToolBatchView: View, Equatable {
     let entries: [ChatRow.ToolBatch.Entry]
     let pendingApprovals: [ChatApprovalRequest]
     let toolResults: [String: ChatMessageBlock.ToolResult]
@@ -4266,6 +4361,20 @@ private struct ToolBatchView: View {
 
     @Environment(\.chatPalette) private var palette
     @State private var expanded: Bool = false
+
+    /// Skip body re-evaluation when none of the data this batch actually
+    /// renders has changed. The caller already filters `pendingApprovals`
+    /// and `toolResults` down to this batch's tool ids, so unrelated
+    /// turns don't invalidate already-rendered batches. Closures are
+    /// excluded from the comparison; the latest closures stay installed
+    /// for future taps regardless of `body` skipping.
+    static func == (lhs: ToolBatchView, rhs: ToolBatchView) -> Bool {
+        lhs.entries == rhs.entries
+            && lhs.pendingApprovals == rhs.pendingApprovals
+            && lhs.toolResults == rhs.toolResults
+            && lhs.isCurrentBatch == rhs.isCurrentBatch
+            && lhs.isDark == rhs.isDark
+    }
 
     /// Tool batches with 2+ entries always render with a collapsible
     /// header (a single tool stays inline as a regular card). Any
