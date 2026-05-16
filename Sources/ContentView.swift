@@ -1075,6 +1075,10 @@ struct ContentView: View {
     @State private var backgroundWorkspacePrimeCoordinator = BackgroundWorkspacePrimeCoordinator()
     @State private var fileExplorerWidth: CGFloat = 220
     @State private var fileExplorerDragStartWidth: CGFloat?
+    @State private var notesSidebarWidth: CGFloat = NotesSidebarState.defaultWidth
+    @State private var notesSidebarDragStartWidth: CGFloat?
+    @State private var isNotesSidebarResizerDragging = false
+    @State private var editingNoteId: UUID?
     @State private var previousSelectedWorkspaceId: UUID?
     @State private var retiringWorkspaceId: UUID?
     @State private var workspaceHandoffGeneration: UInt64 = 0
@@ -1575,6 +1579,7 @@ struct ContentView: View {
     private enum SidebarResizerHandle: Hashable {
         case divider
         case explorerDivider
+        case notesDivider
     }
 
     /// Returns the current drag width, start width capture, width update, and drag end cleanup for a resizer handle.
@@ -1618,6 +1623,24 @@ struct ContentView: View {
                 finishDrag: {
                     fileExplorerDragStartWidth = nil
                     fileExplorerState.width = fileExplorerWidth
+                }
+            )
+        case .notesDivider:
+            return (
+                currentWidth: notesSidebarWidth,
+                captureStart: { notesSidebarDragStartWidth = notesSidebarWidth },
+                updateWidth: { translation in
+                    let startWidth = notesSidebarDragStartWidth ?? notesSidebarWidth
+                    // Trailing edge: drag-left grows the sidebar, drag-right shrinks it.
+                    let nextWidth = NotesSidebarState.clampedWidth(startWidth - translation)
+                    withTransaction(Transaction(animation: nil)) {
+                        notesSidebarWidth = nextWidth
+                    }
+                },
+                finishDrag: {
+                    notesSidebarDragStartWidth = nil
+                    isNotesSidebarResizerDragging = false
+                    notesSidebarState.persistedWidth = notesSidebarWidth
                 }
             )
         }
@@ -1972,6 +1995,31 @@ struct ContentView: View {
             accessibilityIdentifier: "RightSidebarResizer",
             dividerX: { totalWidth in totalWidth - rightSidebarWidth }
         )
+    }
+
+    private var notesSidebarResizerOverlay: some View {
+        // Notes sidebar lives at the far right of the layout (after the
+        // upstream file-explorer/right-sidebar), so its drag handle sits at
+        // `totalWidth - notesSidebarWidth`.
+        placedSidebarResizerOverlay(
+            handle: .notesDivider,
+            edge: .trailing,
+            accessibilityIdentifier: "NotesSidebarResizer",
+            dividerX: { totalWidth in totalWidth - notesSidebarWidth }
+        )
+    }
+
+    @ViewBuilder
+    private var notesSidebarView: some View {
+        if let workspace = tabManager.selectedWorkspace {
+            NotesSidebarContentView(
+                workspace: workspace,
+                editingNoteId: $editingNoteId
+            )
+            .frame(width: notesSidebarWidth)
+            .frame(maxHeight: .infinity, alignment: .topTrailing)
+            .background(.ultraThinMaterial)
+        }
     }
 
     private var sidebarView: some View {
@@ -2556,12 +2604,18 @@ struct ContentView: View {
                     HStack(spacing: 0) {
                         terminalContentWithSidebarDropOverlay(appearance: appearance)
                             .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
+                            .padding(.trailing, notesSidebarState.isVisible ? notesSidebarWidth : 0)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
                         rightSidebarPanelWithBackdrop(appearance: appearance)
                     }
                     if sidebarState.isVisible {
                         sidebarPanelWithBackdrop(appearance: appearance)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if notesSidebarState.isVisible {
+                        notesSidebarView
                     }
                 }
             )
@@ -2573,6 +2627,9 @@ struct ContentView: View {
                         sidebarPanelWithBackdrop(appearance: appearance)
                     }
                     terminalContentWithRightSidebarPanel(appearance: appearance)
+                    if notesSidebarState.isVisible {
+                        notesSidebarView
+                    }
                 }
             )
         }
@@ -2588,6 +2645,12 @@ struct ContentView: View {
                 .overlay(alignment: .leading) {
                     if rightSidebarVisible {
                         rightSidebarResizerOverlay
+                            .zIndex(1000)
+                    }
+                }
+                .overlay(alignment: .trailing) {
+                    if notesSidebarState.isVisible {
+                        notesSidebarResizerOverlay
                             .zIndex(1000)
                     }
                 }
@@ -2631,6 +2694,14 @@ struct ContentView: View {
             }
             if abs(sidebarState.persistedWidth - restoredWidth) > 0.5 {
                 sidebarState.persistedWidth = restoredWidth
+            }
+            // Mirror the same persisted-width hydration for the notes sidebar.
+            let restoredNotesWidth = NotesSidebarState.clampedWidth(notesSidebarState.persistedWidth)
+            if abs(notesSidebarWidth - restoredNotesWidth) > 0.5 {
+                notesSidebarWidth = restoredNotesWidth
+            }
+            if abs(notesSidebarState.persistedWidth - restoredNotesWidth) > 0.5 {
+                notesSidebarState.persistedWidth = restoredNotesWidth
             }
             if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
                 selectedTabIds = [selectedId]
@@ -9924,6 +9995,8 @@ struct VerticalTabsSidebar: View {
             allContextMenuWorkspacesHideTerminalScrollBar: allContextMenuWorkspacesHideTerminalScrollBar,
             contextMenuPinState: contextMenuPinState,
             settings: renderContext.tabItemSettings,
+            hasClaudeChatRunning: tab.hasClaudeChatRunning,
+            hasClaudeChatNeedsInput: tab.hasClaudeChatNeedsInput,
             livePresentation: livePresentation,
             frozenPresentation: $frozenTabItemPresentation
         )
@@ -12345,7 +12418,9 @@ private struct TabItemView: View, Equatable {
         lhs.allRemoteContextMenuTargetsDisconnected == rhs.allRemoteContextMenuTargetsDisconnected &&
         lhs.allContextMenuWorkspacesHideTerminalScrollBar == rhs.allContextMenuWorkspacesHideTerminalScrollBar &&
         lhs.contextMenuPinState == rhs.contextMenuPinState &&
-        lhs.settings == rhs.settings
+        lhs.settings == rhs.settings &&
+        lhs.hasClaudeChatRunning == rhs.hasClaudeChatRunning &&
+        lhs.hasClaudeChatNeedsInput == rhs.hasClaudeChatNeedsInput
     }
 
     // Use plain references instead of @EnvironmentObject to avoid subscribing
@@ -12378,6 +12453,18 @@ private struct TabItemView: View, Equatable {
     let allContextMenuWorkspacesHideTerminalScrollBar: Bool
     let contextMenuPinState: WorkspaceActionDispatcher.PinState?
     let settings: SidebarTabItemSettingsSnapshot
+    /// Precomputed flag: any Claude Chat panel in this workspace is
+    /// currently running a turn. Passed in by the call site (which
+    /// observes the workspace) so the body can compare it via `==` and
+    /// re-render the running indicator without subscribing TabItemView
+    /// to the workspace's `@Published` directly.
+    let hasClaudeChatRunning: Bool
+    /// Precomputed flag: a Claude Chat panel in this workspace is
+    /// paused waiting on user input (approval / question). Mutually
+    /// exclusive in the rendered indicator: needs-input wins over
+    /// running so the user isn't told "still thinking" while it is
+    /// actually paused.
+    let hasClaudeChatNeedsInput: Bool
     let livePresentation: SidebarTabItemPresentationSnapshot
     @Binding var frozenPresentation: SidebarTabItemPresentationSnapshot?
     @State private var workspaceSnapshotStorage: SidebarWorkspaceSnapshotBuilder.Snapshot?
@@ -12673,6 +12760,30 @@ private struct TabItemView: View, Equatable {
                     .truncationMode(.tail)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .layoutPriority(1)
+
+                // Needs-input wins over running: if claude is paused on an
+                // approval / question card, the spinner would imply "still
+                // thinking" which is the exact confusion we want to avoid.
+                if hasClaudeChatNeedsInput {
+                    Image(systemName: "hand.raised.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundColor(.orange)
+                        .frame(width: 14, height: 14)
+                        .help(String(
+                            localized: "sidebar.claudeChat.needsInput.tooltip",
+                            defaultValue: "Claude is waiting for your input on a chat in this workspace"
+                        ))
+                } else if hasClaudeChatRunning {
+                    ProgressView()
+                        .controlSize(.small)
+                        .scaleEffect(0.6)
+                        .frame(width: 14, height: 14)
+                        .foregroundColor(activeSecondaryColor(0.9))
+                        .help(String(
+                            localized: "sidebar.claudeChat.running.tooltip",
+                            defaultValue: "Claude is running a turn in this workspace"
+                        ))
+                }
             }
 
             if let description = workspaceSnapshot.customDescription {
