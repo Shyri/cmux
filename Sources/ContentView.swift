@@ -2112,6 +2112,7 @@ struct ContentView: View {
                             )
                         }
                     )
+                    .equatable()
                     .opacity(presentation.renderOpacity)
                     .allowsHitTesting(isSelectedWorkspace)
                     .accessibilityHidden(!presentation.isRenderedVisible)

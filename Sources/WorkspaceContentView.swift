@@ -146,7 +146,24 @@ final class TmuxWorkspacePaneOverlayModel: ObservableObject {
 }
 
 /// View that renders a Workspace's content using BonsplitView
-struct WorkspaceContentView: View {
+struct WorkspaceContentView: View, Equatable {
+    /// Parent re-render fence. `@ObservedObject workspace` and
+    /// `@EnvironmentObject notificationStore` continue to drive body
+    /// invalidations directly when they publish, so the `==` only
+    /// needs to compare the inputs the parent (`ContentView`) controls.
+    /// When `ContentView` re-renders for a reason unrelated to this
+    /// particular workspace — global theme change, focus shuffle on a
+    /// sibling workspace, etc. — this lets the inactive workspace
+    /// skip its body entirely instead of repainting the full pane
+    /// tree under opacity 0.
+    static func == (lhs: WorkspaceContentView, rhs: WorkspaceContentView) -> Bool {
+        return lhs.workspace === rhs.workspace
+            && lhs.isWorkspaceVisible == rhs.isWorkspaceVisible
+            && lhs.isWorkspaceInputActive == rhs.isWorkspaceInputActive
+            && lhs.isFullScreen == rhs.isFullScreen
+            && lhs.workspacePortalPriority == rhs.workspacePortalPriority
+    }
+
     private struct DeferredThemeRefresh {
         let reason: String
         let backgroundOverride: NSColor?
@@ -267,6 +284,7 @@ struct WorkspaceContentView: View {
                     },
                     onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
                 )
+                .equatable()
                 .onTapGesture {
                     workspace.bonsplitController.focusPane(paneId)
                 }

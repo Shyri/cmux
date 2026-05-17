@@ -4,7 +4,7 @@ import Bonsplit
 import AppKit
 
 /// View that renders the appropriate panel view based on panel type
-struct PanelContentView: View {
+struct PanelContentView: View, Equatable {
     let panel: any Panel
     let workspaceId: UUID
     let paneId: PaneID
@@ -18,6 +18,47 @@ struct PanelContentView: View {
     let onFocus: () -> Void
     let onRequestPanelFocus: () -> Void
     let onTriggerFlash: () -> Void
+
+    /// Parent re-render fence. The wrapped panel view conforms to
+    /// `ObservableObject` and drives its own body invalidations via
+    /// `@ObservedObject` inside the concrete panel view (so this `==`
+    /// does NOT need to compare panel-internal state — when the
+    /// wrapped state changes, the inner view re-renders independently
+    /// of this Equatable check). The point here is to skip the body
+    /// when the parent `WorkspaceContentView` re-evaluates for reasons
+    /// that don't affect *this* panel — e.g. another panel publishing
+    /// notifications, sibling unread state changing, or an unrelated
+    /// `notificationStore` mutation.
+    static func == (lhs: PanelContentView, rhs: PanelContentView) -> Bool {
+        return ObjectIdentifier(lhs.panel) == ObjectIdentifier(rhs.panel)
+            && lhs.workspaceId == rhs.workspaceId
+            && lhs.paneId == rhs.paneId
+            && lhs.isFocused == rhs.isFocused
+            && lhs.isSelectedInPane == rhs.isSelectedInPane
+            && lhs.isVisibleInUI == rhs.isVisibleInUI
+            && lhs.portalPriority == rhs.portalPriority
+            && lhs.isSplit == rhs.isSplit
+            && lhs.hasUnreadNotification == rhs.hasUnreadNotification
+            && PanelContentView.appearancesEqual(lhs.appearance, rhs.appearance)
+    }
+
+    private static func appearancesEqual(_ a: PanelAppearance, _ b: PanelAppearance) -> Bool {
+        return colorsEqual(a.backgroundColor, b.backgroundColor)
+            && colorsEqual(a.foregroundColor, b.foregroundColor)
+            && colorsEqual(a.unfocusedOverlayNSColor, b.unfocusedOverlayNSColor)
+            && a.unfocusedOverlayOpacity == b.unfocusedOverlayOpacity
+            && a.usesClearContentBackground == b.usesClearContentBackground
+            && a.dividerColor == b.dividerColor
+    }
+
+    private static func colorsEqual(_ a: NSColor, _ b: NSColor) -> Bool {
+        let lhs = a.usingColorSpace(.sRGB) ?? a
+        let rhs = b.usingColorSpace(.sRGB) ?? b
+        return lhs.redComponent == rhs.redComponent
+            && lhs.greenComponent == rhs.greenComponent
+            && lhs.blueComponent == rhs.blueComponent
+            && lhs.alphaComponent == rhs.alphaComponent
+    }
 
     var body: some View {
         renderedPanel
