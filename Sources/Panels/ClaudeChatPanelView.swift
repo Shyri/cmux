@@ -3722,6 +3722,52 @@ private struct ToolResultCard: View {
 
 // MARK: - Theme
 
+/// Process-wide cache for pre-parsed `MarkdownContent` instances keyed
+/// by the raw markdown text. `MarkdownUI.Markdown(text:)` parses the
+/// string to a `MarkdownContent` AST on every render — for assistant
+/// bubbles in a long chat this parse runs again every time LazyVStack
+/// materialises an off-screen bubble back into the viewport during
+/// scroll (Instruments confirmed multiple CoreAnimation commits over
+/// 500 ms here, the dominant scroll-lag source).
+///
+/// By caching `MarkdownContent(text)` per text and feeding it to
+/// `Markdown(_ content:)`, the parse cost collapses to once per unique
+/// text. Layout still runs on first materialisation (text shaping
+/// can't be skipped), but the AST construction goes away. Crucially
+/// this preserves ALL MarkdownUI features (tables, code blocks with
+/// syntax highlighting, blockquotes) — unlike substituting `Text(
+/// AttributedString(markdown:))`, which would lose them.
+///
+/// `MarkdownContent` is a value type with `Equatable` conformance, so
+/// we box it for `NSCache`. `countLimit` keeps memory bounded (256
+/// entries ≈ 256 distinct assistant bubble bodies retained at most).
+final class ChatMarkdownContentCache {
+    static let shared = ChatMarkdownContentCache()
+
+    private final class Box { let content: MarkdownContent; init(_ c: MarkdownContent) { self.content = c } }
+    private let cache = NSCache<NSString, Box>()
+    private let lock = NSLock()
+
+    init() {
+        cache.countLimit = 256
+    }
+
+    func content(for text: String) -> MarkdownContent {
+        let key = text as NSString
+        if let box = cache.object(forKey: key) {
+            return box.content
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let box = cache.object(forKey: key) {
+            return box.content
+        }
+        let content = MarkdownContent(text)
+        cache.setObject(Box(content), forKey: key)
+        return content
+    }
+}
+
 /// Process-wide cache for `cmuxChatMarkdownTheme`. The theme is purely
 /// derived from `(isDark, palette.terminalBg, palette.terminalFg)` —
 /// reconstructing it inside every `TextBlockRow.body` evaluation showed
@@ -4482,7 +4528,7 @@ private struct TextBlockRow: View, Equatable {
                     }
                 }
             case .assistant, .system:
-                Markdown(text)
+                Markdown(ChatMarkdownContentCache.shared.content(for: text))
                     .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
                     .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
