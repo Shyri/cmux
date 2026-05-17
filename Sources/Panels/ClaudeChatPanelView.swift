@@ -925,6 +925,20 @@ struct ClaudeChatPanelView: View {
             // claims first-responder.
             inputFocusToken &+= 1
         }
+        .onChange(of: panel.exitPlanModePresentedToken) { _ in
+            // An ExitPlanMode card just appeared. Its
+            // `.borderedProminent` "Auto-accept edits" button is
+            // promoted by AppKit to default responder on mount, which
+            // steals first-responder from the composer the user is
+            // typing in. Re-assert composer focus AFTER the card has
+            // mounted — a single `DispatchQueue.main.async` defers
+            // past the current SwiftUI render pass, which is enough
+            // for the card to be in the view tree by the time we call
+            // makeFirstResponder again.
+            DispatchQueue.main.async {
+                inputFocusToken &+= 1
+            }
+        }
         .onChange(of: panel.status) { newStatus in
             // When a turn completes (.idle / .error after .sending) the
             // user is almost always about to type the next prompt — make

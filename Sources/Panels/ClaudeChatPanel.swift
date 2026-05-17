@@ -476,6 +476,16 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// chat — not in a sibling terminal pane.
     @Published private(set) var inputFocusRequestToken: Int = 0
 
+    /// Bumped whenever an `ExitPlanMode` tool_use arrives. The view uses
+    /// it to re-assert composer focus AFTER SwiftUI has mounted the
+    /// plan-approval card — the card's `.borderedProminent`
+    /// "Auto-accept edits" button otherwise steals first-responder on
+    /// macOS as soon as it appears, yanking focus away from the user
+    /// who's typing their follow-up. Distinct from the generic
+    /// `inputFocusRequestToken` so we can dispatch the re-focus async
+    /// (one runloop later) only for this specific case.
+    @Published private(set) var exitPlanModePresentedToken: Int = 0
+
     /// User-overridable title (e.g. via tab "Rename"). When nil we derive
     /// the title from the first user message.
     @Published private(set) var customTitleOverride: String?
@@ -1206,6 +1216,16 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                         "⚠ The model invoked the non-functional built-in `AskUserQuestion` tool. cmux cannot answer it. Try rephrasing the request or restarting the chat — see the chat log for diagnostics."
                 )
                 messages.append(.text(.system, warning))
+            }
+            // Plan-mode approval card carries a `.borderedProminent`
+            // "Auto-accept edits" button that AppKit promotes to default
+            // responder when it mounts, stealing focus from the
+            // composer the user is typing in. Notify the view so it
+            // can re-assert composer focus AFTER the card materialises.
+            for case .toolUse(let toolUse) in blocks where toolUse.name == "ExitPlanMode" {
+                _ = toolUse
+                exitPlanModePresentedToken &+= 1
+                break
             }
             // Pull every edit-shaped tool_use into the side-pane feed.
             for case .toolUse(let toolUse) in blocks
