@@ -1313,22 +1313,6 @@ struct ClaudeChatPanelView: View {
         }
     }
 
-    private var permissionModePicker: some View {
-        Picker("", selection: $panel.permissionMode) {
-            ForEach(ChatPermissionMode.allCases) { mode in
-                Label(mode.label, systemImage: mode.iconName).tag(mode)
-            }
-        }
-        .pickerStyle(.menu)
-        .labelsHidden()
-        .controlSize(.small)
-        .help(String(
-            localized: "claudeChat.mode.picker.tooltip",
-            defaultValue: "How tool calls are gated for the next turn. Plan = read-only, Normal = ask each tool, Auto-edits = edits auto + bash asks, Bypass = everything auto."
-        ))
-        .frame(maxWidth: 110)
-    }
-
     private var copyChatButton: some View {
         Button {
             copyEntireTranscriptToClipboard()
@@ -1662,109 +1646,51 @@ struct ClaudeChatPanelView: View {
     // MARK: - Input bar
 
     private var inputBar: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            // Slash-command suggestions sit ABOVE the input so the user can
-            // see what they're picking while still typing. Inserting it as
-            // a sibling (not an overlay) sidesteps the clip/zindex traps
-            // that hide an overlay rendered "above" its parent's bounds.
-            if showingSlashPopup, !slashFilteredCommands.isEmpty {
-                SlashCommandPopup(
-                    commands: slashFilteredCommands,
-                    selectedIndex: slashSelectedIndex,
-                    palette: palette,
-                    isDark: colorScheme == .dark,
-                    onPick: { idx in
-                        slashSelectedIndex = idx
-                        confirmSlashSelection()
-                    }
-                )
-                .frame(maxWidth: 460, alignment: .leading)
-                .transition(.opacity)
-            }
-            ChatInputTextView(
-                text: $panel.draft,
-                placeholder: String(
-                    localized: "claudeChat.input.placeholder",
-                    defaultValue: "Ask Claude…"
-                ),
-                isDark: colorScheme == .dark,
-                textColor: panel.terminalForegroundColor,
-                focusToken: inputFocusToken,
-                measuredHeight: $inputMeasuredHeight,
-                onSubmit: submit,
-                onCancel: handleEscape,
-                onBecomeFirstResponder: { onRequestPanelFocus() },
-                onArrowUp: { ctx in
-                    if moveSlashSelection(by: -1) { return true }
-                    return tryNavigateHistory(direction: .older, context: ctx)
-                },
-                onArrowDown: { ctx in
-                    if moveSlashSelection(by: +1) { return true }
-                    return tryNavigateHistory(direction: .newer, context: ctx)
-                },
-                onTabKey: completeSlashCommandPrefixIfPossible,
-                onShiftTab: cyclePermissionMode
-            )
-            .frame(height: min(max(inputMeasuredHeight, Self.inputMinHeight), Self.inputMaxHeight))
-            .padding(.horizontal, 8)
-            .padding(.vertical, 1)
-            .background(
-                RoundedRectangle(cornerRadius: 8)
-                    .fill(inputBackground)
-                    .overlay(
-                        RoundedRectangle(cornerRadius: 8)
-                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                    )
-            )
-
-            HStack(spacing: 8) {
-                permissionModePicker
-                if let model = panel.modelName, !model.isEmpty {
-                    Text(model)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
-                        .help(String(
-                            localized: "claudeChat.model.tooltip",
-                            defaultValue: "Active Claude model"
-                        ))
-                }
-                Spacer(minLength: 4)
-                actionButton
-            }
-        }
-        .padding(.vertical, 6)
-        .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .center)
-        .padding(.horizontal, 12)
-        .background(headerBackground)
-    }
-
-    @ViewBuilder
-    private var actionButton: some View {
-        HStack(spacing: 6) {
-            if case .sending = panel.status {
-                Button(action: panel.cancel) {
-                    Image(systemName: "stop.fill")
-                        .frame(width: 12, height: 12)
-                }
-                .buttonStyle(.borderedProminent)
-                .tint(.red)
-                .help(String(localized: "claudeChat.cancel.button", defaultValue: "Stop (Esc)"))
-            }
-            Button(action: submit) {
-                Image(systemName: "arrow.up")
-                    .frame(width: 12, height: 12)
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(panel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-            .help(String(
-                localized: "claudeChat.send.button",
-                defaultValue: "Send (Enter) — queues if Claude is still replying"
-            ))
-        }
+        // Extracted into `ClaudeChatComposerView` so it can short-circuit
+        // its body via `Equatable` when the parent re-evaluates for
+        // reasons unrelated to the composer (e.g. `panel.messages`
+        // changing during streaming). Values that *do* affect the
+        // composer are funnelled through the `==` comparator below.
+        ClaudeChatComposerView(
+            draft: panel.draft,
+            permissionMode: panel.permissionMode,
+            measuredHeight: inputMeasuredHeight,
+            modelName: panel.modelName,
+            isSending: { if case .sending = panel.status { return true } else { return false } }(),
+            isSendButtonDisabled: panel.draft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+            palette: palette,
+            isDark: colorScheme == .dark,
+            textColor: panel.terminalForegroundColor,
+            focusToken: inputFocusToken,
+            showingSlashPopup: showingSlashPopup,
+            slashFilteredCommands: slashFilteredCommands,
+            slashSelectedIndex: slashSelectedIndex,
+            inputMinHeight: Self.inputMinHeight,
+            inputMaxHeight: Self.inputMaxHeight,
+            maxContentWidth: Self.maxContentWidth,
+            onDraftChange: { panel.draft = $0 },
+            onMeasuredHeightChange: { inputMeasuredHeight = $0 },
+            onPermissionModeChange: { panel.permissionMode = $0 },
+            onPickSlashCommand: { idx in
+                slashSelectedIndex = idx
+                confirmSlashSelection()
+            },
+            onSubmit: submit,
+            onCancel: handleEscape,
+            onBecomeFirstResponder: { onRequestPanelFocus() },
+            onArrowUp: { ctx in
+                if moveSlashSelection(by: -1) { return true }
+                return tryNavigateHistory(direction: .older, context: ctx)
+            },
+            onArrowDown: { ctx in
+                if moveSlashSelection(by: +1) { return true }
+                return tryNavigateHistory(direction: .newer, context: ctx)
+            },
+            onTabKey: completeSlashCommandPrefixIfPossible,
+            onShiftTab: cyclePermissionMode,
+            onCancelStreaming: panel.cancel
+        )
+        .equatable()
     }
 
     private func cancelIfSending() {
@@ -2162,6 +2088,200 @@ struct ClaudeChatPanelView: View {
         case .easeIn: return .easeIn(duration: duration)
         case .easeOut: return .easeOut(duration: duration)
         }
+    }
+}
+
+// MARK: - Composer subview
+
+/// Isolated composer (slash popup + multi-line text input + footer with
+/// permission picker / model chip / send button). `ClaudeChatPanelView`
+/// hosts this with `.equatable()` so the composer's body short-circuits
+/// when the parent re-evaluates for reasons that don't affect the
+/// composer (the main offender being `panel.messages` mutating ~20 Hz
+/// during streaming).
+///
+/// Closures and the underlying mutator callbacks are intentionally
+/// excluded from `==`. SwiftUI re-installs the struct with the newest
+/// closure values every render anyway; we just suppress the body work.
+private struct ClaudeChatComposerView: View, Equatable {
+    let draft: String
+    let permissionMode: ChatPermissionMode
+    let measuredHeight: CGFloat
+    let modelName: String?
+    let isSending: Bool
+    let isSendButtonDisabled: Bool
+    let palette: ChatPalette
+    let isDark: Bool
+    let textColor: NSColor
+    let focusToken: Int
+    let showingSlashPopup: Bool
+    let slashFilteredCommands: [SlashCommand]
+    let slashSelectedIndex: Int
+    let inputMinHeight: CGFloat
+    let inputMaxHeight: CGFloat
+    let maxContentWidth: CGFloat
+
+    let onDraftChange: (String) -> Void
+    let onMeasuredHeightChange: (CGFloat) -> Void
+    let onPermissionModeChange: (ChatPermissionMode) -> Void
+    let onPickSlashCommand: (Int) -> Void
+    let onSubmit: () -> Void
+    let onCancel: () -> Void
+    let onBecomeFirstResponder: () -> Void
+    let onArrowUp: (ChatInputArrowContext) -> Bool
+    let onArrowDown: (ChatInputArrowContext) -> Bool
+    let onTabKey: () -> Bool
+    let onShiftTab: () -> Bool
+    let onCancelStreaming: () -> Void
+
+    static func == (lhs: ClaudeChatComposerView, rhs: ClaudeChatComposerView) -> Bool {
+        return lhs.draft == rhs.draft
+            && lhs.permissionMode == rhs.permissionMode
+            && lhs.measuredHeight == rhs.measuredHeight
+            && lhs.modelName == rhs.modelName
+            && lhs.isSending == rhs.isSending
+            && lhs.isSendButtonDisabled == rhs.isSendButtonDisabled
+            && lhs.isDark == rhs.isDark
+            && Self.colorsEqual(lhs.textColor, rhs.textColor)
+            && Self.colorsEqual(lhs.palette.terminalBg, rhs.palette.terminalBg)
+            && Self.colorsEqual(lhs.palette.terminalFg, rhs.palette.terminalFg)
+            && lhs.focusToken == rhs.focusToken
+            && lhs.showingSlashPopup == rhs.showingSlashPopup
+            && lhs.slashSelectedIndex == rhs.slashSelectedIndex
+            && lhs.slashFilteredCommands.map(\.id) == rhs.slashFilteredCommands.map(\.id)
+    }
+
+    private static func colorsEqual(_ a: NSColor, _ b: NSColor) -> Bool {
+        let lhs = a.usingColorSpace(.sRGB) ?? a
+        let rhs = b.usingColorSpace(.sRGB) ?? b
+        return lhs.redComponent == rhs.redComponent
+            && lhs.greenComponent == rhs.greenComponent
+            && lhs.blueComponent == rhs.blueComponent
+            && lhs.alphaComponent == rhs.alphaComponent
+    }
+
+    var body: some View {
+        let draftBinding = Binding<String>(
+            get: { draft },
+            set: { onDraftChange($0) }
+        )
+        let measuredHeightBinding = Binding<CGFloat>(
+            get: { measuredHeight },
+            set: { onMeasuredHeightChange($0) }
+        )
+        let permissionBinding = Binding<ChatPermissionMode>(
+            get: { permissionMode },
+            set: { onPermissionModeChange($0) }
+        )
+
+        VStack(alignment: .leading, spacing: 6) {
+            // Slash-command suggestions sit ABOVE the input so the user can
+            // see what they're picking while still typing. Inserting it as
+            // a sibling (not an overlay) sidesteps the clip/zindex traps
+            // that hide an overlay rendered "above" its parent's bounds.
+            if showingSlashPopup, !slashFilteredCommands.isEmpty {
+                SlashCommandPopup(
+                    commands: slashFilteredCommands,
+                    selectedIndex: slashSelectedIndex,
+                    palette: palette,
+                    isDark: isDark,
+                    onPick: { idx in onPickSlashCommand(idx) }
+                )
+                .frame(maxWidth: 460, alignment: .leading)
+                .transition(.opacity)
+            }
+
+            ChatInputTextView(
+                text: draftBinding,
+                placeholder: String(
+                    localized: "claudeChat.input.placeholder",
+                    defaultValue: "Ask Claude…"
+                ),
+                isDark: isDark,
+                textColor: textColor,
+                focusToken: focusToken,
+                measuredHeight: measuredHeightBinding,
+                onSubmit: onSubmit,
+                onCancel: onCancel,
+                onBecomeFirstResponder: onBecomeFirstResponder,
+                onArrowUp: onArrowUp,
+                onArrowDown: onArrowDown,
+                onTabKey: onTabKey,
+                onShiftTab: onShiftTab
+            )
+            .frame(height: min(max(measuredHeight, inputMinHeight), inputMaxHeight))
+            .padding(.horizontal, 8)
+            .padding(.vertical, 1)
+            .background(
+                RoundedRectangle(cornerRadius: 8)
+                    .fill(palette.inputBg(isDark))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 8)
+                            .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
+                    )
+            )
+
+            HStack(spacing: 8) {
+                Picker("", selection: permissionBinding) {
+                    ForEach(ChatPermissionMode.allCases) { mode in
+                        Label(mode.label, systemImage: mode.iconName).tag(mode)
+                    }
+                }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .help(String(
+                    localized: "claudeChat.mode.picker.tooltip",
+                    defaultValue: "How tool calls are gated for the next turn. Plan = read-only, Normal = ask each tool, Auto-edits = edits auto + bash asks, Bypass = everything auto."
+                ))
+                .frame(maxWidth: 110)
+
+                if let model = modelName, !model.isEmpty {
+                    Text(model)
+                        .font(.system(size: 10, design: .monospaced))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .background(Capsule().fill(palette.cardBg(isDark)))
+                        .help(String(
+                            localized: "claudeChat.model.tooltip",
+                            defaultValue: "Active Claude model"
+                        ))
+                }
+
+                Spacer(minLength: 4)
+
+                HStack(spacing: 6) {
+                    if isSending {
+                        Button(action: onCancelStreaming) {
+                            Image(systemName: "stop.fill")
+                                .frame(width: 12, height: 12)
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .tint(.red)
+                        .help(String(
+                            localized: "claudeChat.cancel.button",
+                            defaultValue: "Stop (Esc)"
+                        ))
+                    }
+                    Button(action: onSubmit) {
+                        Image(systemName: "arrow.up")
+                            .frame(width: 12, height: 12)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(isSendButtonDisabled)
+                    .help(String(
+                        localized: "claudeChat.send.button",
+                        defaultValue: "Send (Enter) — queues if Claude is still replying"
+                    ))
+                }
+            }
+        }
+        .padding(.vertical, 6)
+        .frame(maxWidth: maxContentWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .padding(.horizontal, 12)
+        .background(palette.headerBg(isDark))
     }
 }
 
@@ -3822,17 +3942,23 @@ struct ChatInputTextView: NSViewRepresentable {
                 chatTextView.window?.makeFirstResponder(chatTextView)
             }
         }
-        // Re-measure whenever SwiftUI re-renders (width may have changed
-        // because the panel resized) or whenever the text was replaced
-        // programmatically (e.g. cleared after submit).
-        DispatchQueue.main.async { [weak chatTextView, weak nsView] in
-            guard let tv = chatTextView, let sv = nsView else { return }
-            Self.reportHeight(textView: tv, scrollView: sv, into: context.coordinator)
-            if textDidChange {
-                // Scroll the caret back into view in case the text was
-                // shortened and the document is no longer scrolled past
-                // the visible area.
-                tv.scrollRangeToVisible(NSRange(location: tv.string.count, length: 0))
+        // Re-measure only when something that affects intrinsic height
+        // changed — either the text or the available width. SwiftUI
+        // re-evaluates this view on every parent body invalidation
+        // (~20 Hz during streaming), and layoutManager.usedRect/
+        // ensureLayout on long composers is non-trivial.
+        let currentWidth = nsView.contentSize.width
+        let widthChanged = abs(currentWidth - context.coordinator.lastMeasuredWidth) > 0.5
+        if textDidChange || widthChanged {
+            DispatchQueue.main.async { [weak chatTextView, weak nsView] in
+                guard let tv = chatTextView, let sv = nsView else { return }
+                Self.reportHeight(textView: tv, scrollView: sv, into: context.coordinator)
+                if textDidChange {
+                    // Scroll the caret back into view in case the text was
+                    // shortened and the document is no longer scrolled past
+                    // the visible area.
+                    tv.scrollRangeToVisible(NSRange(location: tv.string.count, length: 0))
+                }
             }
         }
     }
@@ -3860,11 +3986,18 @@ struct ChatInputTextView: NSViewRepresentable {
         if abs(coordinator.parent.measuredHeight - height) > 0.5 {
             coordinator.parent.measuredHeight = height
         }
+        coordinator.lastMeasuredWidth = containerWidth
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: ChatInputTextView
         var lastFocusToken: Int = 0
+        /// Cached scroll-view content width at the last time we ran the
+        /// layout-manager pass. `updateNSView` consults this to skip
+        /// `reportHeight` when neither text nor width changed — the
+        /// common case during streaming when the parent body invalidates
+        /// for unrelated reasons.
+        var lastMeasuredWidth: CGFloat = -1
 
         init(_ parent: ChatInputTextView) {
             self.parent = parent
