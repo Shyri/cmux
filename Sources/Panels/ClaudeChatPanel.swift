@@ -268,10 +268,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let attachmentURLs: [URL]
     }
 
-    /// Latest todo list emitted by Claude's `TodoWrite` tool. Replaced
-    /// in-place on every new `TodoWrite` call (matches the semantics of
-    /// the Claude Code TUI, where the checklist updates in place instead
-    /// of accumulating). `nil` until Claude calls the tool at least once.
+    /// Latest todo list emitted by Claude's `TodoWrite` (Claude Code 1.x)
+    /// or the cumulative state of per-task `TaskCreate`/`TaskUpdate`
+    /// calls (Claude Code 2.x). `TodoWrite` carries the full list each
+    /// time so we replace `currentTodos` outright; the per-task tools
+    /// only carry one task at a time, so we accumulate them into
+    /// `taskRegistryById` and rederive `currentTodos` after every
+    /// mutation. `nil` until Claude calls either family at least once.
     @Published private(set) var currentTodos: [TodoItem]?
 
     struct TodoItem: Equatable, Identifiable {
@@ -280,6 +283,22 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let activeForm: String?
         /// Raw status string ("pending" / "in_progress" / "completed").
         let status: String
+    }
+
+    /// Cumulative task state for Claude Code 2.x `TaskCreate`/`TaskUpdate`.
+    /// Keyed by the integer id the tool_result reports
+    /// (`Task #<id> created successfully: …`).
+    private var taskRegistryById: [Int: TodoItem] = [:]
+
+    /// Pending `TaskCreate` calls waiting for their tool_result to land
+    /// so we can learn the real id assigned by the harness. Keyed by
+    /// the assistant `tool_use.id` so we can match by id when the
+    /// matching `tool_result` arrives.
+    private var pendingTaskCreates: [String: PendingTaskCreate] = [:]
+
+    private struct PendingTaskCreate {
+        let subject: String
+        let activeForm: String?
     }
 
     struct RewindCheckpoint: Identifiable, Equatable {
@@ -345,6 +364,100 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 status: (raw["status"] as? String) ?? "pending"
             )
         }
+    }
+
+    /// Parse the JSON-encoded input of a Claude Code 2.x `TaskCreate`
+    /// tool call into a pending entry, waiting on the matching
+    /// `tool_result` to learn the real task id. Returns `nil` for
+    /// payloads without a usable subject.
+    private static func parsePendingTaskCreate(
+        fromInputJSON inputJSON: String
+    ) -> PendingTaskCreate? {
+        guard
+            let data = inputJSON.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let subject = (obj["subject"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard !subject.isEmpty else { return nil }
+        let activeForm = (obj["activeForm"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return PendingTaskCreate(
+            subject: subject,
+            activeForm: (activeForm?.isEmpty == false) ? activeForm : nil
+        )
+    }
+
+    /// Extract the task id the harness assigned out of the standard
+    /// `Task #<id> created successfully: …` tool_result body. Returns
+    /// nil for any other shape.
+    private static func parseTaskCreateResultId(
+        fromContent content: String
+    ) -> Int? {
+        // Cheap regex: capture digits after "Task #".
+        guard let range = content.range(
+            of: #"Task #(\d+) created"#,
+            options: .regularExpression
+        ) else { return nil }
+        let match = content[range]
+        guard let hashIdx = match.firstIndex(of: "#") else { return nil }
+        let digits = match[match.index(after: hashIdx)...]
+            .prefix(while: { $0.isNumber })
+        return Int(digits)
+    }
+
+    /// Parse a Claude Code 2.x `TaskUpdate` payload into the fields
+    /// the banner cares about (id, status, optional subject/activeForm
+    /// overrides). Returns nil if the payload doesn't carry a numeric
+    /// `taskId`.
+    private struct ParsedTaskUpdate {
+        let taskId: Int
+        let status: String?
+        let subject: String?
+        let activeForm: String?
+    }
+
+    private static func parseTaskUpdate(
+        fromInputJSON inputJSON: String
+    ) -> ParsedTaskUpdate? {
+        guard
+            let data = inputJSON.data(using: .utf8),
+            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return nil }
+        let rawId = obj["taskId"]
+        let taskId: Int?
+        if let int = rawId as? Int {
+            taskId = int
+        } else if let str = rawId as? String, let parsed = Int(str) {
+            taskId = parsed
+        } else {
+            taskId = nil
+        }
+        guard let taskId else { return nil }
+        let status = (obj["status"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let subject = (obj["subject"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        let activeForm = (obj["activeForm"] as? String)?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return ParsedTaskUpdate(
+            taskId: taskId,
+            status: (status?.isEmpty == false) ? status : nil,
+            subject: (subject?.isEmpty == false) ? subject : nil,
+            activeForm: (activeForm?.isEmpty == false) ? activeForm : nil
+        )
+    }
+
+    /// Project `taskRegistryById` (id → TodoItem) into the
+    /// id-ordered list the banner consumes. The `deleted` status is
+    /// filtered out — Claude Code 2.x exposes it as a real terminal
+    /// state but the banner only shows live work.
+    private func rebuildTodosFromRegistry() {
+        let live = taskRegistryById
+            .values
+            .filter { $0.status != "deleted" }
+            .sorted(by: { $0.id < $1.id })
+        currentTodos = live.isEmpty ? nil : live
     }
 
     /// Pre-staged turn anchor: the id and index of the user message that
@@ -988,6 +1101,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         undoCheckpoints.removeAll()
         pendingTurnStaging = nil
         currentTodos = nil
+        taskRegistryById.removeAll()
+        pendingTaskCreates.removeAll()
         pendingDrafts.removeAll()
         // Note: alwaysAllowedTools is intentionally preserved — it's persisted
         // in `.claude/settings.local.json` and represents user preferences
@@ -999,8 +1114,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `TodoWrite` history — the next call from Claude repopulates it.
     /// Used by the X button on the banner so the user can reclaim the
     /// vertical real estate when the checklist is no longer interesting.
+    ///
+    /// Note: with Claude Code 2.x `TaskCreate`/`TaskUpdate` we also clear
+    /// `taskRegistryById` so the next batch of per-task tools rebuilds
+    /// from scratch rather than re-rendering the same dismissed list.
     func dismissTodos() {
         currentTodos = nil
+        taskRegistryById.removeAll()
+        pendingTaskCreates.removeAll()
     }
 
     func approve(toolUseId: String) {
@@ -1110,6 +1231,50 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     currentTodos = parsed
                 }
             }
+            // Claude Code 2.x emits per-task tools instead of TodoWrite:
+            // TaskCreate adds a task (id assigned by the harness; we
+            // learn it from the matching tool_result later) and
+            // TaskUpdate mutates an existing one. Both rebuild the
+            // banner from `taskRegistryById`.
+            for case .toolUse(let toolUse) in blocks {
+                switch toolUse.name {
+                case "TaskCreate":
+                    if let pending = Self.parsePendingTaskCreate(
+                        fromInputJSON: toolUse.inputJSON
+                    ) {
+                        pendingTaskCreates[toolUse.id] = pending
+                    }
+                case "TaskUpdate":
+                    guard let update = Self.parseTaskUpdate(
+                        fromInputJSON: toolUse.inputJSON
+                    ) else { continue }
+                    if var existing = taskRegistryById[update.taskId] {
+                        let newStatus = update.status ?? existing.status
+                        let newContent = update.subject ?? existing.content
+                        let newActiveForm = update.activeForm ?? existing.activeForm
+                        existing = TodoItem(
+                            id: existing.id,
+                            content: newContent,
+                            activeForm: newActiveForm,
+                            status: newStatus
+                        )
+                        taskRegistryById[update.taskId] = existing
+                        rebuildTodosFromRegistry()
+                    } else if let subject = update.subject {
+                        // Update for a task we never saw the create
+                        // for (e.g. session resumed mid-flow). Seed it.
+                        taskRegistryById[update.taskId] = TodoItem(
+                            id: update.taskId,
+                            content: subject,
+                            activeForm: update.activeForm,
+                            status: update.status ?? "pending"
+                        )
+                        rebuildTodosFromRegistry()
+                    }
+                default:
+                    break
+                }
+            }
             // Stream-json sometimes splits a single assistant response
             // across several events that share the same `message.id`.
             // We keep each fragment as its own ChatMessage rather than
@@ -1136,6 +1301,21 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 switch block {
                 case .toolResult(let result):
                     toolResultsByToolUseId[result.toolUseId] = result
+                    // Claude Code 2.x TaskCreate: the harness reports
+                    // the assigned task id inside the tool_result body
+                    // as `Task #<id> created successfully: …`. When we
+                    // find a match for a pending TaskCreate, fold it
+                    // into the live registry.
+                    if let pending = pendingTaskCreates.removeValue(forKey: result.toolUseId),
+                       let realId = Self.parseTaskCreateResultId(fromContent: result.content) {
+                        taskRegistryById[realId] = TodoItem(
+                            id: realId,
+                            content: pending.subject,
+                            activeForm: pending.activeForm,
+                            status: "pending"
+                        )
+                        rebuildTodosFromRegistry()
+                    }
                 default:
                     passthrough.append(block)
                 }
