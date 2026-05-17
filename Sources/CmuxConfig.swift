@@ -1126,12 +1126,16 @@ struct CmuxSurfaceTabBarButton: Codable, Sendable, Hashable, Identifiable {
     static let newBrowser = actionReference(CmuxSurfaceTabBarBuiltInAction.newBrowser.configID)
     static let splitRight = actionReference(CmuxSurfaceTabBarBuiltInAction.splitRight.configID)
     static let splitDown = actionReference(CmuxSurfaceTabBarBuiltInAction.splitDown.configID)
+    static let openInFinder = actionReference(CmuxSurfaceTabBarBuiltInAction.openInFinder.configID)
+    static let openInIDE = actionReference(CmuxSurfaceTabBarBuiltInAction.openInIDE.configID)
 
     static let defaults: [CmuxSurfaceTabBarButton] = [
         .newTerminal,
         .newBrowser,
         .splitRight,
-        .splitDown
+        .splitDown,
+        .openInFinder,
+        .openInIDE
     ]
 
     static func builtIn(
@@ -1520,6 +1524,12 @@ struct CmuxResolvedConfigAction: Identifiable, Sendable, Hashable {
         case .splitDown:
             title = String(localized: "command.terminalSplitDown.title", defaultValue: "Split Down")
             keywords = ["terminal", "split", "down"]
+        case .openInFinder:
+            title = String(localized: "command.openInFinder.title", defaultValue: "Open in Finder")
+            keywords = ["open", "finder", "reveal", "folder", "directory"]
+        case .openInIDE:
+            title = String(localized: "command.openInIDE.title", defaultValue: "Open in IDE")
+            keywords = ["open", "ide", "intellij", "android studio", "editor"]
         }
 
         return CmuxResolvedConfigAction(

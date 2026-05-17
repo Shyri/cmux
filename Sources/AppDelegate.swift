@@ -13305,6 +13305,24 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 )
                 if didSplit { onExecuted?() }
                 return didSplit
+            case .openInFinder:
+                guard let workspace = context.tabManager.selectedWorkspace,
+                      let paneId = workspace.bonsplitController.focusedPaneId
+                          ?? workspace.bonsplitController.allPaneIds.first else {
+                    return false
+                }
+                workspace.revealFocusedPaneDirectoryInFinder(pane: paneId)
+                onExecuted?()
+                return true
+            case .openInIDE:
+                guard let workspace = context.tabManager.selectedWorkspace,
+                      let paneId = workspace.bonsplitController.focusedPaneId
+                          ?? workspace.bonsplitController.allPaneIds.first else {
+                    return false
+                }
+                workspace.openFocusedPaneDirectoryInIDE(pane: paneId)
+                onExecuted?()
+                return true
             }
         case .command, .agent, .workspaceCommand:
             guard let cmuxConfigStore = context.cmuxConfigStore else {

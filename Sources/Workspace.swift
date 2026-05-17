@@ -15030,6 +15030,102 @@ extension Workspace: BonsplitDelegate {
         return terminalPanel(for: panelId)
     }
 
+    /// Reveal the directory of the focused pane (or, if that's empty,
+    /// the workspace's `currentDirectory`) in Finder. Beeps when there
+    /// is no usable directory or the path doesn't exist.
+    func revealFocusedPaneDirectoryInFinder(pane: PaneID) {
+        guard let dir = resolvedOpenActionDirectory(forPane: pane) else {
+            NSSound.beep()
+            return
+        }
+        let url = URL(fileURLWithPath: dir)
+        NSWorkspace.shared.activateFileViewerSelecting([url])
+    }
+
+    /// Open the focused pane's working directory in IntelliJ IDEA or
+    /// Android Studio, picking the IDE by sniffing for Gradle build
+    /// scripts (`build.gradle` / `build.gradle.kts`) at the directory
+    /// root. Falls back to IntelliJ for non-Gradle projects. Tries the
+    /// app's bundle id first, then a CLI wrapper name (`idea`, `studio`)
+    /// found in the user's PATH, then beeps if neither resolved.
+    func openFocusedPaneDirectoryInIDE(pane: PaneID) {
+        guard let dir = resolvedOpenActionDirectory(forPane: pane) else {
+            NSSound.beep()
+            return
+        }
+        let isAndroidProject: Bool = {
+            let candidates = ["build.gradle", "build.gradle.kts"]
+            return candidates.contains { name in
+                FileManager.default.fileExists(
+                    atPath: (dir as NSString).appendingPathComponent(name)
+                )
+            }
+        }()
+        let candidateBundleIDs: [String] = isAndroidProject
+            ? ["com.google.android.studio", "com.jetbrains.intellij.ce", "com.jetbrains.intellij"]
+            : ["com.jetbrains.intellij.ce", "com.jetbrains.intellij", "com.google.android.studio"]
+
+        let projectURL = URL(fileURLWithPath: dir)
+        for bundleID in candidateBundleIDs {
+            guard let appURL = NSWorkspace.shared.urlForApplication(
+                withBundleIdentifier: bundleID
+            ) else { continue }
+            let configuration = NSWorkspace.OpenConfiguration()
+            configuration.activates = true
+            NSWorkspace.shared.open(
+                [projectURL],
+                withApplicationAt: appURL,
+                configuration: configuration,
+                completionHandler: nil
+            )
+            return
+        }
+
+        // Fallback to the CLI launchers if no app bundle is registered.
+        let cliNames = isAndroidProject ? ["studio", "idea"] : ["idea", "studio"]
+        for name in cliNames {
+            if let path = Self.findExecutableInUserPath(named: name) {
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: path)
+                process.arguments = [dir]
+                do {
+                    try process.run()
+                    return
+                } catch {
+                    continue
+                }
+            }
+        }
+        NSSound.beep()
+    }
+
+    private func resolvedOpenActionDirectory(forPane pane: PaneID) -> String? {
+        let candidate = resolvedDirectoryURL(forPane: pane)?.path
+            ?? currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+        let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: trimmed, isDirectory: &isDir),
+              isDir.boolValue else { return nil }
+        return trimmed
+    }
+
+    /// Search the user's interactive PATH (inherited from the launching
+    /// shell) for `name` and return the first executable match. Used as
+    /// a fallback when `NSWorkspace.urlForApplication(withBundleIdentifier:)`
+    /// can't find the IDE — common for users who installed via Toolbox
+    /// or Homebrew Cask without registering a launcher.
+    private static func findExecutableInUserPath(named name: String) -> String? {
+        let pathEnv = ProcessInfo.processInfo.environment["PATH"] ?? ""
+        for dir in pathEnv.split(separator: ":") {
+            let candidate = (String(dir) as NSString).appendingPathComponent(name)
+            if FileManager.default.isExecutableFile(atPath: candidate) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
     private func executeSurfaceTabBarCommandButton(identifier: String, inPane pane: PaneID) {
         guard let executable = surfaceTabBarCommandButtons[identifier] else {
             return
@@ -15050,6 +15146,10 @@ extension Workspace: BonsplitDelegate {
                 )
             case .newTerminal, .newBrowser, .splitRight, .splitDown:
                 break
+            case .openInFinder:
+                revealFocusedPaneDirectoryInFinder(pane: pane)
+            case .openInIDE:
+                openFocusedPaneDirectoryInIDE(pane: pane)
             }
             return
         }
