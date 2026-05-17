@@ -24,8 +24,6 @@ enum StatusLineRunner {
         let transcriptPath: String?
         let cwd: String
         let modelId: String?
-        let totalCostUSD: Double
-        let exceeds200kTokens: Bool
         let version: String
     }
 
@@ -140,15 +138,7 @@ enum StatusLineRunner {
             "version": info.version,
             "model": model,
             "workspace": workspace,
-            "exceeds_200k_tokens": info.exceeds200kTokens,
             "output_style": ["name": "default"],
-            "cost": [
-                "total_cost_usd": info.totalCostUSD,
-                "total_duration_ms": 0,
-                "total_api_duration_ms": 0,
-                "total_lines_added": 0,
-                "total_lines_removed": 0,
-            ],
         ]
         if let sid = info.sessionId { payload["session_id"] = sid }
         if let tp = info.transcriptPath { payload["transcript_path"] = tp }

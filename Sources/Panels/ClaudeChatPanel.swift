@@ -176,16 +176,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// are talking to.
     @Published private(set) var modelName: String?
 
-    /// Cumulative USD cost of the conversation, summed across `result`
-    /// events. Reset by `clearTranscript()`.
-    @Published private(set) var totalCostUSD: Double = 0
-
-    /// Most recent token-usage snapshot from claude — assistant
-    /// messages and the final result both report usage; we keep the
-    /// latest as the displayed counter so the badge reflects the
-    /// current turn's actual context size, including cache hits.
-    @Published private(set) var lastUsage: ChatTokenUsage?
-
     /// Stdout of the user's `statusLine.command` (project or user
     /// settings). `nil` when the user hasn't configured a status line
     /// or the command failed; refreshed after every turn.
@@ -1090,8 +1080,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         messages = ClaudeChatPanel.welcomeMessages()
         sessionId = nil
         modelName = nil
-        totalCostUSD = 0
-        lastUsage = nil
         pendingApprovals.removeAll()
         pendingQuestions.removeAll()
         questionDedupeAliases.removeAll()
@@ -1201,8 +1189,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let model, !model.isEmpty, modelName != model {
                 modelName = model
             }
-        case .assistant(let claudeMid, let blocks, let usage):
-            if let usage { lastUsage = usage }
+        case .assistant(let claudeMid, let blocks, _):
             guard !blocks.isEmpty else { return }
             // Detect attempts to call the non-functional built-in
             // `AskUserQuestion` and warn the user. Surface the tool name so
@@ -1331,18 +1318,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     isCollapsedByDefault: true
                 ))
             }
-        case .result(let isError, let sid, let errorMessage, let costUSD, let usage):
+        case .result(let isError, let sid, let errorMessage, _, _):
             if let sid, !sid.isEmpty, sessionId != sid {
                 sessionId = sid
             }
-            if let costUSD, costUSD > 0 {
-                totalCostUSD += costUSD
-            }
-            // Deliberately skip `lastUsage = usage` here: the `result`
-            // event reports a cumulative tally across every internal
-            // round of the turn (it can exceed the context window
-            // many times over after a long run). We only trust per-
-            // request usage from `.assistant` events for the chip.
             if isError, let errorMessage, !errorMessage.isEmpty {
                 status = .error(errorMessage)
             }
@@ -1412,8 +1391,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             transcriptPath: nil,
             cwd: cwd,
             modelId: modelName,
-            totalCostUSD: totalCostUSD,
-            exceeds200kTokens: lastUsage.map { $0.total > 200_000 } ?? false,
             version: Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
         )
         Task.detached { [weak self] in

@@ -83,7 +83,6 @@ enum SlashCommandRegistry {
         static let clear = "clear"
         static let rewind = "rewind"
         static let undo = "undo"
-        static let cost = "cost"
         static let permissions = "permissions"
         static let model = "model"
         static let help = "help"
@@ -116,15 +115,6 @@ enum SlashCommandRegistry {
             ),
             source: .builtin,
             action: .runBuiltin(BuiltinKey.undo)
-        ),
-        SlashCommand(
-            name: "cost",
-            description: String(
-                localized: "claudeChat.slash.cost.desc",
-                defaultValue: "Show the cumulative API cost for this chat"
-            ),
-            source: .builtin,
-            action: .runBuiltin(BuiltinKey.cost)
         ),
         SlashCommand(
             name: "model",

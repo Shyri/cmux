@@ -1169,15 +1169,6 @@ struct ClaudeChatPanelView: View {
                 .lineLimit(1)
                 .truncationMode(.middle)
             Spacer(minLength: 8)
-            if panel.totalCostUSD > 0 {
-                Text(formatCost(panel.totalCostUSD))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
-                    .help(String(localized: "claudeChat.cost.tooltip", defaultValue: "Cumulative API cost in USD"))
-            }
             if let sessionId = panel.sessionId {
                 Text(String(sessionId.prefix(8)))
                     .font(.system(size: 10, design: .monospaced))
@@ -1320,63 +1311,6 @@ struct ClaudeChatPanelView: View {
         .popover(isPresented: $showingAlwaysAllowedPopover, arrowEdge: .bottom) {
             AlwaysAllowedPopover(panel: panel)
         }
-    }
-
-    private func formatCost(_ usd: Double) -> String {
-        if usd < 0.01 {
-            return String(format: "$%.4f", usd)
-        }
-        return String(format: "$%.3f", usd)
-    }
-
-    /// Pretty-print a token count in compact form (12.3k, 1.2M).
-    private func formatTokens(_ n: Int) -> String {
-        if n >= 1_000_000 {
-            return String(format: "%.1fM", Double(n) / 1_000_000)
-        }
-        if n >= 1_000 {
-            return String(format: "%.1fk", Double(n) / 1_000)
-        }
-        return "\(n)"
-    }
-
-    /// Best-effort context-window size for the active model. Anthropic
-    /// model ids that carry the `[1m]` suffix run with a 1M context;
-    /// everything else assumes the standard 200k window.
-    private func contextWindowTokens(forModel model: String?) -> Int {
-        guard let model, !model.isEmpty else { return 200_000 }
-        return model.contains("[1m]") ? 1_000_000 : 200_000
-    }
-
-    /// Chip showing "<used> / <context>" tokens, anchored next to the
-    /// model chip. The total counts every token claude reported so far
-    /// for this turn (input + output + cache create/read), which is
-    /// what the user thinks of as "tokens consumed".
-    private func tokenUsageChip(_ usage: ChatTokenUsage) -> some View {
-        let used = usage.contextWindowTokens
-        let max = contextWindowTokens(forModel: panel.modelName)
-        let pct = Double(min(used, max)) / Double(max)
-        let color: Color = pct >= 0.85 ? ChatPalette.red
-            : pct >= 0.6 ? ChatPalette.orange
-            : .secondary
-        let label = "\(formatTokens(used)) / \(formatTokens(max))"
-        return Text(label)
-            .font(.system(size: 10, design: .monospaced))
-            .foregroundColor(color)
-            .padding(.horizontal, 6)
-            .padding(.vertical, 2)
-            .background(Capsule().fill(palette.cardBg(colorScheme == .dark)))
-            .help(String(
-                format: String(
-                    localized: "claudeChat.tokens.tooltip",
-                    defaultValue: "Tokens used in this turn — input %d, output %d, cache create %d, cache read %d (context window %@)"
-                ),
-                usage.inputTokens,
-                usage.outputTokens,
-                usage.cacheCreationInputTokens,
-                usage.cacheReadInputTokens,
-                formatTokens(max)
-            ))
     }
 
     private var permissionModePicker: some View {
@@ -1797,9 +1731,6 @@ struct ClaudeChatPanelView: View {
                             defaultValue: "Active Claude model"
                         ))
                 }
-                if let usage = panel.lastUsage {
-                    tokenUsageChip(usage)
-                }
                 Spacer(minLength: 4)
                 actionButton
             }
@@ -2157,16 +2088,6 @@ struct ClaudeChatPanelView: View {
             // Re-use the same dialog the header button raises.
             pendingRewindUserMessageId = nil
             showingUndoConfirmation = true
-        case SlashCommandRegistry.BuiltinKey.cost:
-            let value = panel.totalCostUSD
-            let msg = String(
-                format: String(
-                    localized: "claudeChat.slash.cost.message",
-                    defaultValue: "Cumulative API cost so far: %@"
-                ),
-                formatCost(value)
-            )
-            panel.appendSystemNotice(msg)
         case SlashCommandRegistry.BuiltinKey.model:
             let model = panel.modelName ?? String(
                 localized: "claudeChat.slash.model.unknown",
