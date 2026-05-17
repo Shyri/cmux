@@ -1137,9 +1137,40 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// from claude produces a single `@Published var messages` mutation
     /// — one body re-evaluation in the chat view, one markdown re-parse
     /// of the in-progress assistant bubble.
+    ///
+    /// Stream-json splits a single assistant response across many events
+    /// that share `claudeMessageId`; if the previous buffered entry is
+    /// also an assistant chunk with the same id we fold the new blocks
+    /// into it instead of appending a new `ChatMessage`. This keeps the
+    /// visible bubble count low on long replies (otherwise a 30 s
+    /// response would land as dozens of separate bubbles).
     private func enqueueStreamedMessage(_ message: ChatMessage) {
-        streamedMessageBuffer.append(message)
+        if Self.canMergeAssistantChunk(into: streamedMessageBuffer.last, from: message),
+           let lastIdx = streamedMessageBuffer.indices.last {
+            var merged = streamedMessageBuffer[lastIdx]
+            merged.blocks.append(contentsOf: message.blocks)
+            streamedMessageBuffer[lastIdx] = merged
+        } else {
+            streamedMessageBuffer.append(message)
+        }
         scheduleStreamedFlushIfNeeded()
+    }
+
+    /// Two-arg sibling of the merge check used at flush time too —
+    /// returns `true` only when both messages are assistant chunks
+    /// sharing a non-empty `claudeMessageId`.
+    private static func canMergeAssistantChunk(
+        into previous: ChatMessage?,
+        from new: ChatMessage
+    ) -> Bool {
+        guard let previous,
+              previous.role == .assistant,
+              new.role == .assistant,
+              let prevCmid = previous.claudeMessageId, !prevCmid.isEmpty,
+              let newCmid = new.claudeMessageId, !newCmid.isEmpty,
+              prevCmid == newCmid
+        else { return false }
+        return true
     }
 
     /// Stage a tool_result for `toolResultsByToolUseId` without
@@ -1162,12 +1193,29 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Drain both streamed buffers (messages + tool results) into their
     /// @Published containers. Safe to call multiple times: clears the
     /// scheduled flag and no-ops on whichever buffer is empty.
+    ///
+    /// Cross-flush merge: if the first buffered message is an assistant
+    /// chunk that shares `claudeMessageId` with the last already-
+    /// published message, fold its blocks into the published one via
+    /// whole-element replacement (`messages[i] = …`, which `@Published`
+    /// tolerates, unlike `messages[i].blocks.append(…)`).
     private func flushStreamedBatches() {
         streamedFlushScheduled = false
         if !streamedMessageBuffer.isEmpty {
-            let toAppend = streamedMessageBuffer
+            var toAppend = streamedMessageBuffer
             streamedMessageBuffer.removeAll(keepingCapacity: true)
-            messages.append(contentsOf: toAppend)
+
+            if let first = toAppend.first,
+               let lastPublishedIdx = messages.indices.last,
+               Self.canMergeAssistantChunk(into: messages[lastPublishedIdx], from: first) {
+                var merged = messages[lastPublishedIdx]
+                merged.blocks.append(contentsOf: first.blocks)
+                messages[lastPublishedIdx] = merged
+                toAppend.removeFirst()
+            }
+            if !toAppend.isEmpty {
+                messages.append(contentsOf: toAppend)
+            }
         }
         if !pendingToolResultsBuffer.isEmpty {
             let toMerge = pendingToolResultsBuffer
@@ -1391,14 +1439,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             }
             // Stream-json sometimes splits a single assistant response
             // across several events that share the same `message.id`.
-            // We keep each fragment as its own ChatMessage rather than
-            // mutating the previous one in place — `@Published var
-            // messages` only tolerates whole-element replacement
-            // safely; mutating `messages[i].blocks` mid-render trips
-            // SwiftUI's reentrant-layout guard and aborts the process.
-            // The tool-batch builder still groups consecutive
-            // `tool_use` blocks across messages, so the on-screen
-            // grouping is unaffected.
+            // `enqueueStreamedMessage` folds consecutive assistant
+            // chunks with matching `claudeMessageId` into one
+            // `ChatMessage` (in-buffer or via whole-element replacement
+            // at flush time — both are safe under `@Published`;
+            // `messages[i].blocks.append(…)` would NOT be, since that
+            // mutation trips SwiftUI's reentrant-layout guard mid-
+            // render). Net effect: one bubble per assistant response,
+            // not one bubble per NDJSON event.
             enqueueStreamedMessage(ChatMessage(
                 role: .assistant,
                 blocks: blocks,
