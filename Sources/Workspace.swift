@@ -8457,9 +8457,16 @@ final class Workspace: Identifiable, ObservableObject {
     }
 
     private func installClaudeChatPanelSubscription(_ claudeChatPanel: ClaudeChatPanel) {
+        // Throttle the tab-strip refresh to ~4 Hz. Streaming bumps
+        // `$messages` ~20 Hz; `bonsplitController.updateTab` only needs
+        // to repaint the badge/title/spinner a few times per second
+        // for the chrome to look live, and calling it on every chunk
+        // saturates the main thread with cheap-but-frequent diffs.
+        // `removeDuplicates()` is dropped because the throttle already
+        // de-bounces by time and equality on `[ChatMessage]` arrays is
+        // O(n) — wasteful here.
         let titleSub = claudeChatPanel.$messages
-            .removeDuplicates()
-            .receive(on: DispatchQueue.main)
+            .throttle(for: .milliseconds(250), scheduler: DispatchQueue.main, latest: true)
             .sink { [weak self, weak claudeChatPanel] _ in
                 guard let self, let panel = claudeChatPanel else { return }
                 self.refreshClaudeChatTabAppearance(panel)
