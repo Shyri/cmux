@@ -161,11 +161,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
     /// Initial window size when a panel is first created or `clearTranscript`
     /// runs. Picked to comfortably cover typical conversations while still
-    /// keeping the SwiftUI tree small.
-    static let defaultVisibleMessageWindow: Int = 120
+    /// keeping the SwiftUI tree small. Note: a single multi-tool turn can
+    /// produce 4-6 ChatMessage instances on the assistant side (stream-json
+    /// splits responses across events), so 60 covers roughly 8-10 turns.
+    static let defaultVisibleMessageWindow: Int = 60
 
     /// How many additional older messages each "load older" click reveals.
-    static let visibleMessageWindowStep: Int = 100
+    static let visibleMessageWindowStep: Int = 60
 
     /// Session id emitted by Claude on the first `system/init` event of a
     /// conversation. Required for `--resume` on subsequent turns.

@@ -1358,14 +1358,18 @@ struct ClaudeChatPanelView: View {
     private var messageList: some View {
         ScrollViewReader { proxy in
             ScrollView {
-                // VStack (not LazyVStack) so every row's true height is in
-                // the layout from the start. With LazyVStack the rows above
-                // the viewport are sized with placeholders, so scrollTo(
-                // .bottom) lands at an offset computed from estimated
-                // heights — once SwiftUI materialises the real rows the
-                // content grows underneath us and the visible area ends up
-                // in "void" until the user scrolls up and forces layout.
-                VStack(alignment: .leading, spacing: 12) {
+                // LazyVStack so rows outside the viewport stay
+                // un-materialised — at a 60-message visible window this
+                // is what keeps layout cost flat as conversations grow.
+                // Known tradeoff: `scrollTo(.bottom)` uses estimated
+                // heights for off-screen rows, so the first jump to
+                // bottom on a fresh chat may overshoot or undershoot
+                // until SwiftUI materialises the real rows. In practice
+                // the auto-scroll-to-bottom code paths re-fire on
+                // `panel.messages.count` change (see `.onChange` below)
+                // so the landing position corrects itself within one
+                // frame as rows materialise.
+                LazyVStack(alignment: .leading, spacing: 12) {
                     // Older messages outside the render window get a
                     // single banner instead of N hidden rows — this is
                     // what keeps long chats from staying sluggish after
