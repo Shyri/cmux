@@ -455,6 +455,21 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `handle(.result)` once we know which file backups claude wrote.
     private var pendingTurnStaging: (userMessageId: UUID, userMessageIndex: Int)?
 
+    /// Buffer of assistant/user messages parsed from the streaming
+    /// claude output but not yet visible to SwiftUI. Drained into
+    /// `@Published var messages` in batched flushes (`streamedFlushInterval`)
+    /// so the chat view doesn't re-evaluate its body — and the streaming
+    /// assistant bubble's `Markdown` widget doesn't re-parse the
+    /// ever-growing text — once per NDJSON event. Always touched on the
+    /// main actor (same as the stream handler).
+    private var streamedMessageBuffer: [ChatMessage] = []
+    private var streamedFlushScheduled = false
+    /// 80 ms ≈ 12 Hz visible-update cadence. Fast enough that streaming
+    /// still feels live, slow enough that long assistant replies drop
+    /// from O(n²) markdown re-parsing (one parse per token) to
+    /// O(n × n / flushSize).
+    private static let streamedFlushInterval: TimeInterval = 0.080
+
     /// Cached rules from `.claude/settings*.json`. Reloaded on every
     /// approval request so changes to the file are picked up live.
     private var cachedRulesCwd: String?
@@ -603,6 +618,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// user message picks up the conversation via `--resume`.
     func applyResumedTranscript(sessionId: String, messages: [ChatMessage]) {
         guard !messages.isEmpty else { return }
+        // Replacing the transcript wholesale — drop any in-flight
+        // streamed buffer so a stale flush can't smear yesterday's
+        // chunks on top of the resumed history.
+        streamedMessageBuffer.removeAll(keepingCapacity: false)
+        streamedFlushScheduled = false
         self.sessionId = sessionId
         self.messages = messages
         // Cap the visible window the same way `init` does so a long
@@ -719,6 +739,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         )
         // Stable id so the row is deterministic in the transcript.
         _ = localMessage.id
+        // Drain any pending streamed chunks before appending so the new
+        // user message lands at the actual tail of the transcript, not
+        // before un-flushed assistant tokens from the previous turn.
+        flushStreamedMessages()
         messages.append(localMessage)
         lastTurnEdits.removeAll()
         pendingTurnStaging = (userMessageId: localMessage.id, userMessageIndex: messages.count)
@@ -778,6 +802,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let attachmentURLs = consumedAttachments.map { $0.url }
         var localMessage = ChatMessage(role: .user, blocks: visibleText.isEmpty ? [] : [.text(visibleText)])
         localMessage.attachmentURLs = attachmentURLs
+        flushStreamedMessages()
         messages.append(localMessage)
         pendingAttachments.removeAll()
 
@@ -884,6 +909,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         if let backups = checkpoint.backups {
             restoredFiles = ClaudeSessionHistory.restore(backups).count
         }
+        // Drain any pending streamed chunks before we slice the
+        // transcript — otherwise a stale flush would re-introduce
+        // messages we just rolled back.
+        flushStreamedMessages()
         if checkpoint.userMessageIndex < messages.count {
             messages.removeSubrange(checkpoint.userMessageIndex ..< messages.count)
         }
@@ -1025,6 +1054,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// the user a one-shot informational message without involving claude.
     /// Markdown is rendered with the chat's normal theme.
     func appendSystemNotice(_ text: String) {
+        flushStreamedMessages()
         messages.append(.text(.system, text))
     }
 
@@ -1086,12 +1116,47 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         visibleMessageWindow = messages.count
     }
 
+    // MARK: - Streamed-message coalescing
+
+    /// Append a stream-derived message (assistant chunk, user passthrough
+    /// from the model, system warning emitted while parsing an event)
+    /// without publishing yet. The accumulated buffer is flushed
+    /// `streamedFlushInterval` later, so a burst of stream-json events
+    /// from claude produces a single `@Published var messages` mutation
+    /// — one body re-evaluation in the chat view, one markdown re-parse
+    /// of the in-progress assistant bubble.
+    private func enqueueStreamedMessage(_ message: ChatMessage) {
+        streamedMessageBuffer.append(message)
+        if !streamedFlushScheduled {
+            streamedFlushScheduled = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + Self.streamedFlushInterval) { [weak self] in
+                self?.flushStreamedMessages()
+            }
+        }
+    }
+
+    /// Drain the streamed buffer into `messages` in one mutation. Safe
+    /// to call multiple times: clears the scheduled flag and no-ops if
+    /// the buffer is empty.
+    private func flushStreamedMessages() {
+        streamedFlushScheduled = false
+        guard !streamedMessageBuffer.isEmpty else { return }
+        let toAppend = streamedMessageBuffer
+        streamedMessageBuffer.removeAll(keepingCapacity: true)
+        messages.append(contentsOf: toAppend)
+    }
+
     /// Reset the conversation: cancel any in-flight turn, drop the messages
     /// transcript, forget the session id (so the next turn starts a fresh
     /// claude session, not a `--resume`), and clear errors.
     func clearTranscript() {
         runner.cancel()
         ChatRowBuilderCache.shared.clear(panelId: id)
+        // Drop any in-flight streamed messages before we replace the
+        // transcript — otherwise the next flush would re-introduce them
+        // on top of the welcome messages.
+        streamedMessageBuffer.removeAll(keepingCapacity: false)
+        streamedFlushScheduled = false
         messages = ClaudeChatPanel.welcomeMessages()
         sessionId = nil
         modelName = nil
@@ -1215,7 +1280,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     defaultValue:
                         "⚠ The model invoked the non-functional built-in `AskUserQuestion` tool. cmux cannot answer it. Try rephrasing the request or restarting the chat — see the chat log for diagnostics."
                 )
-                messages.append(.text(.system, warning))
+                enqueueStreamedMessage(.text(.system, warning))
             }
             // Plan-mode approval card carries a `.borderedProminent`
             // "Auto-accept edits" button that AppKit promotes to default
@@ -1297,7 +1362,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             // The tool-batch builder still groups consecutive
             // `tool_use` blocks across messages, so the on-screen
             // grouping is unaffected.
-            messages.append(ChatMessage(
+            enqueueStreamedMessage(ChatMessage(
                 role: .assistant,
                 blocks: blocks,
                 claudeMessageId: claudeMid
@@ -1337,7 +1402,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 // expansion of a slash command), not from the human
                 // typing in the input — collapse by default so the
                 // transcript stays readable.
-                messages.append(ChatMessage(
+                enqueueStreamedMessage(ChatMessage(
                     role: .user,
                     blocks: passthrough,
                     isCollapsedByDefault: true
@@ -1370,6 +1435,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     }
 
     private func handle(completion: Result<Void, Error>) {
+        // The turn has ended. Drain any pending streamed-message
+        // chunks so the transcript reflects the full final state
+        // before the view reacts to status flipping to .idle/.error
+        // (and before we maybe append a synthesized error notice).
+        flushStreamedMessages()
         switch completion {
         case .success:
             if case .error = status {
