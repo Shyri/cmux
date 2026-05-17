@@ -1361,7 +1361,10 @@ struct ClaudeChatPanelView: View {
                         loadOlderBanner(hiddenCount: hiddenOlderCount)
                     }
                     let visibleMessages = Array(panel.messages.suffix(panel.visibleMessageWindow))
-                    let rows = ChatRowBuilder.buildRows(from: visibleMessages)
+                    let rows = ChatRowBuilderCache.shared.rows(
+                        for: panel.id,
+                        messages: visibleMessages
+                    )
                     ForEach(Array(rows.enumerated()), id: \.element.id) { idx, row in
                         rowView(row, isLast: idx == rows.count - 1)
                             .id(row.id)
@@ -4202,6 +4205,71 @@ enum ChatRow {
             let messageId: UUID
             let toolUse: ChatMessageBlock.ToolUse
         }
+    }
+}
+
+/// Per-panel cache for `ChatRowBuilder.buildRows`.
+///
+/// `messageList` rebuilds its rows on every `body` evaluation. With a
+/// 120-message visible window, walking all messages + their blocks adds
+/// up to milliseconds of work that fires every time the parent body
+/// invalidates (e.g. `panel.draft` mutating on every keystroke,
+/// `panel.permissionMode` changing, `panel.pendingAttachments` ticking,
+/// etc.) — all those cases produce identical input to `buildRows` and
+/// the result is wasted.
+///
+/// Signature is intentionally cheap: count of messages + identity of the
+/// first and last message + the last message's `plainText.count` and
+/// `blocks.count`. During streaming only the last assistant message
+/// mutates, so this signature flips on every new token; on every other
+/// re-render the signature is stable and the cached rows are reused.
+final class ChatRowBuilderCache {
+    static let shared = ChatRowBuilderCache()
+
+    private struct Entry {
+        let key: Int
+        let rows: [ChatRow]
+    }
+
+    private var cache: [UUID: Entry] = [:]
+    private let lock = NSLock()
+
+    func rows(for panelId: UUID, messages: [ChatMessage]) -> [ChatRow] {
+        let key = Self.signature(of: messages)
+        lock.lock()
+        if let entry = cache[panelId], entry.key == key {
+            let cached = entry.rows
+            lock.unlock()
+            return cached
+        }
+        lock.unlock()
+        let rows = ChatRowBuilder.buildRows(from: messages)
+        lock.lock()
+        cache[panelId] = Entry(key: key, rows: rows)
+        lock.unlock()
+        return rows
+    }
+
+    func clear(panelId: UUID) {
+        lock.lock()
+        cache.removeValue(forKey: panelId)
+        lock.unlock()
+    }
+
+    private static func signature(of messages: [ChatMessage]) -> Int {
+        var hasher = Hasher()
+        hasher.combine(messages.count)
+        if let first = messages.first {
+            hasher.combine(first.id)
+            hasher.combine(first.blocks.count)
+        }
+        if let last = messages.last {
+            hasher.combine(last.id)
+            hasher.combine(last.blocks.count)
+            hasher.combine(last.plainText.count)
+            hasher.combine(last.attachmentURLs.count)
+        }
+        return hasher.finalize()
     }
 }
 

@@ -579,6 +579,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         if let observer = ghosttyConfigObserver {
             NotificationCenter.default.removeObserver(observer)
         }
+        // Drop any rows the view's `ChatRowBuilderCache` may still be
+        // holding for this panel id, so a panel created with the same
+        // UUID later (e.g. session restore) doesn't see stale rows.
+        ChatRowBuilderCache.shared.clear(panelId: id)
     }
 
     /// Replace the panel's transcript with one loaded from a Claude
@@ -1077,6 +1081,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// claude session, not a `--resume`), and clear errors.
     func clearTranscript() {
         runner.cancel()
+        ChatRowBuilderCache.shared.clear(panelId: id)
         messages = ClaudeChatPanel.welcomeMessages()
         sessionId = nil
         modelName = nil
