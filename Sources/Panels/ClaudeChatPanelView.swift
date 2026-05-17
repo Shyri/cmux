@@ -3581,11 +3581,70 @@ private struct ToolResultCard: View {
 
 // MARK: - Theme
 
-/// Chat-specific markdown theme. Mirrors `cmuxMarkdownTheme` from
-/// `MarkdownPanelView` but with smaller margins and theme-aware colours.
-/// `palette` carries the user's terminal background/foreground so inline
-/// code highlight stays legible across themes.
+/// Process-wide cache for `cmuxChatMarkdownTheme`. The theme is purely
+/// derived from `(isDark, palette.terminalBg, palette.terminalFg)` —
+/// reconstructing it inside every `TextBlockRow.body` evaluation showed
+/// up as a hot allocator during streaming. Cache is tiny (the user's
+/// terminal palette doesn't change often) and the wrapper class is
+/// needed because `MarkdownUI.Theme` is a struct.
+private final class ChatMarkdownThemeCache {
+    static let shared = ChatMarkdownThemeCache()
+
+    private final class Box { let theme: Theme; init(_ t: Theme) { self.theme = t } }
+    private let cache = NSCache<NSString, Box>()
+    private let lock = NSLock()
+
+    init() {
+        cache.countLimit = 16
+    }
+
+    func theme(isDark: Bool, palette: ChatPalette) -> Theme {
+        let key = Self.cacheKey(isDark: isDark, palette: palette) as NSString
+        if let box = cache.object(forKey: key) {
+            return box.theme
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let box = cache.object(forKey: key) {
+            return box.theme
+        }
+        let theme = ChatMarkdownThemeCache.build(isDark: isDark, palette: palette)
+        cache.setObject(Box(theme), forKey: key)
+        return theme
+    }
+
+    private static func cacheKey(isDark: Bool, palette: ChatPalette) -> String {
+        "\(isDark ? "d" : "l")|\(Self.rgbHex(palette.terminalBg))|\(Self.rgbHex(palette.terminalFg))"
+    }
+
+    private static func rgbHex(_ color: NSColor) -> String {
+        let c = color.usingColorSpace(.sRGB) ?? color
+        let r = Int((c.redComponent * 255).rounded())
+        let g = Int((c.greenComponent * 255).rounded())
+        let b = Int((c.blueComponent * 255).rounded())
+        return String(format: "%02X%02X%02X", r, g, b)
+    }
+
+    private static func build(isDark: Bool, palette: ChatPalette) -> Theme {
+        cmuxChatMarkdownThemeUncached(isDark: isDark, palette: palette)
+    }
+}
+
+/// Chat-specific markdown theme — public entry point. Returns a cached
+/// instance keyed by `(isDark, palette terminal colors)` so repeated
+/// `TextBlockRow.body` evaluations during streaming don't reconstruct
+/// the closure-heavy `Theme` from scratch.
 private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme {
+    ChatMarkdownThemeCache.shared.theme(isDark: isDark, palette: palette)
+}
+
+/// Actual builder. Kept as a separate function so the cache wrapper
+/// stays tiny and the theme definition reads top-to-bottom unchanged.
+/// Mirrors `cmuxMarkdownTheme` from `MarkdownPanelView` but with smaller
+/// margins and theme-aware colours. `palette` carries the user's
+/// terminal background/foreground so inline code highlight stays
+/// legible across themes.
+private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette) -> Theme {
     Theme()
         .text {
             ForegroundColor(palette.fg(isDark))
