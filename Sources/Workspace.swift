@@ -572,11 +572,23 @@ extension Workspace {
             rightSidebarToolSnapshot = SessionRightSidebarToolPanelSnapshot(mode: toolPanel.mode)
             claudeChatSnapshot = nil
         case .claudeChat:
-            // Phase 4 will persist the session id, working directory and a
-            // path to a JSONL transcript here. Phase 1 returns nil so chat
-            // panels are simply omitted from the snapshot (i.e. they do not
-            // restore on relaunch).
-            return nil
+            guard let chatPanel = panel as? ClaudeChatPanel else { return nil }
+            terminalSnapshot = nil
+            browserSnapshot = nil
+            markdownSnapshot = nil
+            filePreviewSnapshot = nil
+            rightSidebarToolSnapshot = nil
+            // Persist sessionId + workingDirectory so relaunch can hand
+            // them back to `newClaudeChatSurface(resumingSessionId:)`,
+            // which re-hydrates from the Claude Code JSONL transcript.
+            // `transcriptPath` is left nil because the path is fully
+            // derived from sessionId + cwd at restore time
+            // (`ClaudeSessionHistory.transcriptURL`).
+            claudeChatSnapshot = SessionClaudeChatPanelSnapshot(
+                sessionId: chatPanel.sessionId,
+                workingDirectory: chatPanel.workingDirectory,
+                transcriptPath: nil
+            )
         }
 
         return SessionPanelSnapshot(
@@ -940,10 +952,28 @@ extension Workspace {
             applySessionPanelMetadata(snapshot, toPanelId: toolPanel.id)
             return toolPanel.id
         case .claudeChat:
-            // Phase 4 will recreate the panel with the persisted sessionId,
-            // working directory and JSONL transcript. Phase 1 has no chat
-            // payload to restore from so we simply skip.
-            return nil
+            let chatSnapshot = snapshot.claudeChat
+            let rawCwd = chatSnapshot?.workingDirectory?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let workingDirectory = rawCwd.isEmpty
+                ? currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+                : rawCwd
+            let resolvedDirectory = workingDirectory.isEmpty
+                ? FileManager.default.homeDirectoryForCurrentUser.path
+                : workingDirectory
+            let trimmedSessionId = chatSnapshot?.sessionId?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let resumeId = (trimmedSessionId?.isEmpty == false) ? trimmedSessionId : nil
+            guard let chatPanel = newClaudeChatSurface(
+                inPane: paneId,
+                workingDirectory: resolvedDirectory,
+                resumingSessionId: resumeId,
+                focus: false
+            ) else {
+                return nil
+            }
+            applySessionPanelMetadata(snapshot, toPanelId: chatPanel.id)
+            return chatPanel.id
         }
     }
 
