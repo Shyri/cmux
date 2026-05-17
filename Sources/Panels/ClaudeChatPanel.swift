@@ -472,6 +472,15 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// O(n × n / flushSize).
     private static let streamedFlushInterval: TimeInterval = 0.080
 
+    /// Buffer of tool_result blocks parsed off the stream but not yet
+    /// pushed to `toolResultsByToolUseId`. A turn with many tool calls
+    /// otherwise publishes one @Published mutation per tool_result,
+    /// invalidating the chat body repeatedly even though SwiftUI just
+    /// needs to see the final dict at the end of the turn (or at a
+    /// human-perceptible cadence). Shares the streamed-message flush
+    /// timer so both buffers drain in the same main-actor hop.
+    private var pendingToolResultsBuffer: [String: ChatMessageBlock.ToolResult] = [:]
+
     /// Cached rules from `.claude/settings*.json`. Reloaded on every
     /// approval request so changes to the file are picked up live.
     private var cachedRulesCwd: String?
@@ -624,6 +633,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // streamed buffer so a stale flush can't smear yesterday's
         // chunks on top of the resumed history.
         streamedMessageBuffer.removeAll(keepingCapacity: false)
+        pendingToolResultsBuffer.removeAll(keepingCapacity: false)
         streamedFlushScheduled = false
         self.sessionId = sessionId
         self.messages = messages
@@ -1118,7 +1128,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         visibleMessageWindow = messages.count
     }
 
-    // MARK: - Streamed-message coalescing
+    // MARK: - Streamed-batch coalescing
 
     /// Append a stream-derived message (assistant chunk, user passthrough
     /// from the model, system warning emitted while parsing an event)
@@ -1129,23 +1139,47 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// of the in-progress assistant bubble.
     private func enqueueStreamedMessage(_ message: ChatMessage) {
         streamedMessageBuffer.append(message)
-        if !streamedFlushScheduled {
-            streamedFlushScheduled = true
-            DispatchQueue.main.asyncAfter(deadline: .now() + Self.streamedFlushInterval) { [weak self] in
-                self?.flushStreamedMessages()
-            }
+        scheduleStreamedFlushIfNeeded()
+    }
+
+    /// Stage a tool_result for `toolResultsByToolUseId` without
+    /// publishing yet. Shares the streamed-batch flush so the dict
+    /// updates land in the same main-actor hop as the matching
+    /// assistant message chunks.
+    private func enqueueStreamedToolResult(_ result: ChatMessageBlock.ToolResult) {
+        pendingToolResultsBuffer[result.toolUseId] = result
+        scheduleStreamedFlushIfNeeded()
+    }
+
+    private func scheduleStreamedFlushIfNeeded() {
+        guard !streamedFlushScheduled else { return }
+        streamedFlushScheduled = true
+        DispatchQueue.main.asyncAfter(deadline: .now() + Self.streamedFlushInterval) { [weak self] in
+            self?.flushStreamedBatches()
         }
     }
 
-    /// Drain the streamed buffer into `messages` in one mutation. Safe
-    /// to call multiple times: clears the scheduled flag and no-ops if
-    /// the buffer is empty.
-    private func flushStreamedMessages() {
+    /// Drain both streamed buffers (messages + tool results) into their
+    /// @Published containers. Safe to call multiple times: clears the
+    /// scheduled flag and no-ops on whichever buffer is empty.
+    private func flushStreamedBatches() {
         streamedFlushScheduled = false
-        guard !streamedMessageBuffer.isEmpty else { return }
-        let toAppend = streamedMessageBuffer
-        streamedMessageBuffer.removeAll(keepingCapacity: true)
-        messages.append(contentsOf: toAppend)
+        if !streamedMessageBuffer.isEmpty {
+            let toAppend = streamedMessageBuffer
+            streamedMessageBuffer.removeAll(keepingCapacity: true)
+            messages.append(contentsOf: toAppend)
+        }
+        if !pendingToolResultsBuffer.isEmpty {
+            let toMerge = pendingToolResultsBuffer
+            pendingToolResultsBuffer.removeAll(keepingCapacity: true)
+            toolResultsByToolUseId.merge(toMerge) { _, new in new }
+        }
+    }
+
+    /// Compatibility shim — callers that historically only cared about
+    /// the message buffer keep working; both buffers drain together.
+    private func flushStreamedMessages() {
+        flushStreamedBatches()
     }
 
     /// Reset the conversation: cancel any in-flight turn, drop the messages
@@ -1158,6 +1192,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // transcript — otherwise the next flush would re-introduce them
         // on top of the welcome messages.
         streamedMessageBuffer.removeAll(keepingCapacity: false)
+        pendingToolResultsBuffer.removeAll(keepingCapacity: false)
         streamedFlushScheduled = false
         messages = ClaudeChatPanel.welcomeMessages()
         sessionId = nil
@@ -1379,7 +1414,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             for block in blocks {
                 switch block {
                 case .toolResult(let result):
-                    toolResultsByToolUseId[result.toolUseId] = result
+                    enqueueStreamedToolResult(result)
                     // Claude Code 2.x TaskCreate: the harness reports
                     // the assigned task id inside the tool_result body
                     // as `Task #<id> created successfully: …`. When we
