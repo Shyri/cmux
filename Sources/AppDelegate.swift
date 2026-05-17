@@ -13323,6 +13323,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 workspace.openFocusedPaneDirectoryInIDE(pane: paneId)
                 onExecuted?()
                 return true
+            case .toggleNotes:
+                guard let workspace = context.tabManager.selectedWorkspace else {
+                    return false
+                }
+                NotificationCenter.default.post(
+                    name: .cmuxWorkspaceRequestToggleNotesSidebar,
+                    object: nil,
+                    userInfo: [Workspace.toggleNotesWorkspaceIdKey: workspace.id]
+                )
+                onExecuted?()
+                return true
+            case .newClaudeChat:
+                guard context.tabManager.openClaudeChat() != nil else { return false }
+                onExecuted?()
+                return true
             }
         case .command, .agent, .workspaceCommand:
             guard let cmuxConfigStore = context.cmuxConfigStore else {

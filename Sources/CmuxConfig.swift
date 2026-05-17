@@ -1128,12 +1128,16 @@ struct CmuxSurfaceTabBarButton: Codable, Sendable, Hashable, Identifiable {
     static let splitDown = actionReference(CmuxSurfaceTabBarBuiltInAction.splitDown.configID)
     static let openInFinder = actionReference(CmuxSurfaceTabBarBuiltInAction.openInFinder.configID)
     static let openInIDE = actionReference(CmuxSurfaceTabBarBuiltInAction.openInIDE.configID)
+    static let toggleNotes = actionReference(CmuxSurfaceTabBarBuiltInAction.toggleNotes.configID)
+    static let newClaudeChat = actionReference(CmuxSurfaceTabBarBuiltInAction.newClaudeChat.configID)
 
     static let defaults: [CmuxSurfaceTabBarButton] = [
         .newTerminal,
         .newBrowser,
+        .newClaudeChat,
         .splitRight,
         .splitDown,
+        .toggleNotes,
         .openInFinder,
         .openInIDE
     ]
@@ -1530,6 +1534,12 @@ struct CmuxResolvedConfigAction: Identifiable, Sendable, Hashable {
         case .openInIDE:
             title = String(localized: "command.openInIDE.title", defaultValue: "Open in IDE")
             keywords = ["open", "ide", "intellij", "android studio", "editor"]
+        case .toggleNotes:
+            title = String(localized: "command.toggleNotes.title", defaultValue: "Toggle Notes")
+            keywords = ["toggle", "notes", "sidebar", "gitlab"]
+        case .newClaudeChat:
+            title = String(localized: "command.newClaudeChat.title", defaultValue: "New Claude Chat")
+            keywords = ["claude", "chat", "new", "tab", "agent"]
         }
 
         return CmuxResolvedConfigAction(
@@ -2208,8 +2218,12 @@ final class CmuxConfigStore: ObservableObject {
         }) ?? [
             .builtIn(.newTerminal),
             .builtIn(.newBrowser),
+            .builtIn(.newClaudeChat),
             .builtIn(.splitRight),
-            .builtIn(.splitDown)
+            .builtIn(.splitDown),
+            .builtIn(.toggleNotes),
+            .builtIn(.openInFinder),
+            .builtIn(.openInIDE)
         ]
         let resolvedButtons = resolvedSurfaceTabBarButtons(
             configuredButtons,

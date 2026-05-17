@@ -18,6 +18,15 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
     /// Android Studio depending on whether a Gradle build script is
     /// present (mirrors the legacy fork's auto-detection behaviour).
     case openInIDE = "cmux.openInIDE"
+    /// Toggle the workspace's per-window notes sidebar (which also
+    /// embeds the GitLab side panel). Same intent as the old bonsplit
+    /// `showNotesButton` flag.
+    case toggleNotes = "cmux.toggleNotes"
+    /// Open a new Claude Chat panel in the focused pane. Same intent
+    /// as the old bonsplit `showClaudeChatButton` flag, but goes
+    /// through cmux's `TabManager.openClaudeChat()` so it picks up the
+    /// same cwd inference + JSONL resume behaviour.
+    case newClaudeChat = "cmux.newClaudeChat"
 
     init?(configID: String) {
         switch configID {
@@ -41,6 +50,10 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
              "cmux.openInIntelliJ", "openInIntelliJ", "cmux.openInIntellij", "openInIntellij",
              "cmux.openInAndroidStudio", "openInAndroidStudio":
             self = .openInIDE
+        case "cmux.toggleNotes", "toggleNotes", "cmux.notes", "notes":
+            self = .toggleNotes
+        case "cmux.newClaudeChat", "newClaudeChat", "cmux.claudeChat", "claudeChat":
+            self = .newClaudeChat
         default:
             return nil
         }
@@ -71,12 +84,17 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
             // app (IntelliJ vs Android Studio) at click time based on
             // the resolved cwd's Gradle markers.
             return "hammer"
+        case .toggleNotes:
+            return "note.text"
+        case .newClaudeChat:
+            return "bubble.left.and.bubble.right"
         }
     }
 
     var bonsplitAction: BonsplitConfiguration.SplitActionButton.Action? {
         switch self {
-        case .newWorkspace, .cloudVM, .openInFinder, .openInIDE:
+        case .newWorkspace, .cloudVM, .openInFinder, .openInIDE,
+             .toggleNotes, .newClaudeChat:
             return nil
         case .newTerminal:
             return .newTerminal

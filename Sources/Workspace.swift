@@ -15180,6 +15180,23 @@ extension Workspace: BonsplitDelegate {
                 revealFocusedPaneDirectoryInFinder(pane: pane)
             case .openInIDE:
                 openFocusedPaneDirectoryInIDE(pane: pane)
+            case .toggleNotes:
+                NotificationCenter.default.post(
+                    name: .cmuxWorkspaceRequestToggleNotesSidebar,
+                    object: nil,
+                    userInfo: [Workspace.toggleNotesWorkspaceIdKey: id]
+                )
+            case .newClaudeChat:
+                let cwd = resolvedDirectoryURL(forPane: pane)?.path
+                    ?? currentDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+                let workingDirectory = cwd.isEmpty
+                    ? FileManager.default.homeDirectoryForCurrentUser.path
+                    : cwd
+                _ = newClaudeChatSurface(
+                    inPane: pane,
+                    workingDirectory: workingDirectory,
+                    focus: true
+                )
             }
             return
         }
