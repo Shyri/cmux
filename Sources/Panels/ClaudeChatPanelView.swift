@@ -2358,6 +2358,22 @@ private struct ToolUseCard: View {
             if let todos = parsedInput?["todos"] as? [[String: Any]] {
                 return "\(todos.count) todos"
             }
+        case "TaskCreate":
+            // Claude Code 2.x split TodoWrite into per-task tools.
+            // TaskCreate carries a single task at a time — show its
+            // subject so the card header is meaningful.
+            if let subject = parsedInput?["subject"] as? String, !subject.isEmpty {
+                return subject
+            }
+        case "TaskUpdate":
+            if let status = parsedInput?["status"] as? String, !status.isEmpty {
+                if let subject = parsedInput?["subject"] as? String, !subject.isEmpty {
+                    return "\(status): \(subject)"
+                }
+                return status
+            }
+        case "TaskList", "TaskGet", "TaskOutput", "TaskStop":
+            return ""
         case "ExitPlanMode":
             if let plan = parsedInput?["plan"] as? String {
                 // First non-empty line, stripped of leading markdown
@@ -2614,7 +2630,8 @@ private struct ToolUseCard: View {
             return "sparkles"
         case "Task":
             return "person.2"
-        case "TodoWrite":
+        case "TodoWrite", "TaskCreate", "TaskUpdate", "TaskList",
+             "TaskGet", "TaskOutput", "TaskStop":
             return "checklist"
         case "ExitPlanMode":
             return "list.bullet.rectangle"
@@ -3812,10 +3829,16 @@ struct ChatInputTextView: NSViewRepresentable {
         chatTextView.onTabKey = onTabKey
         chatTextView.onShiftTab = onShiftTab
         // Honor an external focus request — bump the token via @State and
-        // we steal first-responder on the next render.
+        // we steal first-responder on the next render. Mark the
+        // upcoming `becomeFirstResponder` as programmatic so it does
+        // not feed back into `onRequestPanelFocus()` and re-trigger
+        // `Workspace.focusPanel(panel)` — that loop would otherwise
+        // alternate the two chat panels' tokens forever when both
+        // share a pane (see `suppressNextBecomeFirstResponderNotification`).
         if context.coordinator.lastFocusToken != focusToken {
             context.coordinator.lastFocusToken = focusToken
             DispatchQueue.main.async {
+                chatTextView.suppressNextBecomeFirstResponderNotification = true
                 chatTextView.window?.makeFirstResponder(chatTextView)
             }
         }
@@ -3891,6 +3914,23 @@ final class ChatInputNSTextView: NSTextView {
     /// keystrokes from leaking to a sibling terminal that bonsplit still
     /// remembers as focused.
     var onBecomeFirstResponder: (() -> Void)?
+    /// When set, the next `becomeFirstResponder` accepted by AppKit
+    /// does NOT fire `onBecomeFirstResponder`. `updateNSView` flips
+    /// this on right before a programmatic `makeFirstResponder(...)`
+    /// triggered by a `focusToken` bump.
+    ///
+    /// Why: `Workspace.focusPanel(panel)` ends up calling
+    /// `panel.focus()` which bumps `inputFocusRequestToken`. The view
+    /// observes the bump and asks the window to make the input view
+    /// first responder. AppKit calls `becomeFirstResponder()` here,
+    /// which previously fed back into `onRequestPanelFocus()` →
+    /// `Workspace.focusPanel(panel)` again, creating an infinite
+    /// focus-fight when two Claude Chat panels share a pane (AppKit
+    /// ping-pongs the responder between the two off-screen
+    /// `ChatInputNSTextView` instances that bonsplit keeps mounted).
+    /// User clicks/keystrokes are unaffected — they don't go through
+    /// `makeFirstResponder(_:)`, so the flag stays false.
+    var suppressNextBecomeFirstResponderNotification: Bool = false
     /// Optional intercepts for popup-driven UI (e.g. slash-command
     /// dropdown) and terminal-style affordances. Each handler returns
     /// `true` to swallow the key, `false` to fall through to the normal
@@ -3910,7 +3950,13 @@ final class ChatInputNSTextView: NSTextView {
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
-        if ok { onBecomeFirstResponder?() }
+        if ok {
+            if suppressNextBecomeFirstResponderNotification {
+                suppressNextBecomeFirstResponderNotification = false
+            } else {
+                onBecomeFirstResponder?()
+            }
+        }
         return ok
     }
 
