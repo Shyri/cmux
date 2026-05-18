@@ -1599,9 +1599,14 @@ struct ClaudeChatPanelView: View {
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
         isAtBottom = true
-        withAnimation(.easeOut(duration: 0.2)) {
-            proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
-        }
+        // No animation: animating `scrollTo(.bottom)` in a LazyVStack
+        // when the target is far below crosses non-materialised rows
+        // (visible white flash) and lands at an offset computed from
+        // ESTIMATED row heights, which then snaps back once the real
+        // rows materialise — the "salta lejos, blanco, rebota" pattern.
+        // Instant jump avoids both. `autoScrollIfStuck` keeps its
+        // animation because those scroll deltas are tiny during streaming.
+        proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
     }
 
     @ViewBuilder
