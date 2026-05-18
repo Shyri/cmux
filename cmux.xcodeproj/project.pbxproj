@@ -524,6 +524,16 @@
 		FEEDC0DEC0DEC0DEC0DE0001 /* FeedCoordinatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = FEEDC0DEC0DEC0DEC0DE0002 /* FeedCoordinatorTests.swift */; };
 		FF2C8C276A6A5FABAC86FF5A /* PipelinesListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8D4FF477D57CE2FE989D6A80 /* PipelinesListView.swift */; };
 		FF6E81BA95F6184F669B8992 /* WorkspaceNotesManagerWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = F77173936EE81E14BBC864EE /* WorkspaceNotesManagerWindowController.swift */; };
+		5C3E0454B6C24B02A2F091A8 /* ShortcutRoutingSupport.swift in Sources */ = {isa = PBXBuildFile; fileRef = B42A82C6AA614E74873D9A5F /* ShortcutRoutingSupport.swift */; };
+		A5001434A5001434A5001434 /* FilePreviewPDFThumbnailCollectionView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001433A5001433A5001433 /* FilePreviewPDFThumbnailCollectionView.swift */; };
+		A5001436A5001436A5001436 /* FilePreviewPDFThumbnailSidebarTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001435A5001435A5001435 /* FilePreviewPDFThumbnailSidebarTests.swift */; };
+		5B07C781F6695279CD440CF7 /* SessionPreset.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71A8A901AC678DA9C3F61D92 /* SessionPreset.swift */; };
+		5DE99405E66649D07FE0EF9F /* GitLabProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */; };
+		D35B71010000000000000001 /* StartupBreadcrumbLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35B71010000000000000002 /* StartupBreadcrumbLog.swift */; };
+		A5001432A5001432A5001432 /* FilePreviewFocusCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001431A5001431A5001431 /* FilePreviewFocusCoordinator.swift */; };
+		A5001425 /* PDFPreviewChromeDebugWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001424 /* PDFPreviewChromeDebugWindowController.swift */; };
+		A5001427 /* FilePreviewPDFSizing.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001426 /* FilePreviewPDFSizing.swift */; };
+		A5001429 /* FilePreviewPDFViewport.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001428 /* FilePreviewPDFViewport.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -1103,6 +1113,12 @@
 		FEED0A00000000000000F006 /* feed-tui */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = folder; path = "feed-tui"; sourceTree = "<group>"; };
 		FEEDC0DEC0DEC0DEC0DE0002 /* FeedCoordinatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FeedCoordinatorTests.swift; sourceTree = "<group>"; };
 		IC000002 /* AppIcon.icon */ = {isa = PBXFileReference; lastKnownFileType = folder; path = AppIcon.icon; sourceTree = "<group>"; };
+		A5001435A5001435A5001435 /* FilePreviewPDFThumbnailSidebarTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = FilePreviewPDFThumbnailSidebarTests.swift; sourceTree = "<group>"; };
+		A5001433A5001433A5001433 /* FilePreviewPDFThumbnailCollectionView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewPDFThumbnailCollectionView.swift; sourceTree = "<group>"; };
+		A5001431A5001431A5001431 /* FilePreviewFocusCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewFocusCoordinator.swift; sourceTree = "<group>"; };
+		A5001424 /* PDFPreviewChromeDebugWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/PDFPreviewChromeDebugWindowController.swift; sourceTree = "<group>"; };
+		A5001426 /* FilePreviewPDFSizing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewPDFSizing.swift; sourceTree = "<group>"; };
+		A5001428 /* FilePreviewPDFViewport.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/FilePreviewPDFViewport.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -3023,10 +3039,6 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/CMUXSocketPathDomain;
 		};
-		A5001260 /* XCLocalSwiftPackageReference "bonsplit" */ = {
-			isa = XCLocalSwiftPackageReference;
-			relativePath = Packages/CMUXAgentLaunch;
-		};
 		AA11BB22CC33DD44EE550003 /* XCLocalSwiftPackageReference "CMUXWorkstream" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/CMUXWorkstream;
@@ -3034,6 +3046,10 @@
 		F53000A1A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXAgentVault" */ = {
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/CMUXAgentVault;
+		};
+		A5B00001A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXAgentLaunch" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/CMUXAgentLaunch;
 		};
 /* End XCLocalSwiftPackageReference section */
 
@@ -3128,16 +3144,6 @@
 			package = A5001292 /* XCRemoteSwiftPackageReference "swift-markdown-ui" */;
 			productName = MarkdownUI;
 		};
-		A500D013A1B2C3D4E5F60718 /* CMUXDebugLog */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A500D012A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXDebugLog" */;
-			productName = CMUXDebugLog;
-		};
-		A5B00002A1B2C3D4E5F60718 /* CMUXAgentLaunch */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = A5B00001A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXAgentLaunch" */;
-			productName = CMUXAgentLaunch;
-		};
 		A8BD195031FC4B82B4354297 /* StackAuth */ = {
 			isa = XCSwiftPackageProductDependency;
 			package = 28B798BB9086C8E6B60C3355 /* XCLocalSwiftPackageReference "stack-auth-swift-sdk-prerelease" */;
@@ -3147,11 +3153,6 @@
 			isa = XCSwiftPackageProductDependency;
 			package = AA11BB22CC33DD44EE550003 /* XCLocalSwiftPackageReference "CMUXWorkstream" */;
 			productName = CMUXWorkstream;
-		};
-		F53000A2A1B2C3D4E5F60718 /* CMUXAgentVault */ = {
-			isa = XCSwiftPackageProductDependency;
-			package = F53000A1A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXAgentVault" */;
-			productName = CMUXAgentVault;
 		};
 /* End XCSwiftPackageProductDependency section */
 	};

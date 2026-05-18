@@ -9864,9 +9864,8 @@ struct VerticalTabsSidebar: View {
                     sidebarIndexForTabId: { workspaceId in
                         tabManager.tabs.firstIndex { $0.id == workspaceId }
                     },
-                    moveToExistingWorkspace: { workspaceId in
-                        guard let transfer = BonsplitTabDragPayload.currentTransfer(),
-                              let app = AppDelegate.shared else {
+                    moveToExistingWorkspace: { workspaceId, transfer in
+                        guard let app = AppDelegate.shared else {
                             return false
                         }
                         if let source = app.locateBonsplitSurface(tabId: transfer.tab.id),
@@ -9880,9 +9879,8 @@ struct VerticalTabsSidebar: View {
                             focusWindow: true
                         )
                     },
-                    moveToNewWorkspace: { insertionIndex in
-                        guard let transfer = BonsplitTabDragPayload.currentTransfer(),
-                              let app = AppDelegate.shared,
+                    moveToNewWorkspace: { insertionIndex, transfer in
+                        guard let app = AppDelegate.shared,
                               let result = app.moveBonsplitTabToNewWorkspace(
                                 tabId: transfer.tab.id,
                                 destinationManager: tabManager,
@@ -14703,6 +14701,11 @@ enum BonsplitTabDragPayload {
 
     static func currentTransfer() -> Transfer? {
         transfer(from: NSPasteboard(name: .drag))
+    }
+
+    static func canRouteWorkspaceDrop(pasteboardTypes: [NSPasteboard.PasteboardType]?) -> Bool {
+        DragOverlayRoutingPolicy.hasBonsplitTabTransfer(pasteboardTypes)
+            && !DragOverlayRoutingPolicy.hasFilePreviewTransfer(pasteboardTypes)
     }
 
     static func transfer(from pasteboard: NSPasteboard) -> Transfer? {
