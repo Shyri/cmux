@@ -1,6 +1,6 @@
 import AppKit
 import Bonsplit
-import MarkdownUI
+import MarkdownView
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -2923,15 +2923,18 @@ private struct ExitPlanModeView: View {
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
             } else {
-                Markdown(trimmed)
-                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .padding(10)
-                    .background(
-                        RoundedRectangle(cornerRadius: 6)
-                            .fill(palette.cardSubtleBg(isDark))
-                    )
+                cmuxChatMarkdownStyling(
+                    MarkdownView(trimmed),
+                    isDark: isDark,
+                    palette: palette
+                )
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(10)
+                .background(
+                    RoundedRectangle(cornerRadius: 6)
+                        .fill(palette.cardSubtleBg(isDark))
+                )
                     .overlay(
                         RoundedRectangle(cornerRadius: 6)
                             .stroke(ChatPalette.cyan.opacity(0.35), lineWidth: 1)
@@ -3730,79 +3733,75 @@ private struct ToolResultCard: View {
 
 // MARK: - Theme
 
-/// Process-wide cache for pre-parsed `MarkdownContent` instances keyed
-/// by the raw markdown text. `MarkdownUI.Markdown(text:)` parses the
-/// string to a `MarkdownContent` AST on every render — for assistant
-/// bubbles in a long chat this parse runs again every time LazyVStack
-/// materialises an off-screen bubble back into the viewport during
-/// scroll (Instruments confirmed multiple CoreAnimation commits over
-/// 500 ms here, the dominant scroll-lag source).
+/// Applies the chat-panel markdown styling to a `MarkdownView`.
 ///
-/// By caching `MarkdownContent(text)` per text and feeding it to
-/// `Markdown(_ content:)`, the parse cost collapses to once per unique
-/// text. Layout still runs on first materialisation (text shaping
-/// can't be skipped), but the AST construction goes away. Crucially
-/// this preserves ALL MarkdownUI features (tables, code blocks with
-/// syntax highlighting, blockquotes) — unlike substituting `Text(
-/// AttributedString(markdown:))`, which would lose them.
+/// Replaces the previous monolithic `cmuxChatMarkdownTheme` (from the
+/// deprecated MarkdownUI lib) — MarkdownView (LiYanan2004) has no
+/// single `Theme` object, so styling is composed via environment-based
+/// modifiers (`.font(_:for:)`, `.tint(_:for:)`, default block/code
+/// styles).
 ///
-/// `MarkdownContent` is a value type with `Equatable` conformance, so
-/// we box it for `NSCache`. `countLimit` keeps memory bounded (256
-/// entries ≈ 256 distinct assistant bubble bodies retained at most).
-final class ChatMarkdownContentCache {
-    static let shared = ChatMarkdownContentCache()
-
-    private final class Box { let content: MarkdownContent; init(_ c: MarkdownContent) { self.content = c } }
-    private let cache = NSCache<NSString, Box>()
-    private let lock = NSLock()
-
-    init() {
-        cache.countLimit = 256
-    }
-
-    func content(for text: String) -> MarkdownContent {
-        let key = text as NSString
-        if let box = cache.object(forKey: key) {
-            return box.content
-        }
-        lock.lock()
-        defer { lock.unlock() }
-        if let box = cache.object(forKey: key) {
-            return box.content
-        }
-        let content = MarkdownContent(text)
-        cache.setObject(Box(content), forKey: key)
-        return content
-    }
+/// The helper takes the `MarkdownView` as input and returns a styled
+/// view because some modifiers (`.font(_:for:)`, `.tint(_:for:)`) are
+/// generic over `View` and only meaningful when applied above a
+/// `MarkdownView` in the hierarchy.
+///
+/// Trade-offs vs the old MarkdownUI theme (user-accepted):
+/// - Inline code: a single `tint` color instead of separate fg + bg.
+/// - List item / paragraph margins use library defaults.
+/// - Bullet marker style uses library default (disc).
+/// - Code block: library default with Highlightr-based syntax
+///   highlighting (xcode / dark themes).
+/// - Block quote: library default (vertical bar + subtle tint
+///   background) — visually close to the old custom HStack-with-bar.
+/// - Table: library default; alternating row backgrounds dropped.
+@ViewBuilder
+private func cmuxChatMarkdownStyling<V: View>(
+    _ view: V,
+    isDark: Bool,
+    palette: ChatPalette
+) -> some View {
+    view
+        .foregroundStyle(palette.fg(isDark))
+        .font(.system(size: 13), for: .body)
+        .font(.system(size: 12, design: .monospaced), for: .codeBlock)
+        .tint(
+            isDark
+                ? Color(red: 0x6F/255.0, green: 0xB1/255.0, blue: 0xFF/255.0)
+                : Color(red: 0.18, green: 0.42, blue: 0.78),
+            for: .inlineCodeBlock
+        )
+        .tint(isDark ? ChatPalette.cyan : Color.accentColor, for: .link)
+        .tint(.secondary.opacity(0.6), for: .blockQuote)
+        .font(.system(size: 22, weight: .bold), for: .h1)
+        .font(.system(size: 18, weight: .bold), for: .h2)
+        .font(.system(size: 15, weight: .semibold), for: .h3)
+        .font(.system(size: 13, weight: .semibold), for: .h4)
+        .font(.system(size: 13, weight: .semibold), for: .h5)
+        .font(.system(size: 13, weight: .semibold), for: .h6)
 }
 
-/// Pre-warm view for MarkdownUI's generic-type metadata.
+/// Pre-warm view for MarkdownView's generic-type metadata.
 ///
-/// Instruments revealed that the visible microhangs during scroll
-/// (~250 ms, ~3 in 30 s) bottom out in
+/// Instruments (clean Time Profiler trace, sin overhead de signposts
+/// del template SwiftUI) localizó los microhangs reales de scroll en
 /// `__swift_instantiateGenericMetadata` / `_swift_getGenericMetadata`
-/// / `AG::data::zone::alloc_slow` — i.e. the Swift runtime building
-/// per-type metadata for every unique `ModifiedContent<…, …>` /
-/// `BlockSequence<…, …>` instantiation that MarkdownUI synthesises
-/// the FIRST time a given combination of block types is rendered.
-/// Once cached (process-wide), subsequent materialisations of the
-/// same combinations are essentially free.
+/// / `AG::data::zone::alloc_slow` — el Swift runtime construyendo
+/// metadata por-tipo la PRIMERA vez que cada combinación de generics
+/// del árbol de MarkdownView aparece. Una vez instanciada, queda
+/// cacheada process-wide y el siguiente render no paga.
 ///
-/// Mounting this view as a zero-frame, fully-transparent background
-/// of the chat panel forces SwiftUI to render a Markdown document
-/// that exercises every block type the cache cares about (headers,
-/// lists, blockquote, inline code, fenced code, table, link, bold,
-/// italic) on the very first appearance of the chat panel. After
-/// that render, scrolling the real chat doesn't pay the metadata-
-/// instantiation cost the first time each block-type combo appears.
-///
-/// The rendered text is never visible (opacity 0, 1x1 frame, hit-
-/// testing off), so it doesn't affect layout or interaction.
+/// Mount as a zero-frame, fully-transparent background of the chat
+/// panel: SwiftUI renderiza una vez el árbol completo de MarkdownView
+/// con todos los block types (headings, lists, blockquote, code,
+/// table) cuando se abre el chat panel. A partir de ahí, scrolling
+/// no paga la instanciación de metadata la primera vez que cada combo
+/// de block-types aparece en bubbles reales.
 private struct ChatMarkdownPrewarmView: View {
     let isDark: Bool
     let palette: ChatPalette
 
-    /// Touches every MarkdownUI block type we care about. The exact
+    /// Touches every MarkdownView block type we care about. The exact
     /// content is irrelevant — only the AST shape (block kinds, list
     /// nesting, table presence) matters for metadata instantiation.
     private static let prewarmContent = """
@@ -3832,120 +3831,16 @@ private struct ChatMarkdownPrewarmView: View {
         """
 
     var body: some View {
-        Markdown(ChatMarkdownContentCache.shared.content(for: Self.prewarmContent))
-            .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-            .frame(width: 1, height: 1)
-            .opacity(0)
-            .allowsHitTesting(false)
-            .accessibilityHidden(true)
+        cmuxChatMarkdownStyling(
+            MarkdownView(Self.prewarmContent),
+            isDark: isDark,
+            palette: palette
+        )
+        .frame(width: 1, height: 1)
+        .opacity(0)
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
-}
-
-/// Process-wide cache for `cmuxChatMarkdownTheme`. The theme is purely
-/// derived from `(isDark, palette.terminalBg, palette.terminalFg)` —
-/// reconstructing it inside every `TextBlockRow.body` evaluation showed
-/// up as a hot allocator during streaming. Cache is tiny (the user's
-/// terminal palette doesn't change often) and the wrapper class is
-/// needed because `MarkdownUI.Theme` is a struct.
-private final class ChatMarkdownThemeCache {
-    static let shared = ChatMarkdownThemeCache()
-
-    private final class Box { let theme: Theme; init(_ t: Theme) { self.theme = t } }
-    private let cache = NSCache<NSString, Box>()
-    private let lock = NSLock()
-
-    init() {
-        cache.countLimit = 16
-    }
-
-    func theme(isDark: Bool, palette: ChatPalette) -> Theme {
-        let key = Self.cacheKey(isDark: isDark, palette: palette) as NSString
-        if let box = cache.object(forKey: key) {
-            return box.theme
-        }
-        lock.lock()
-        defer { lock.unlock() }
-        if let box = cache.object(forKey: key) {
-            return box.theme
-        }
-        let theme = ChatMarkdownThemeCache.build(isDark: isDark, palette: palette)
-        cache.setObject(Box(theme), forKey: key)
-        return theme
-    }
-
-    private static func cacheKey(isDark: Bool, palette: ChatPalette) -> String {
-        "\(isDark ? "d" : "l")|\(Self.rgbHex(palette.terminalBg))|\(Self.rgbHex(palette.terminalFg))"
-    }
-
-    private static func rgbHex(_ color: NSColor) -> String {
-        let c = color.usingColorSpace(.sRGB) ?? color
-        let r = Int((c.redComponent * 255).rounded())
-        let g = Int((c.greenComponent * 255).rounded())
-        let b = Int((c.blueComponent * 255).rounded())
-        return String(format: "%02X%02X%02X", r, g, b)
-    }
-
-    private static func build(isDark: Bool, palette: ChatPalette) -> Theme {
-        cmuxChatMarkdownThemeUncached(isDark: isDark, palette: palette)
-    }
-}
-
-/// Chat-specific markdown theme — public entry point. Returns a cached
-/// instance keyed by `(isDark, palette terminal colors)` so repeated
-/// `TextBlockRow.body` evaluations during streaming don't reconstruct
-/// the closure-heavy `Theme` from scratch.
-private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme {
-    ChatMarkdownThemeCache.shared.theme(isDark: isDark, palette: palette)
-}
-
-/// Actual builder. Kept as a separate function so the cache wrapper
-/// stays tiny and the theme definition reads top-to-bottom unchanged.
-/// Mirrors `cmuxMarkdownTheme` from `MarkdownPanelView` but with smaller
-/// margins and theme-aware colours. `palette` carries the user's
-/// terminal background/foreground so inline code highlight stays
-/// legible across themes.
-private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette) -> Theme {
-    Theme()
-        .text {
-            ForegroundColor(palette.fg(isDark))
-            FontSize(13)
-        }
-        .code {
-            FontFamilyVariant(.monospaced)
-            FontSize(12)
-            // IntelliJ-Darcula-style: inline code uses the same blue as
-            // identifiers/keywords in the editor. Avoid the prior purple
-            // because it clashed with the rest of the palette. A brighter
-            // shade than `ChatPalette.blue` to read clearly against the
-            // terminal-bg-derived inline-code background.
-            ForegroundColor(isDark ? Color(red: 0x6F/255.0, green: 0xB1/255.0, blue: 0xFF/255.0) : Color(red: 0.18, green: 0.42, blue: 0.78))
-            BackgroundColor(palette.codeBg(isDark))
-        }
-        .codeBlock { configuration in
-            ScrollView(.horizontal, showsIndicators: true) {
-                configuration.label
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(12)
-                    }
-                    .padding(10)
-            }
-            .background(palette.codeBg(isDark))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .markdownMargin(top: 6, bottom: 6)
-        }
-        .link {
-            ForegroundColor(isDark ? ChatPalette.cyan : Color.accentColor)
-        }
-        .strong {
-            FontWeight(.semibold)
-        }
-        .paragraph { configuration in
-            configuration.label.markdownMargin(top: 2, bottom: 4)
-        }
-        .listItem { configuration in
-            configuration.label.markdownMargin(top: 2, bottom: 2)
-        }
 }
 
 // MARK: - Chat input
@@ -4601,10 +4496,13 @@ private struct TextBlockRow: View, Equatable {
                     }
                 }
             case .assistant, .system:
-                Markdown(ChatMarkdownContentCache.shared.content(for: text))
-                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                cmuxChatMarkdownStyling(
+                    MarkdownView(text),
+                    isDark: isDark,
+                    palette: palette
+                )
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
