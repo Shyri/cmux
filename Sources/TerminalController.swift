@@ -15206,23 +15206,22 @@ class TerminalController {
                 return
             }
 
-            // Render the window's contentView into a bitmap via AppKit.
-            // Prefer this over the deprecated/Sequoia-removed
-            // `CGWindowListCreateImage` (`ScreenCaptureKit` is its
-            // replacement but is async and gated on user permission —
-            // overkill for a debug socket command). `cacheDisplay` is
-            // synchronous, permission-free, and unaffected by Sequoia
-            // API deprecations.
-            guard let contentView = window.contentView else {
-                captureError = "Window has no contentView"
+            // Get window's CGWindowID
+            let windowNumber = CGWindowID(window.windowNumber)
+
+            // Capture the window using CGWindowListCreateImage
+            guard let cgImage = CGWindowListCreateImage(
+                .null,  // Capture just the window bounds
+                .optionIncludingWindow,
+                windowNumber,
+                [.boundsIgnoreFraming, .nominalResolution]
+            ) else {
+                captureError = "Failed to capture window image"
                 return
             }
-            let bounds = contentView.bounds
-            guard let bitmap = contentView.bitmapImageRepForCachingDisplay(in: bounds) else {
-                captureError = "Failed to allocate bitmap"
-                return
-            }
-            contentView.cacheDisplay(in: bounds, to: bitmap)
+
+            // Convert to NSBitmapImageRep and save as PNG
+            let bitmap = NSBitmapImageRep(cgImage: cgImage)
             guard let pngData = bitmap.representation(using: .png, properties: [:]) else {
                 captureError = "Failed to create PNG data"
                 return
