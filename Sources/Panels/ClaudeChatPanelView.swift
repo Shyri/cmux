@@ -3776,6 +3776,110 @@ final class ChatMarkdownContentCache {
     }
 }
 
+/// Detector + cache para el "hybrid path" del assistant bubble.
+///
+/// Profiling con Instruments mostró que el coste de scroll en bubbles
+/// del asistente lo concentran las TABLAS y los fenced code blocks de
+/// MarkdownUI (Grid + anchorPreference + GeometryReader para tablas;
+/// Splash syntax highlighting para code blocks). El resto de markdown
+/// común en chats (prosa con bold/italic/inline-code/links/listas/
+/// headers) lo renderiza CoreText/AppKit con `Text(AttributedString(
+/// markdown:))` de forma órdenes de magnitud más rápida, sin árbol de
+/// subviews ni preferences-machinery.
+///
+/// `ChatMarkdownComplexityProbe` clasifica cada texto en O(n) una sola
+/// vez (cacheado) en uno de dos buckets:
+///
+/// - `.simple`: no contiene tabla ni fenced code → renderiza vía
+///   `Text(AttributedString(markdown:, options: .full))` (cheap path).
+/// - `.heavy`: contiene tabla o fenced code → cae al path actual de
+///   MarkdownUI con `cmuxChatMarkdownTheme` (preserva tabla + syntax
+///   highlight + blockquote custom).
+enum ChatMarkdownComplexity: Sendable {
+    case simple
+    case heavy
+}
+
+final class ChatMarkdownComplexityProbe {
+    static let shared = ChatMarkdownComplexityProbe()
+
+    private let cache = NSCache<NSString, NSNumber>()
+    private let lock = NSLock()
+
+    init() {
+        cache.countLimit = 512
+    }
+
+    func classify(_ text: String) -> ChatMarkdownComplexity {
+        let key = text as NSString
+        if let cached = cache.object(forKey: key) {
+            return cached.intValue == 0 ? .simple : .heavy
+        }
+        let result: ChatMarkdownComplexity = Self.detect(text)
+        lock.lock()
+        cache.setObject(NSNumber(value: result == .simple ? 0 : 1), forKey: key)
+        lock.unlock()
+        return result
+    }
+
+    private static func detect(_ text: String) -> ChatMarkdownComplexity {
+        // Fenced code block — three backticks on a line.
+        if text.contains("```") { return .heavy }
+        // GFM table — header row + separator row pattern. Cheap regex.
+        if text.range(
+            of: #"(?m)^\s*\|.*\|\s*$\n\s*\|[\s\-:|]+\|\s*$"#,
+            options: .regularExpression
+        ) != nil {
+            return .heavy
+        }
+        return .simple
+    }
+}
+
+/// Cache de `AttributedString` para el simple-prose path. Construir un
+/// `AttributedString(markdown:)` no es gratis (parsea + crea runs); con
+/// 60 bubbles visibles en LazyVStack se reparsearía en cada re-render
+/// si no lo cacheamos.
+///
+/// Key: `text` literal. Value: NSAttributedString-wrapped (`AttributedString`
+/// es struct; lo metemos en un `Box` para `NSCache`).
+final class ChatSimpleMarkdownCache {
+    static let shared = ChatSimpleMarkdownCache()
+
+    private final class Box { let attr: AttributedString; init(_ a: AttributedString) { self.attr = a } }
+    private let cache = NSCache<NSString, Box>()
+    private let lock = NSLock()
+
+    init() {
+        cache.countLimit = 512
+    }
+
+    func attributed(for text: String) -> AttributedString {
+        let key = text as NSString
+        if let box = cache.object(forKey: key) {
+            return box.attr
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let box = cache.object(forKey: key) {
+            return box.attr
+        }
+        // `.full` interpreta también block-level (headers, lists) como
+        // PresentationIntent attributes. Native `Text` no aplica
+        // jerarquía visual a esos intents, así que los headers/listas
+        // se aplanan a inline text. Aceptable por decisión del usuario;
+        // si más adelante hace falta visual hierarchy, se puede mover
+        // ese subset al heavy path o renderizarlos manualmente.
+        var options = AttributedString.MarkdownParsingOptions()
+        options.interpretedSyntax = .full
+        options.failurePolicy = .returnPartiallyParsedIfPossible
+        let attr = (try? AttributedString(markdown: text, options: options))
+            ?? AttributedString(text)
+        cache.setObject(Box(attr), forKey: key)
+        return attr
+    }
+}
+
 /// Pre-warm view for MarkdownUI's generic-type metadata.
 ///
 /// Instruments revealed that the visible microhangs during scroll
@@ -4601,10 +4705,27 @@ private struct TextBlockRow: View, Equatable {
                     }
                 }
             case .assistant, .system:
-                Markdown(ChatMarkdownContentCache.shared.content(for: text))
-                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                // Hybrid render path: si el bubble no tiene tabla ni
+                // fenced code (la mayoría de respuestas son prosa con
+                // bold/italic/links/inline-code/listas/headers),
+                // renderizamos vía `Text(AttributedString(markdown:))`
+                // — nativo, CoreText puro, sin árbol de subviews ni
+                // preferences-machinery. Solo cuando hay tabla o code
+                // block caemos al path completo de MarkdownUI.
+                switch ChatMarkdownComplexityProbe.shared.classify(text) {
+                case .simple:
+                    Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
+                        .foregroundStyle(palette.fg(isDark))
+                        .font(.system(size: 13))
+                        .tint(isDark ? ChatPalette.cyan : Color.accentColor)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                case .heavy:
+                    Markdown(ChatMarkdownContentCache.shared.content(for: text))
+                        .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
         }
     }
