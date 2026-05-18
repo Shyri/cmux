@@ -466,11 +466,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// main actor (same as the stream handler).
     private var streamedMessageBuffer: [ChatMessage] = []
     private var streamedFlushScheduled = false
-    /// 80 ms ≈ 12 Hz visible-update cadence. Fast enough that streaming
-    /// still feels live, slow enough that long assistant replies drop
-    /// from O(n²) markdown re-parsing (one parse per token) to
-    /// O(n × n / flushSize).
-    private static let streamedFlushInterval: TimeInterval = 0.080
+    /// 400 ms ≈ 2.5 Hz visible-update cadence. Picked so the in-progress
+    /// assistant bubble re-parses its Markdown roughly once per 2–3
+    /// visible lines instead of once per token — the user has explicitly
+    /// opted into chunkier streaming in exchange for the CPU savings on
+    /// long replies. Tweakable; sub-100 ms returns to a token-paced feel,
+    /// >1 s starts to feel laggy.
+    private static let streamedFlushInterval: TimeInterval = 0.400
 
     /// Buffer of tool_result blocks parsed off the stream but not yet
     /// pushed to `toolResultsByToolUseId`. A turn with many tool calls
