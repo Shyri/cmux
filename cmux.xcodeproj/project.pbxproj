@@ -3051,6 +3051,18 @@
 			isa = XCLocalSwiftPackageReference;
 			relativePath = Packages/CMUXAgentLaunch;
 		};
+		A500D012A1B2C3D4E5F60718 /* XCLocalSwiftPackageReference "CMUXDebugLog" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/CMUXDebugLog;
+		};
+		A5354304A5354304A5354304 /* XCLocalSwiftPackageReference "CMUXSocketPathDomain" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = Packages/CMUXSocketPathDomain;
+		};
+		A5001260 /* XCLocalSwiftPackageReference "bonsplit" */ = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = vendor/bonsplit;
+		};
 /* End XCLocalSwiftPackageReference section */
 
 /* Begin XCRemoteSwiftPackageReference section */
