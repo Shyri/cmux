@@ -1,7 +1,7 @@
 import Foundation
 import SwiftUI
 import AppKit
-import Textual
+import MarkdownUI
 
 // MARK: - Models
 
@@ -307,72 +307,179 @@ enum MRCommentMetaStyle {
 
 // MARK: - Markdown rendering
 
-/// MR descriptions and comments rendered with Textual under a compact
-/// styling that matches the chrome of the surrounding cards. Supports the
-/// full GitHub-flavored Markdown set (tables, task lists, strikethrough,
-/// nested lists, autolinks, fenced code blocks). Text selection works
-/// on macOS via Textual's `NSTextInteractionView` overlay.
+/// MR descriptions and comments rendered with MarkdownUI under a compact
+/// theme that matches the chrome of the surrounding cards. Supports the full
+/// GitHub-flavored Markdown set (tables, task lists, strikethrough, nested
+/// lists, autolinks, fenced code blocks).
 struct MarkdownText: View {
     let source: String
     var baseFontSize: CGFloat = 12
     @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
-        commentStructuredTextStyling(
-            StructuredText(markdown: source.trimmingCharacters(in: .whitespacesAndNewlines)),
-            baseFontSize: baseFontSize,
-            isDark: colorScheme == .dark
-        )
+        Markdown(source.trimmingCharacters(in: .whitespacesAndNewlines))
+            .markdownTheme(makeCommentTheme(baseFontSize: baseFontSize, isDark: colorScheme == .dark))
+            .textSelection(.enabled)
     }
 }
 
-/// Applies the GitLab MR-comment styling to a `StructuredText`.
-///
-/// Successor of `makeCommentTheme` (deprecated MarkdownUI). Textual
-/// composes styling via the `.textual` namespace and standard SwiftUI
-/// text modifiers, with no monolithic `Theme` object.
-///
-/// Trade-offs vs the old MarkdownUI theme (user-accepted):
-/// - Inline code uses a single amber foreground tint (previous explicit
-///   amber-on-dark pill background dropped).
-/// - Code block uses Textual's default with Prism syntax highlighting.
-/// - Block quote uses Textual's default left-bar style.
-/// - Tables, lists, paragraphs use Textual defaults.
-/// - Heading colors / per-level sizes apply via SwiftUI's `.font(...)`
-///   on the whole StructuredText (single font; Textual scales internally
-///   for each level). Per-level color is not preserved without a custom
-///   `HeadingStyle`; accepting visually uniform `headingColor` instead.
-@ViewBuilder
-private func commentStructuredTextStyling<V: View>(
-    _ view: V,
-    baseFontSize: CGFloat,
-    isDark: Bool
-) -> some View {
+/// MarkdownUI theme for MR description and comment cards. Matches the
+/// reference look: light gray sans-serif body, amber inline-code pills with
+/// a dark-amber background, blue links without underline, hollow-circle
+/// nested list bullets.
+private func makeCommentTheme(baseFontSize: CGFloat, isDark: Bool) -> Theme {
+    // Body palette (the cards live on a near-black surface, so colors are
+    // tuned for dark mode and only soften in light mode).
     let textColor: Color = isDark
         ? Color(nsColor: NSColor(srgbRed: 0xD5/255, green: 0xD8/255, blue: 0xDD/255, alpha: 1))
         : .primary
+    let headingColor: Color = isDark ? .white : .primary
+    let secondaryTextColor: Color = isDark ? .white.opacity(0.55) : .secondary
+
+    // Amber pill for inline code and code blocks.
     let codeFg = Color(nsColor: NSColor(srgbRed: 0xE5/255, green: 0xB8/255, blue: 0x64/255, alpha: 1))
+    let inlineCodeBg = Color(nsColor: NSColor(srgbRed: 0x3B/255, green: 0x2E/255, blue: 0x1A/255, alpha: 1))
+    let codeBlockBg = Color(nsColor: NSColor(srgbRed: 0x1A/255, green: 0x17/255, blue: 0x10/255, alpha: 1))
+
+    // Blue link without underline (rendered as plain colored text).
     let linkColor = Color(nsColor: NSColor(srgbRed: 0x5B/255, green: 0xA0/255, blue: 0xF2/255, alpha: 1))
 
-    view
-        .font(.system(size: baseFontSize))
-        .foregroundStyle(textColor)
-        .textual.textSelection(.enabled)
-        .textual.inlineStyle(
-            InlineStyle()
-                .code(.monospaced, .fontScale(0.94), .foregroundColor(codeFg))
-                .strong(.fontWeight(.semibold))
-                .link(.foregroundColor(linkColor))
-                .strikethrough(.strikethroughStyle(.single))
-        )
-        .textual.overflowMode(.scroll)
-        .environment(
-            \.openURL,
-            OpenURLAction { url in
-                NSWorkspace.shared.open(url)
-                return .handled
+    let tableBorder: Color = isDark ? .white.opacity(0.15) : .gray.opacity(0.3)
+    let tableRowA: Color = isDark
+        ? Color(nsColor: NSColor(white: 0.14, alpha: 1.0))
+        : Color(nsColor: NSColor(white: 0.96, alpha: 1.0))
+    let tableRowB: Color = isDark
+        ? Color(nsColor: NSColor(white: 0.10, alpha: 1.0))
+        : Color(nsColor: NSColor(white: 1.0, alpha: 1.0))
+    let blockquoteBar: Color = isDark ? .white.opacity(0.22) : .gray.opacity(0.4)
+
+    return Theme()
+        .text {
+            ForegroundColor(textColor)
+            FontSize(baseFontSize)
+        }
+        .heading1 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.bold)
+                    FontSize(baseFontSize + 4)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 12, bottom: 6)
+        }
+        .heading2 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.bold)
+                    FontSize(baseFontSize + 2.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 10, bottom: 5)
+        }
+        .heading3 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(baseFontSize + 1.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 8, bottom: 4)
+        }
+        .heading4 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.semibold)
+                    FontSize(baseFontSize + 0.5)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 6, bottom: 3)
+        }
+        .heading5 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.medium)
+                    FontSize(baseFontSize)
+                    ForegroundColor(headingColor)
+                }
+                .markdownMargin(top: 6, bottom: 2)
+        }
+        .heading6 { configuration in
+            configuration.label
+                .markdownTextStyle {
+                    FontWeight(.medium)
+                    FontSize(baseFontSize)
+                    ForegroundColor(secondaryTextColor)
+                }
+                .markdownMargin(top: 6, bottom: 2)
+        }
+        .paragraph { configuration in
+            configuration.label
+                .markdownMargin(top: 4, bottom: 6)
+        }
+        .listItem { configuration in
+            configuration.label
+                .markdownMargin(top: 2, bottom: 2)
+        }
+        // Hollow circle bullets matching the reference look. MarkdownUI
+        // already nests appropriately; the alternating preset would render
+        // a filled disc on the outermost level, which is too heavy here.
+        .bulletedListMarker(.circle)
+        .codeBlock { configuration in
+            ScrollView(.horizontal, showsIndicators: false) {
+                configuration.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(baseFontSize - 1)
+                        ForegroundColor(codeFg)
+                    }
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 8)
             }
-        )
+            .background(codeBlockBg)
+            .clipShape(RoundedRectangle(cornerRadius: 6))
+            .markdownMargin(top: 6, bottom: 6)
+        }
+        .code {
+            FontFamilyVariant(.monospaced)
+            FontSize(baseFontSize - 1.5)
+            ForegroundColor(codeFg)
+            BackgroundColor(inlineCodeBg)
+        }
+        .blockquote { configuration in
+            HStack(spacing: 0) {
+                RoundedRectangle(cornerRadius: 1.5)
+                    .fill(blockquoteBar)
+                    .frame(width: 3)
+                configuration.label
+                    .markdownTextStyle {
+                        ForegroundColor(secondaryTextColor)
+                        FontSize(baseFontSize)
+                    }
+                    .padding(.leading, 12)
+            }
+            .markdownMargin(top: 6, bottom: 6)
+        }
+        .link {
+            ForegroundColor(linkColor)
+        }
+        .strong {
+            FontWeight(.semibold)
+        }
+        .strikethrough {
+            StrikethroughStyle(.single)
+        }
+        .table { configuration in
+            configuration.label
+                .markdownTableBorderStyle(.init(color: tableBorder))
+                .markdownTableBackgroundStyle(
+                    .alternatingRows(tableRowA, tableRowB)
+                )
+                .markdownMargin(top: 6, bottom: 6)
+        }
+        .thematicBreak {
+            Divider()
+                .markdownMargin(top: 10, bottom: 10)
+        }
 }
 
 // MARK: - SwiftUI card
