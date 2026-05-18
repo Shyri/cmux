@@ -869,6 +869,14 @@ struct ClaudeChatPanelView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(backgroundColor)
+        .background(
+            // Hidden Markdown view that exercises every block type
+            // we render so Swift's generic-metadata cache and
+            // SwiftUI's view-graph cache are warm by the time the
+            // user scrolls the real transcript. See
+            // `ChatMarkdownPrewarmView` for the rationale.
+            ChatMarkdownPrewarmView(isDark: colorScheme == .dark, palette: palette)
+        )
         .overlay {
             RoundedRectangle(cornerRadius: FocusFlashPattern.ringCornerRadius)
                 .stroke(palette.accent(colorScheme == .dark).opacity(focusFlashOpacity), lineWidth: 3)
@@ -3765,6 +3773,71 @@ final class ChatMarkdownContentCache {
         let content = MarkdownContent(text)
         cache.setObject(Box(content), forKey: key)
         return content
+    }
+}
+
+/// Pre-warm view for MarkdownUI's generic-type metadata.
+///
+/// Instruments revealed that the visible microhangs during scroll
+/// (~250 ms, ~3 in 30 s) bottom out in
+/// `__swift_instantiateGenericMetadata` / `_swift_getGenericMetadata`
+/// / `AG::data::zone::alloc_slow` — i.e. the Swift runtime building
+/// per-type metadata for every unique `ModifiedContent<…, …>` /
+/// `BlockSequence<…, …>` instantiation that MarkdownUI synthesises
+/// the FIRST time a given combination of block types is rendered.
+/// Once cached (process-wide), subsequent materialisations of the
+/// same combinations are essentially free.
+///
+/// Mounting this view as a zero-frame, fully-transparent background
+/// of the chat panel forces SwiftUI to render a Markdown document
+/// that exercises every block type the cache cares about (headers,
+/// lists, blockquote, inline code, fenced code, table, link, bold,
+/// italic) on the very first appearance of the chat panel. After
+/// that render, scrolling the real chat doesn't pay the metadata-
+/// instantiation cost the first time each block-type combo appears.
+///
+/// The rendered text is never visible (opacity 0, 1x1 frame, hit-
+/// testing off), so it doesn't affect layout or interaction.
+private struct ChatMarkdownPrewarmView: View {
+    let isDark: Bool
+    let palette: ChatPalette
+
+    /// Touches every MarkdownUI block type we care about. The exact
+    /// content is irrelevant — only the AST shape (block kinds, list
+    /// nesting, table presence) matters for metadata instantiation.
+    private static let prewarmContent = """
+        # H1
+        ## H2
+        ### H3
+
+        Plain paragraph with **bold**, *italic*, `inline code`, and a [link](https://example.com).
+
+        - bullet one
+        - bullet two
+            - nested
+        - bullet three
+
+        1. ordered one
+        2. ordered two
+
+        > quote
+
+        ```swift
+        let x = 1
+        ```
+
+        | A | B |
+        |---|---|
+        | 1 | 2 |
+        """
+
+    var body: some View {
+        Markdown(ChatMarkdownContentCache.shared.content(for: Self.prewarmContent))
+            .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+            .frame(width: 1, height: 1)
+            .opacity(0)
+            .allowsHitTesting(false)
+            .accessibilityHidden(true)
     }
 }
 
