@@ -64,6 +64,10 @@
 		63DCAF496FEE1659D9E0BAE3 /* SyntaxHighlighter.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8153062965048757CEFD53C0 /* SyntaxHighlighter.swift */; };
 		643D15C8C27F93F066B69F9A /* DiffCodeTextView.swift in Sources */ = {isa = PBXBuildFile; fileRef = A44A0B1DA0EC9D91CE566238 /* DiffCodeTextView.swift */; };
 		6565EC5A507F25D89323E1C9 /* ChatMcpHttpServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */; };
+		A5009B0100000000000000B2 /* McpServerCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B1 /* McpServerCatalog.swift */; };
+		A5009B0100000000000000B4 /* McpManagerPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B3 /* McpManagerPopover.swift */; };
+		A5009B0100000000000000B6 /* BackgroundShellsPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B5 /* BackgroundShellsPopover.swift */; };
+		A5009B0100000000000000B8 /* McpHealthProber.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B7 /* McpHealthProber.swift */; };
 		698944F99A6ADFBA24A7BFB9 /* AuthSettingsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 5B1EA8948C5F126FE63CFB4E /* AuthSettingsStore.swift */; };
 		699EFB8F6C40B40C367570D7 /* ChatRunnerDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */; };
 		6B524A0BA34FD46A771335AB /* WorkspaceUnitTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 71F8ED91A4B55D34BE6A0668 /* WorkspaceUnitTests.swift */; };
@@ -1002,6 +1006,10 @@
 		E5C0F1A1E5C0F1A1E5C0F1A1 /* TerminalFindEscapeRouting.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/TerminalFindEscapeRouting.swift; sourceTree = "<group>"; };
 		E6FA9085A1B2C3D4E5F60718 /* WorkspaceDescriptionUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = WorkspaceDescriptionUITests.swift; sourceTree = "<group>"; };
 		E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMcpHttpServer.swift; sourceTree = "<group>"; };
+		A5009B0100000000000000B1 /* McpServerCatalog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpServerCatalog.swift; sourceTree = "<group>"; };
+		A5009B0100000000000000B3 /* McpManagerPopover.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpManagerPopover.swift; sourceTree = "<group>"; };
+		A5009B0100000000000000B5 /* BackgroundShellsPopover.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = BackgroundShellsPopover.swift; sourceTree = "<group>"; };
+		A5009B0100000000000000B7 /* McpHealthProber.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpHealthProber.swift; sourceTree = "<group>"; };
 		E7E000000000000000000002 /* CmuxEventStream.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxEventStream.swift; sourceTree = "<group>"; };
 		E7E000000000000000000004 /* CmuxEventBusTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxEventBusTests.swift; sourceTree = "<group>"; };
 		E7E000000000000000000006 /* CmuxEventBus.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CmuxEventBus.swift; sourceTree = "<group>"; };
@@ -1203,6 +1211,8 @@
 			children = (
 				3B24B20C94CA551A82525FEE /* ClaudeChatPanel.swift */,
 				328BA8CF66699F6C9B66F660 /* ClaudeChatPanelView.swift */,
+				A5009B0100000000000000B3 /* McpManagerPopover.swift */,
+				A5009B0100000000000000B5 /* BackgroundShellsPopover.swift */,
 			);
 			name = Panels;
 			path = Panels;
@@ -1219,6 +1229,8 @@
 				DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */,
 				9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */,
 				23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */,
+				A5009B0100000000000000B1 /* McpServerCatalog.swift */,
+				A5009B0100000000000000B7 /* McpHealthProber.swift */,
 				F001C10B3FD713AD45901F02 /* SlashCommandRegistry.swift */,
 				59F94D4B532E543F34426163 /* StatusLineRunner.swift */,
 				7E4F3A1A8256D6DD3D112B62 /* UnifiedDiff.swift */,
@@ -2292,6 +2304,10 @@
 				ACE4FE2A8F1CC6C0B6A673AB /* VMClientSocketCommands.swift in Sources */,
 				6565EC5A507F25D89323E1C9 /* ChatMcpHttpServer.swift in Sources */,
 				9358ED6C0B673D29EEDADCDC /* ChatMcpRequest.swift in Sources */,
+				A5009B0100000000000000B2 /* McpServerCatalog.swift in Sources */,
+				A5009B0100000000000000B4 /* McpManagerPopover.swift in Sources */,
+				A5009B0100000000000000B6 /* BackgroundShellsPopover.swift in Sources */,
+				A5009B0100000000000000B8 /* McpHealthProber.swift in Sources */,
 				6B7604793CDAE4FC30F643CF /* ChatMessage.swift in Sources */,
 				85162B47BC013A91A13E2EAB /* ChatPermissionRules.swift in Sources */,
 				699EFB8F6C40B40C367570D7 /* ChatRunnerDebugLog.swift in Sources */,

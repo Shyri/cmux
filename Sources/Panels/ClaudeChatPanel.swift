@@ -247,7 +247,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// flight. Each entry carries the runner-bound text (with attachment
     /// `@<path>` expansion) and the chat-message id that already appears
     /// in the transcript (rendered as a "queued" bubble). Drained
-    /// first-in-first-out as soon as `handle(completion:)` transitions
+    /// first-in-first-out as soon as the `result` event transitions
     /// the status back to `.idle`. Survives Stop so cancelling the
     /// current turn does not silently throw away queued follow-ups.
     @Published private(set) var pendingDrafts: [PendingDraft] = []
@@ -553,6 +553,91 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         }
     }
 
+    /// Most recent MCP server status snapshot from the running `claude`
+    /// process. Keyed by server name (as it appears in `--mcp-config`,
+    /// i.e. the keys of `mcpServers`). Repopulated on every `system/init`
+    /// event, which fires after a fresh spawn and after `--mcp-config`
+    /// changes that required a respawn.
+    @Published private(set) var mcpRuntimeStatus: [String: McpServerInitStatus] = [:] {
+        didSet {
+            var connected = 0
+            var failed = 0
+            for value in mcpRuntimeStatus.values {
+                let lowered = value.status.lowercased()
+                if lowered == "connected" {
+                    connected &+= 1
+                } else if lowered == "failed" || lowered == "error" {
+                    failed &+= 1
+                }
+            }
+            if mcpConnectedCount != connected { mcpConnectedCount = connected }
+            if mcpFailedCount != failed { mcpFailedCount = failed }
+        }
+    }
+
+    /// Pre-computed counts driven by `mcpRuntimeStatus` so the chat
+    /// header's badges read a cheap property instead of re-running a
+    /// `.filter` over the dict on every body evaluation. The counts
+    /// only change when the snapshot changes — not when unrelated
+    /// `@Published` properties on the panel fire.
+    @Published private(set) var mcpConnectedCount: Int = 0
+    @Published private(set) var mcpFailedCount: Int = 0
+
+    /// Same idea for the background-shells badge: keep the live count
+    /// outside `body` so window-focus re-renders don't pay the linear
+    /// scan over `backgroundShells`.
+    @Published private(set) var backgroundShellLiveCount: Int = 0
+
+    /// Bash shells that claude launched with `run_in_background: true`,
+    /// surfaced here so the user can see what is alive and kill it from
+    /// the chat header. Updated by `handle(event:)`:
+    ///   * a `Bash` `tool_use` with `run_in_background: true` appends a
+    ///     row (status `unknown` until the matching `tool_result` lands)
+    ///   * the `tool_result` carries the `shell_id` string and the
+    ///     initial status (we set running)
+    ///   * a `KillShell` `tool_use` and its result move the targeted row
+    ///     to `.killed`
+    /// Output is intentionally NOT cached here — the user said they only
+    /// want to see and kill them, not view what each shell is doing.
+    @Published private(set) var backgroundShells: [BackgroundShell] = [] {
+        didSet {
+            var live = 0
+            for shell in backgroundShells {
+                switch shell.status {
+                case .starting, .running, .unknown: live &+= 1
+                case .completed, .killed: break
+                }
+            }
+            if backgroundShellLiveCount != live { backgroundShellLiveCount = live }
+        }
+    }
+
+    struct BackgroundShell: Identifiable, Equatable {
+        /// Tool-use id of the originating `Bash` call. Used to pair the
+        /// row with its later `tool_result` (which carries the
+        /// `shell_id` the rest of the workflow uses).
+        let toolUseId: String
+        /// Shell id assigned by `claude` once the bash actually starts.
+        /// Nil between the `Bash` tool_use landing and the matching
+        /// `tool_result`.
+        var shellId: String?
+        /// The command claude requested, truncated to keep the row
+        /// readable in the popover.
+        let commandPreview: String
+        let startedAt: Date
+        var status: Status
+
+        var id: String { toolUseId }
+
+        enum Status: Equatable {
+            case starting
+            case running
+            case completed(exitCode: String?)
+            case killed
+            case unknown
+        }
+    }
+
     /// Terminal background/foreground sourced from `~/.config/ghostty/config`
     /// so the chat panel matches whatever theme the user uses for terminals.
     /// Refreshed when `Notification.Name.ghosttyConfigDidReload` fires.
@@ -693,7 +778,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     }
 
     func close() {
-        runner.cancel()
+        runner.terminate()
         mcpServer?.stop()
         mcpServer = nil
         if let path = mcpConfigPath {
@@ -776,8 +861,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 return
             }
             guard case .sending = self.status else { return }
-            self.runner.start(
-                userMessage: trimmed,
+            self.runner.ensureStarted(
                 cwd: cwd,
                 sessionId: resumeId,
                 permissionMode: mode.claudeFlag,
@@ -789,12 +873,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                         self?.handle(event: event)
                     }
                 },
-                onComplete: { result in
+                onExit: { result in
                     Task { @MainActor [weak self] in
-                        self?.handle(completion: result)
+                        self?.handle(processExit: result)
                     }
                 }
             )
+            self.runner.sendUserTurn(trimmed)
         }
     }
 
@@ -822,8 +907,9 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
 
         if case .sending = status {
             // Previous turn still in flight: stash this prompt and let
-            // handle(completion:) drain it once we go idle. The transcript
-            // already shows the bubble (marked as queued by the view).
+            // the result-event handler drain it once we go idle. The
+            // transcript already shows the bubble (marked as queued by
+            // the view).
             pendingDrafts.append(PendingDraft(
                 id: localMessage.id,
                 userText: userText,
@@ -838,7 +924,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Kick off a Claude turn for the given user message. Handles MCP
     /// startup, status bookkeeping, and turn-edit/staging resets. Shared
     /// between `send(_:)` and the queued-drafts drain in
-    /// `handle(completion:)`.
+    /// the drain logic invoked when a `result` event flips status to idle.
     private func dispatchTurn(messageId: UUID, userText: String) {
         // Each user prompt starts a new "turn" — drop the previous turn's
         // edit list so the diff side pane always shows what claude did in
@@ -874,8 +960,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             // Re-check status — user may have hit Clear or Cancel while we
             // were waiting for the server to bind.
             guard case .sending = self.status else { return }
-            self.runner.start(
-                userMessage: userText,
+            self.runner.ensureStarted(
                 cwd: cwd,
                 sessionId: resumeId,
                 permissionMode: mode.claudeFlag,
@@ -887,12 +972,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                         self?.handle(event: event)
                     }
                 },
-                onComplete: { result in
+                onExit: { result in
                     Task { @MainActor [weak self] in
-                        self?.handle(completion: result)
+                        self?.handle(processExit: result)
                     }
                 }
             )
+            self.runner.sendUserTurn(userText)
         }
     }
 
@@ -1028,31 +1114,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         server.delegate = self
         mcpServer = server
 
-        var mergedServers: [String: Any] = [:]
-
-        let projectMcpURL = URL(fileURLWithPath: workingDirectory)
-            .appendingPathComponent(".mcp.json")
-        if FileManager.default.fileExists(atPath: projectMcpURL.path) {
-            do {
-                let raw = try Data(contentsOf: projectMcpURL)
-                if let obj = try JSONSerialization.jsonObject(with: raw) as? [String: Any],
-                   let servers = obj["mcpServers"] as? [String: Any] {
-                    mergedServers = servers
-                    #if DEBUG
-                    dlog("claudechat.mcp.project loaded servers=\(Array(servers.keys)) path=\(projectMcpURL.path)")
-                    #endif
-                }
-            } catch {
-                #if DEBUG
-                dlog("claudechat.mcp.project parse_error path=\(projectMcpURL.path) error=\(error)")
-                #endif
-            }
-        }
-
-        mergedServers["cmux"] = [
-            "type": "http",
-            "url": server.endpointURL.absoluteString
-        ]
+        let mergedServers = McpServerCatalog.mergedForRuntime(
+            cwd: workingDirectory,
+            builtinEndpoint: server.endpointURL
+        )
 
         let config: [String: Any] = ["mcpServers": mergedServers]
         let data = try JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted])
@@ -1061,6 +1126,112 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         try data.write(to: URL(fileURLWithPath: path))
         mcpConfigPath = path
         return path
+    }
+
+    /// Snapshot of the cmux-builtin MCP server that backs inline approvals
+    /// and ask-user-question, for the MCP manager UI to render alongside
+    /// the project/user-local entries. Nil before the first turn (the
+    /// HTTP listener is started on demand).
+    func builtinMcpServerConfig() -> McpServerConfig? {
+        guard let server = mcpServer else { return nil }
+        return McpServerConfig(
+            name: "cmux",
+            scope: .builtin,
+            transport: .http(url: server.endpointURL.absoluteString, headers: [:])
+        )
+    }
+
+    /// Refresh `mcpRuntimeStatus` by spawning `claude mcp list` and
+    /// folding the result in. Used by the popover's onAppear and the
+    /// Refresh button so the badges reflect the *current* MCP health,
+    /// not just the snapshot from the long-running process' initial
+    /// `system/init`. Does NOT touch the chat's `claude` process.
+    func refreshMcpStatus() {
+        let cwd = workingDirectory
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let path: String
+            do {
+                path = try self.runner.resolveClaudeBinaryPath()
+            } catch {
+                return
+            }
+            let snapshots = await McpHealthProber.probeAll(claudePath: path, cwd: cwd)
+            guard !snapshots.isEmpty else { return }
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                var merged = self.mcpRuntimeStatus
+                for snapshot in snapshots {
+                    merged[snapshot.name] = snapshot
+                }
+                self.mcpRuntimeStatus = merged
+            }
+        }
+    }
+
+    /// Re-run the health check for a single MCP server via
+    /// `claude mcp get <name>` and update its badge. Note this does
+    /// not "reconnect" the server inside the running `claude` chat
+    /// process — that would require a respawn. It only refreshes
+    /// what we display so the user can confirm whether a recovery
+    /// effort outside cmux (auth, network) succeeded.
+    func reconnectMcpServer(name: String) {
+        guard !name.isEmpty else { return }
+        let cwd = workingDirectory
+        // Show "Connecting…" in the meantime so the click feels
+        // responsive.
+        mcpRuntimeStatus[name] = McpServerInitStatus(
+            name: name,
+            status: "connecting",
+            error: nil
+        )
+        Task.detached { [weak self] in
+            guard let self else { return }
+            let path: String
+            do {
+                path = try self.runner.resolveClaudeBinaryPath()
+            } catch {
+                return
+            }
+            let snapshot = await McpHealthProber.probeOne(name: name, claudePath: path, cwd: cwd)
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                if let snapshot {
+                    var merged = self.mcpRuntimeStatus
+                    merged[name] = snapshot
+                    self.mcpRuntimeStatus = merged
+                } else {
+                    // Probe returned nothing — fall back to unknown.
+                    var merged = self.mcpRuntimeStatus
+                    merged[name] = McpServerInitStatus(name: name, status: "unknown", error: nil)
+                    self.mcpRuntimeStatus = merged
+                }
+            }
+        }
+    }
+
+    /// Tear down the running `claude` process and the inline MCP HTTP
+    /// server, then drop the cached `--mcp-config` temp file. The next
+    /// `sendUserMessage` calls `ensureMcpServerStarted` again, which
+    /// regenerates the temp file from disk (picking up any edits the
+    /// user just made via the MCP manager) and `ensureStarted` respawns
+    /// `claude` with the new config. The session id we already captured
+    /// (`--resume <sid>`) means the new process picks the conversation
+    /// up exactly where the old one left off — only the MCP wiring
+    /// changes.
+    func reloadMcpRuntime() {
+        runner.terminate()
+        mcpServer?.stop()
+        mcpServer = nil
+        if let path = mcpConfigPath {
+            try? FileManager.default.removeItem(atPath: path)
+        }
+        mcpConfigPath = nil
+        // Clear the in-memory status snapshot so the UI shows
+        // "Unknown" until the fresh `system/init` lands. Otherwise we
+        // would briefly imply that the just-edited servers are still
+        // connected.
+        mcpRuntimeStatus = [:]
     }
 
     /// Append a synthetic system message to the transcript. Used by the
@@ -1232,11 +1403,12 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         flushStreamedBatches()
     }
 
-    /// Reset the conversation: cancel any in-flight turn, drop the messages
-    /// transcript, forget the session id (so the next turn starts a fresh
+    /// Reset the conversation: terminate the running claude (so its
+    /// in-memory session id is forgotten), drop the messages transcript,
+    /// forget the session id (so the next turn starts a fresh
     /// claude session, not a `--resume`), and clear errors.
     func clearTranscript() {
-        runner.cancel()
+        runner.terminate()
         ChatRowBuilderCache.shared.clear(panelId: id)
         // Drop any in-flight streamed messages before we replace the
         // transcript — otherwise the next flush would re-introduce them
@@ -1259,6 +1431,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         taskRegistryById.removeAll()
         pendingTaskCreates.removeAll()
         pendingDrafts.removeAll()
+        backgroundShells.removeAll()
         // Note: alwaysAllowedTools is intentionally preserved — it's persisted
         // in `.claude/settings.local.json` and represents user preferences
         // that should outlive a single conversation.
@@ -1345,17 +1518,168 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingQuestions.removeAll { $0.id == questionId }
     }
 
+    // MARK: - Background shells
+
+    /// Ask claude to kill a background shell by its `shell_id`. There is
+    /// no CLI surface to send commands to the running `claude` process
+    /// other than user turns, so we forward this as a slash-command-
+    /// style prompt that asks claude to invoke the `KillShell` tool. The
+    /// transcript shows the request collapsed (same pattern as `/clear`
+    /// and other built-ins) — the row is then moved to `.killed` by the
+    /// resulting `KillShell` tool_use we observe in the next assistant
+    /// event.
+    func killBackgroundShell(shellId: String) {
+        guard !shellId.isEmpty else { return }
+        // Optimistic flip so the popover shows the badge change right
+        // away. The actual transition is confirmed when claude emits
+        // the `KillShell` tool_use / tool_result a moment later.
+        if let idx = backgroundShells.firstIndex(where: { $0.shellId == shellId }) {
+            if case .completed = backgroundShells[idx].status { /* leave */ }
+            else if case .killed = backgroundShells[idx].status { /* leave */ }
+            else {
+                backgroundShells[idx].status = .killed
+            }
+        }
+        let expanded = String(
+            format: String(
+                localized: "claudeChat.bashes.kill.prompt",
+                defaultValue: "Use the KillShell tool to terminate shell_id=%@. Do not run any other commands."
+            ),
+            shellId
+        )
+        sendSlashCommand(name: "kill-shell", expandedText: expanded)
+    }
+
+    /// Drop the bookkeeping for a single shell row — used by the popover
+    /// when the user wants to hide entries claude already reported as
+    /// completed. Does not touch the underlying claude state.
+    func dismissBackgroundShell(toolUseId: String) {
+        backgroundShells.removeAll { $0.toolUseId == toolUseId }
+    }
+
+    fileprivate func noteBashToolUseIfBackground(_ toolUse: ChatMessageBlock.ToolUse) {
+        guard let input = parseJSONObject(toolUse.inputJSON) else { return }
+        let runInBackground = (input["run_in_background"] as? Bool) ?? false
+        guard runInBackground else { return }
+        if backgroundShells.contains(where: { $0.toolUseId == toolUse.id }) {
+            return
+        }
+        let rawCmd = (input["command"] as? String) ?? ""
+        let trimmed = rawCmd.trimmingCharacters(in: .whitespacesAndNewlines)
+        let preview = trimmed.count > 120 ? String(trimmed.prefix(117)) + "…" : trimmed
+        backgroundShells.append(BackgroundShell(
+            toolUseId: toolUse.id,
+            shellId: nil,
+            commandPreview: preview,
+            startedAt: Date(),
+            status: .starting
+        ))
+    }
+
+    fileprivate func noteKillShellToolUse(_ toolUse: ChatMessageBlock.ToolUse) {
+        guard let input = parseJSONObject(toolUse.inputJSON) else { return }
+        guard let shellId = input["shell_id"] as? String, !shellId.isEmpty else { return }
+        if let idx = backgroundShells.firstIndex(where: { $0.shellId == shellId }) {
+            backgroundShells[idx].status = .killed
+        }
+    }
+
+    fileprivate func noteBackgroundShellResult(_ result: ChatMessageBlock.ToolResult) {
+        guard let idx = backgroundShells.firstIndex(where: { $0.toolUseId == result.toolUseId }) else {
+            return
+        }
+        if let shellId = Self.parseShellId(fromContent: result.content) {
+            backgroundShells[idx].shellId = shellId
+        }
+        if case .killed = backgroundShells[idx].status {
+            return
+        }
+        if result.isError {
+            backgroundShells[idx].status = .completed(exitCode: "error")
+            return
+        }
+        let lower = result.content.lowercased()
+        if lower.contains("status: completed") || lower.contains("exit code") {
+            let code = Self.parseExitCode(fromContent: result.content)
+            backgroundShells[idx].status = .completed(exitCode: code)
+        } else if lower.contains("status: killed") {
+            backgroundShells[idx].status = .killed
+        } else {
+            backgroundShells[idx].status = .running
+        }
+    }
+
+    private func parseJSONObject(_ json: String) -> [String: Any]? {
+        guard let data = json.data(using: .utf8) else { return nil }
+        return (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
+    }
+
+    /// Best-effort scrape of the `shell_id` claude emits in the Bash
+    /// background tool_result. The harness today returns a preamble
+    /// like `Command running in background with ID: <id>. Output is
+    /// being written to: …`; older builds also use `shell_id: …` /
+    /// `Shell ID: …` / a JSON-ish blob with `"shell_id":"…"`. We
+    /// accept all four.
+    private static func parseShellId(fromContent content: String) -> String? {
+        // `... in background with ID: <id>...`
+        if let range = content.range(
+            of: #"with\s+ID:\s*([A-Za-z0-9_\-]+)"#,
+            options: [.regularExpression, .caseInsensitive]
+        ) {
+            let slice = content[range]
+            // Strip everything up to and including the colon, then trim
+            // trailing punctuation/whitespace.
+            if let colon = slice.firstIndex(of: ":") {
+                let after = slice[slice.index(after: colon)...]
+                    .trimmingCharacters(in: CharacterSet(charactersIn: " .\t\"'"))
+                if !after.isEmpty { return String(after) }
+            }
+        }
+        if let range = content.range(of: #"shell[_-]?id"\s*:\s*"([^"]+)""#, options: [.regularExpression, .caseInsensitive]),
+           let inner = content[range].split(separator: "\"").last {
+            return String(inner)
+        }
+        // `Shell ID: bash_<n>` / `shell_id: <something>` line.
+        for line in content.split(separator: "\n") {
+            let lower = line.lowercased()
+            if lower.contains("shell id") || lower.contains("shell_id") || lower.contains("bash id") {
+                if let colon = line.firstIndex(of: ":") {
+                    let after = line[line.index(after: colon)...]
+                        .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
+                    if !after.isEmpty {
+                        return String(after)
+                    }
+                }
+            }
+        }
+        return nil
+    }
+
+    private static func parseExitCode(fromContent content: String) -> String? {
+        guard let range = content.range(of: #"exit\s*code\s*[:=]\s*(-?\d+)"#, options: [.regularExpression, .caseInsensitive]) else {
+            return nil
+        }
+        let slice = content[range]
+        let digits = slice.unicodeScalars.filter { ("0"..."9").contains(Character($0)) || $0 == "-" }
+        return digits.isEmpty ? nil : String(String.UnicodeScalarView(digits))
+    }
+
     // MARK: - Event handling
 
     private func handle(event: ClaudeStreamEvent) {
         switch event {
-        case .systemInit(let sid, let model, _):
+        case .systemInit(let sid, let model, _, let mcpServers):
             if !sid.isEmpty, sessionId != sid {
                 sessionId = sid
             }
             if let model, !model.isEmpty, modelName != model {
                 modelName = model
             }
+            var snapshot: [String: McpServerInitStatus] = [:]
+            for entry in mcpServers {
+                snapshot[entry.name] = entry
+            }
+            mcpRuntimeStatus = snapshot
         case .assistant(let claudeMid, let blocks, _):
             guard !blocks.isEmpty else { return }
             // Detect attempts to call the non-functional built-in
@@ -1378,6 +1702,19 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 _ = toolUse
                 exitPlanModePresentedToken &+= 1
                 break
+            }
+            // Track background bash shells so the header popover knows
+            // what's alive and can offer a Kill button. We only register
+            // Bash invocations that asked for background execution; the
+            // shell_id arrives later in the tool_result.
+            for case .toolUse(let toolUse) in blocks where toolUse.name == "Bash" {
+                noteBashToolUseIfBackground(toolUse)
+            }
+            // A KillShell tool_use coming from claude itself moves the
+            // matching row to `.killed` so the UI reflects it before the
+            // result lands.
+            for case .toolUse(let toolUse) in blocks where toolUse.name == "KillShell" {
+                noteKillShellToolUse(toolUse)
             }
             // Pull every edit-shaped tool_use into the side-pane feed.
             for case .toolUse(let toolUse) in blocks
@@ -1480,6 +1817,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                         )
                         rebuildTodosFromRegistry()
                     }
+                    // Background-shell bookkeeping: a Bash tool_result
+                    // carries the shell_id (and sometimes an exit
+                    // status); a KillShell tool_result confirms the
+                    // matching shell was terminated.
+                    noteBackgroundShellResult(result)
                 default:
                     passthrough.append(block)
                 }
@@ -1499,9 +1841,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let sid, !sid.isEmpty, sessionId != sid {
                 sessionId = sid
             }
-            if isError, let errorMessage, !errorMessage.isEmpty {
-                status = .error(errorMessage)
-            }
             // Persist a checkpoint for this turn so the user can rewind
             // to it later (along with all the others piled up).
             if let staging = pendingTurnStaging, let activeSid = sessionId {
@@ -1516,25 +1855,142 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 ))
                 pendingTurnStaging = nil
             }
+            // The turn just finished. Drain any pending streamed chunks
+            // so the transcript settles before we flip status, then move
+            // the panel back to idle (or surface the error). The claude
+            // process itself stays alive — the next turn reuses it via
+            // stdin.
+            flushStreamedMessages()
+            if isError {
+                let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
+                if let message, !message.isEmpty {
+                    status = .error(message)
+                    let prefix = String(
+                        localized: "claudeChat.errorMessage.prefix",
+                        defaultValue: "**Error:**"
+                    )
+                    messages.append(.text(.system, "\(prefix) \(message)"))
+                } else {
+                    status = .error(String(
+                        localized: "claudeChat.errorMessage.unknown",
+                        defaultValue: "Claude reported an error."
+                    ))
+                }
+            } else if case .error = status {
+                // Keep the previous error chrome visible.
+            } else {
+                status = .idle
+            }
+            drainPendingDraftIfAny()
+            refreshStatusLine()
+        case .backgroundTask(let phase, let taskId, let toolUseId, let taskType, let status, let exitCode, _):
+            applyBackgroundTaskEvent(
+                phase: phase,
+                taskId: taskId,
+                toolUseId: toolUseId,
+                taskType: taskType,
+                status: status,
+                exitCode: exitCode
+            )
         case .other:
             break
         }
     }
 
-    private func handle(completion: Result<Void, Error>) {
-        // The turn has ended. Drain any pending streamed-message
-        // chunks so the transcript reflects the full final state
-        // before the view reacts to status flipping to .idle/.error
-        // (and before we maybe append a synthesized error notice).
-        flushStreamedMessages()
-        switch completion {
-        case .success:
-            if case .error = status {
-                // Keep the error message visible.
-                return
+    /// Update `backgroundShells` from a `task_started` / `task_updated` /
+    /// `task_notification` event. These are the only reliable signal we
+    /// get for "the shell finished" — the original Bash `tool_result`
+    /// just reports "Command running in background" and never updates
+    /// when the actual process exits.
+    private func applyBackgroundTaskEvent(
+        phase: BackgroundTaskPhase,
+        taskId: String,
+        toolUseId: String?,
+        taskType: String?,
+        status: String?,
+        exitCode: String?
+    ) {
+        guard !taskId.isEmpty else { return }
+        // Only background shells flow through `backgroundShells`. Other
+        // task types (e.g. subagents) reuse the same event family but
+        // belong to other UI surfaces.
+        if let taskType, !taskType.isEmpty, taskType != "local_bash" {
+            return
+        }
+        // Find the matching row. Prefer the tool_use_id (set on
+        // task_started + task_notification); fall back to task_id ==
+        // shell_id (set after we already saw the started event).
+        let matchedIndex: Int? = {
+            if let toolUseId, !toolUseId.isEmpty,
+               let i = backgroundShells.firstIndex(where: { $0.toolUseId == toolUseId }) {
+                return i
             }
-            status = .idle
-            drainPendingDraftIfAny()
+            return backgroundShells.firstIndex(where: { $0.shellId == taskId })
+        }()
+        guard let index = matchedIndex else {
+            // No matching row — likely because claude restarted (with
+            // --resume) and we missed the original `assistant` tool_use.
+            // Synthesise a row so the user still sees the shell.
+            if phase == .started {
+                backgroundShells.append(BackgroundShell(
+                    toolUseId: toolUseId ?? "task:\(taskId)",
+                    shellId: taskId,
+                    commandPreview: String(
+                        localized: "claudeChat.bashes.unknownCommand",
+                        defaultValue: "(background shell)"
+                    ),
+                    startedAt: Date(),
+                    status: .running
+                ))
+            }
+            return
+        }
+        if backgroundShells[index].shellId == nil {
+            backgroundShells[index].shellId = taskId
+        }
+        let resolved = resolveBackgroundShellStatus(rawStatus: status, exitCode: exitCode)
+        if case .set(let newStatus) = resolved {
+            backgroundShells[index].status = newStatus
+        }
+    }
+
+    private enum BackgroundShellStatusResolution {
+        case keep
+        case set(BackgroundShell.Status)
+    }
+
+    private func resolveBackgroundShellStatus(rawStatus: String?, exitCode: String?) -> BackgroundShellStatusResolution {
+        guard let lowered = rawStatus?.lowercased(), !lowered.isEmpty else {
+            return .keep
+        }
+        switch lowered {
+        case "running", "started", "in_progress":
+            return .set(.running)
+        case "completed", "done", "exited", "finished":
+            return .set(.completed(exitCode: exitCode))
+        case "killed", "cancelled", "canceled", "terminated":
+            return .set(.killed)
+        case "failed", "error":
+            return .set(.completed(exitCode: exitCode ?? "error"))
+        default:
+            return .keep
+        }
+    }
+
+    /// Fired when the persistent `claude` process exits. On a clean
+    /// shutdown (we called `runner.terminate()`) this is a no-op. On a
+    /// crash or unexpected exit we surface the failure so the user
+    /// notices something went wrong; the next prompt will respawn
+    /// `claude` via `ensureStarted`, picking the session back up with
+    /// `--resume`.
+    private func handle(processExit: Result<Void, Error>) {
+        flushStreamedMessages()
+        switch processExit {
+        case .success:
+            // Clean exit (terminate, clearTranscript, panel close).
+            if case .sending = status {
+                status = .idle
+            }
         case .failure(let error):
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             status = .error(message)
@@ -1543,11 +1999,6 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 defaultValue: "**Error:**"
             )
             messages.append(.text(.system, "\(prefix) \(message)"))
-            // Stop is delivered here as a cancellation failure. Per the
-            // chosen UX, queued follow-ups survive Stop and run as soon as
-            // the session goes idle — dispatchTurn flips status back from
-            // .error to .sending so the visible error chrome clears
-            // naturally once the next turn begins streaming.
             drainPendingDraftIfAny()
         }
         refreshStatusLine()

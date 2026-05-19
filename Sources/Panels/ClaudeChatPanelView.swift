@@ -752,6 +752,19 @@ struct ClaudeChatPanelView: View {
     @State private var inputFocusToken: Int = 0
     /// Controls whether the always-allowed-tools popover is visible.
     @State private var showingAlwaysAllowedPopover: Bool = false
+    /// Single source of truth for the popovers I added to the toolbar.
+    /// Multiple `.popover(isPresented:)` siblings on the same toolbar
+    /// can confuse SwiftUI under macOS Mission Control space switches
+    /// (every Image(systemName:) in the bar would flash to zero-width
+    /// on return), so we route through a shared enum + one
+    /// `.popover(item:)` instead.
+    @State private var activeChatPopover: ChatPopover?
+
+    enum ChatPopover: String, Identifiable {
+        case mcp
+        case bashes
+        var id: String { rawValue }
+    }
     /// Whether the right-side diff pane is open. Persists for the
     /// lifetime of this view; restart the panel to reset.
     @State private var showingDiffPane: Bool = false
@@ -1159,16 +1172,25 @@ struct ClaudeChatPanelView: View {
     /// AttributedString so the rendered chip matches what the script
     /// intended.
     private func statusLineRow(_ text: String) -> some View {
-        let attributed = ANSIRenderer.attributedString(
-            from: text,
+        // Hard-truncate at the string level so SwiftUI never has to
+        // ask `Text(AttributedString)` to compute mid-line truncation
+        // for selection. The combo `.textSelection(.enabled)` +
+        // `.lineLimit(1).truncationMode(.tail)` on a Text fed by an
+        // AttributedString recomputed every render (ANSIRenderer is
+        // not idempotent under value-equality once style identities
+        // diverge) lands in a SelectionOverlay ↔ NSTextField intrinsic-
+        // size invalidation loop that leaks NSMutableAttributedString
+        // and pegs the main thread at 100% CPU. The status line is a
+        // pure status indicator — selection is not a useful affordance
+        // here; removing it kills the feedback path entirely.
+        let attributed = ChatStatusLineAttributedCache.shared.attributed(
+            for: text,
             baseFont: .system(size: 11, design: .monospaced),
             defaultColor: .secondary
         )
         return HStack(spacing: 0) {
             Text(attributed)
                 .lineLimit(1)
-                .truncationMode(.tail)
-                .textSelection(.enabled)
             Spacer(minLength: 0)
         }
         .padding(.horizontal, 12)
@@ -1185,12 +1207,21 @@ struct ClaudeChatPanelView: View {
             Image(systemName: "folder")
                 .foregroundColor(.secondary)
                 .font(.system(size: 11))
+            // The working-directory label is the only flexible item in
+            // this row. When the diff pane opens, `chatColumn` narrows
+            // and a plain Text + Spacer combo lets the Text keep its
+            // intrinsic width, pushing the trailing buttons out of the
+            // HStack frame (parent clipping then makes them look
+            // invisible). Pinning the Text to `maxWidth: .infinity`
+            // with the lowest layout priority makes it the first to
+            // yield space, so the buttons always render.
             Text(panel.workingDirectory)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
                 .lineLimit(1)
                 .truncationMode(.middle)
-            Spacer(minLength: 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .layoutPriority(-1)
             if let sessionId = panel.sessionId {
                 Text(String(sessionId.prefix(8)))
                     .font(.system(size: 10, design: .monospaced))
@@ -1200,11 +1231,19 @@ struct ClaudeChatPanelView: View {
             undoButton
             diffPaneButton
             alwaysAllowedButton
+            mcpManagerButton
+            backgroundShellsButton
             copyChatButton
             clearButton
         }
         .padding(.horizontal, 16)
         .padding(.vertical, 8)
+        .popover(item: $activeChatPopover, arrowEdge: .bottom) { which in
+            switch which {
+            case .mcp: McpManagerPopover(panel: panel)
+            case .bashes: BackgroundShellsPopover(panel: panel)
+            }
+        }
         .confirmationDialog(
             pendingRewindUserMessageId == nil
                 ? String(localized: "claudeChat.undo.confirm.title", defaultValue: "Undo last turn?")
@@ -1333,6 +1372,56 @@ struct ClaudeChatPanelView: View {
         .popover(isPresented: $showingAlwaysAllowedPopover, arrowEdge: .bottom) {
             AlwaysAllowedPopover(panel: panel)
         }
+    }
+
+    private var mcpManagerButton: some View {
+        let connectedCount = panel.mcpConnectedCount
+        let failedCount = panel.mcpFailedCount
+        return Button {
+            activeChatPopover = (activeChatPopover == .mcp) ? nil : .mcp
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "rectangle.connected.to.line.below")
+                    .font(.system(size: 11))
+                if connectedCount > 0 {
+                    Text("\(connectedCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+            }
+            .foregroundColor(
+                failedCount > 0
+                    ? ChatPalette.red
+                    : (connectedCount > 0 ? ChatPalette.green : .secondary)
+            )
+        }
+        .buttonStyle(.borderless)
+        .help(String(
+            localized: "claudeChat.mcp.button.tooltip",
+            defaultValue: "Manage MCP servers (list, edit, reconnect)"
+        ))
+    }
+
+    private var backgroundShellsButton: some View {
+        let liveCount = panel.backgroundShellLiveCount
+        return Button {
+            activeChatPopover = (activeChatPopover == .bashes) ? nil : .bashes
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "terminal")
+                    .font(.system(size: 11))
+                if liveCount > 0 {
+                    Text("\(liveCount)")
+                        .font(.system(size: 10, weight: .semibold, design: .monospaced))
+                }
+            }
+            .foregroundColor(liveCount > 0 ? ChatPalette.cyan : .secondary)
+        }
+        .buttonStyle(.borderless)
+        .disabled(panel.backgroundShells.isEmpty)
+        .help(String(
+            localized: "claudeChat.bashes.button.tooltip",
+            defaultValue: "Background shells claude has launched in this chat"
+        ))
     }
 
     private var copyChatButton: some View {
@@ -1473,6 +1562,21 @@ struct ClaudeChatPanelView: View {
             .onChange(of: forceScrollToBottomToken) { _ in
                 scrollToBottom(proxy: proxy)
             }
+            .onChange(of: showingDiffPane) { _ in
+                // Toggling the diff pane resizes `chatColumn` over the
+                // 0.18s `.easeInOut` set on `chatContent`. The
+                // LazyVStack re-wraps rows mid-animation and the
+                // sentinel's estimated offset drifts, so a single
+                // post-animation `scrollTo` lands mid-content. Fire
+                // across the resize window: each pass re-anchors on
+                // the latest row heights, and the final one settles
+                // after the layout finishes.
+                guard isAtBottom else { return }
+                scheduleBottomAnchorPasses(
+                    proxy: proxy,
+                    delays: [0.0, 0.06, 0.12, 0.18, 0.26]
+                )
+            }
             .onAppear {
                 // When the chat panel becomes visible (switching back from
                 // another tab/workspace, or first mount) the ScrollView's
@@ -1592,21 +1696,42 @@ struct ClaudeChatPanelView: View {
 
     private func autoScrollIfStuck(proxy: ScrollViewProxy) {
         guard isAtBottom else { return }
-        withAnimation(.easeOut(duration: 0.15)) {
-            proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
-        }
+        // Re-anchor across a few frames: callers fire from
+        // `.onChange(of: <…>.count)`, i.e. a brand-new row was just
+        // added. The LazyVStack has not materialised that row yet, so
+        // a single `scrollTo(.bottom)` would compute its offset from
+        // the ESTIMATED height of the new row + sentinel and land in
+        // empty space. Each subsequent pass materialises more of the
+        // tail and re-anchors on increasingly accurate heights until
+        // the offset settles on the true bottom.
+        scheduleBottomAnchorPasses(proxy: proxy, delays: [0.0, 0.05, 0.12])
     }
 
     private func scrollToBottom(proxy: ScrollViewProxy) {
         isAtBottom = true
-        // No animation: animating `scrollTo(.bottom)` in a LazyVStack
-        // when the target is far below crosses non-materialised rows
-        // (visible white flash) and lands at an offset computed from
-        // ESTIMATED row heights, which then snaps back once the real
-        // rows materialise — the "salta lejos, blanco, rebota" pattern.
-        // Instant jump avoids both. `autoScrollIfStuck` keeps its
-        // animation because those scroll deltas are tiny during streaming.
-        proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
+        // From a position far above the bottom (history mode, fresh
+        // open, post-resize, or the explicit "jump to latest" button),
+        // the LazyVStack has no materialised rows near the sentinel and
+        // `scrollTo(.bottom)` uses ESTIMATED row heights — the offset
+        // ends up past the real content (visible blank zone) until
+        // SwiftUI materialises the tail. Multiple passes let each
+        // re-anchor refine the offset as rows come in.
+        scheduleBottomAnchorPasses(proxy: proxy, delays: [0.0, 0.04, 0.10, 0.18])
+    }
+
+    /// Fire `proxy.scrollTo(bottomSentinel, .bottom)` at each provided
+    /// delay (seconds from now). Used to re-anchor across the window
+    /// during which the LazyVStack is still materialising the tail —
+    /// each pass refines the offset on more accurate row heights.
+    private func scheduleBottomAnchorPasses(
+        proxy: ScrollViewProxy,
+        delays: [Double]
+    ) {
+        for delay in delays {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                proxy.scrollTo(Self.bottomSentinelId, anchor: .bottom)
+            }
+        }
     }
 
     @ViewBuilder
@@ -2062,6 +2187,10 @@ struct ClaudeChatPanelView: View {
             ))
         case SlashCommandRegistry.BuiltinKey.permissions:
             showingAlwaysAllowedPopover = true
+        case SlashCommandRegistry.BuiltinKey.mcp:
+            activeChatPopover = .mcp
+        case SlashCommandRegistry.BuiltinKey.bashes:
+            activeChatPopover = .bashes
         case SlashCommandRegistry.BuiltinKey.help:
             panel.appendSystemNotice(buildHelpMessage())
         default:
@@ -2271,12 +2400,23 @@ private struct ClaudeChatComposerView: View, Equatable {
                 .frame(maxWidth: 110)
 
                 if let model = modelName, !model.isEmpty {
+                    // lineLimit + layoutPriority(-1): the model capsule
+                    // is the flexible item in this row. With the diff
+                    // pane open the composer narrows and an un-clipped
+                    // Text expands to its intrinsic width, squeezing
+                    // the trailing Send/Stop buttons until the borderless
+                    // image inside each one is clipped out of the
+                    // button's frame (visible empty buttons). Letting
+                    // the capsule truncate first preserves the buttons.
                     Text(model)
                         .font(.system(size: 10, design: .monospaced))
                         .foregroundColor(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
                         .padding(.horizontal, 6)
                         .padding(.vertical, 2)
                         .background(Capsule().fill(palette.cardBg(isDark)))
+                        .layoutPriority(-1)
                         .help(String(
                             localized: "claudeChat.model.tooltip",
                             defaultValue: "Active Claude model"
@@ -2285,6 +2425,11 @@ private struct ClaudeChatComposerView: View, Equatable {
 
                 Spacer(minLength: 4)
 
+                // `.fixedSize()` pins this cluster at its ideal width;
+                // without it SwiftUI compresses the internal padding of
+                // `.borderedProminent` and the 12pt Image gets clipped
+                // out of the button's visible frame when the composer
+                // narrows.
                 HStack(spacing: 6) {
                     if isSending {
                         Button(action: onCancelStreaming) {
@@ -2309,6 +2454,7 @@ private struct ClaudeChatComposerView: View, Equatable {
                         defaultValue: "Send (Enter) — queues if Claude is still replying"
                     ))
                 }
+                .fixedSize()
             }
         }
         .padding(.vertical, 6)
@@ -2759,7 +2905,6 @@ private struct ToolInputDetailView: View {
             Text(rawJSON)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.secondary)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
@@ -2786,7 +2931,6 @@ private struct SkillInvocationView: View {
                 Text(args)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.primary)
-                    .textSelection(.enabled)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
@@ -2826,7 +2970,6 @@ private struct TaskInvocationView: View {
                 Text(prompt)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.primary)
-                    .textSelection(.enabled)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
@@ -2930,7 +3073,6 @@ private struct ExitPlanModeView: View {
             } else {
                 Markdown(trimmed)
                     .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(
@@ -3042,7 +3184,6 @@ private struct BashCommandView: View {
                 Text(displayed)
                     .font(.system(size: 12, design: .monospaced))
                     .foregroundColor(palette.fg(isDark))
-                    .textSelection(.enabled)
                     .padding(8)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .background(
@@ -3065,7 +3206,6 @@ private func filePathRow(_ path: String) -> some View {
             .foregroundColor(.secondary)
             .lineLimit(1)
             .truncationMode(.middle)
-            .textSelection(.enabled)
     }
 }
 
@@ -3182,7 +3322,6 @@ private struct DiffBlock: View {
             Text(truncated.isEmpty ? " " : truncated)
                 .font(.system(size: 11, design: .monospaced))
                 .foregroundColor(.primary)
-                .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.vertical, 1)
@@ -3696,7 +3835,6 @@ private struct ToolResultCard: View {
                     .foregroundColor(.secondary)
                     .lineLimit(1)
                     .truncationMode(.tail)
-                    .textSelection(.enabled)
                 Spacer(minLength: 4)
                 if hasMore {
                     Button(action: { expanded.toggle() }) {
@@ -3718,7 +3856,6 @@ private struct ToolResultCard: View {
                 Text(expandedDisplay)
                     .font(.system(size: 11, design: .monospaced))
                     .foregroundColor(.secondary)
-                    .textSelection(.enabled)
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.top, 2)
             }
@@ -3837,6 +3974,37 @@ final class ChatMarkdownComplexityProbe {
         ) != nil {
             return .heavy
         }
+        // ATX headers (`# Title`, `## Sub`) — the simple `Text(Attributed
+        // String)` path with `.inlineOnlyPreservingWhitespace` would
+        // print the literal `#`; humans expect visual hierarchy here.
+        if text.range(
+            of: #"(?m)^\s{0,3}#{1,6}\s+\S"#,
+            options: .regularExpression
+        ) != nil {
+            return .heavy
+        }
+        // Unordered list (`- item`, `* item`, `+ item`) — needs proper
+        // bullet rendering and indent that MarkdownUI provides.
+        if text.range(
+            of: #"(?m)^\s{0,3}[-*+]\s+\S"#,
+            options: .regularExpression
+        ) != nil {
+            return .heavy
+        }
+        // Ordered list (`1. item`, `12) item`).
+        if text.range(
+            of: #"(?m)^\s{0,3}\d+[.)]\s+\S"#,
+            options: .regularExpression
+        ) != nil {
+            return .heavy
+        }
+        // Blockquote (`> quoted`) — left-bar + indent rendering.
+        if text.range(
+            of: #"(?m)^\s{0,3}>\s"#,
+            options: .regularExpression
+        ) != nil {
+            return .heavy
+        }
         return .simple
     }
 }
@@ -3869,14 +4037,18 @@ final class ChatSimpleMarkdownCache {
         if let box = cache.object(forKey: key) {
             return box.attr
         }
-        // `.full` interpreta también block-level (headers, lists) como
-        // PresentationIntent attributes. Native `Text` no aplica
-        // jerarquía visual a esos intents, así que los headers/listas
-        // se aplanan a inline text. Aceptable por decisión del usuario;
-        // si más adelante hace falta visual hierarchy, se puede mover
-        // ese subset al heavy path o renderizarlos manualmente.
+        // `.inlineOnlyPreservingWhitespace` parses inline syntax (bold,
+        // italic, inline code, links) but treats block-level tokens as
+        // literal text AND keeps `\n` / `\n\n` as real newlines. With
+        // `.full` SwiftUI collapses block-level intents (paragraphs,
+        // lists, headers) into a single run, which renders the whole
+        // message as one wall-of-text glob. The complexity probe
+        // promotes any text containing real headers/lists/blockquotes
+        // to the heavy MarkdownUI path, so reaching this branch means
+        // prose with at most inline emphasis — exactly where preserving
+        // whitespace gives the right visual structure.
         var options = AttributedString.MarkdownParsingOptions()
-        options.interpretedSyntax = .full
+        options.interpretedSyntax = .inlineOnlyPreservingWhitespace
         options.failurePolicy = .returnPartiallyParsedIfPossible
         let attr = (try? AttributedString(markdown: text, options: options))
             ?? AttributedString(text)
@@ -4700,7 +4872,14 @@ private struct TextBlockRow: View, Equatable {
                                         .fill(palette.accent(isDark).opacity(isDark ? 0.30 : 0.18))
                                 )
                                 .opacity(isPending ? 0.55 : 1.0)
-                                .textSelection(.enabled)
+                                // `.textSelection(.enabled)` removed —
+                                // see the assistant-bubble branch
+                                // below for the SelectionOverlay
+                                // runaway-loop diagnosis. Every bubble
+                                // in the LazyVStack mounted its own
+                                // overlay; keeping it here would
+                                // reintroduce the same multiplier and
+                                // the same oscillation path.
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -4717,18 +4896,31 @@ private struct TextBlockRow: View, Equatable {
                 // — nativo, CoreText puro, sin árbol de subviews ni
                 // preferences-machinery. Solo cuando hay tabla o code
                 // block caemos al path completo de MarkdownUI.
+                //
+                // `.textSelection(.enabled)` was intentionally dropped
+                // from these two paths: a Release build of the panel
+                // pegged the main thread at 100% CPU with a memory leak
+                // climbing past 19 GB after ~10 h, in a
+                // `SelectionOverlay.updateNSView` →
+                // `NSTextField.invalidateIntrinsicContentSize` →
+                // `_NSPresentationIntentDirtying` loop. The bubbles
+                // multiplied across the LazyVStack so every visible row
+                // mounted its own SelectionOverlay; once one entered
+                // the oscillation it perpetuated through layout
+                // invalidation. For copying we already expose the
+                // dedicated "copy chat" button; per-bubble selection
+                // can be revisited via `.copyable` or an explicit
+                // context menu without involving SelectionOverlay.
                 switch ChatMarkdownComplexityProbe.shared.classify(text) {
                 case .simple:
                     Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
                         .foregroundStyle(palette.fg(isDark))
                         .font(.system(size: 13))
                         .tint(isDark ? ChatPalette.cyan : Color.accentColor)
-                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 case .heavy:
                     Markdown(ChatMarkdownContentCache.shared.content(for: text))
                         .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                        .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
             }
@@ -4777,7 +4969,6 @@ private struct TextBlockRow: View, Equatable {
                         RoundedRectangle(cornerRadius: 6)
                             .fill(palette.codeBg(isDark))
                     )
-                    .textSelection(.enabled)
                     .transition(.opacity.combined(with: .move(edge: .top)))
             }
         }
@@ -5147,6 +5338,60 @@ private struct SlashCommandRow: View {
 ///   - default fg/bg (39, 49)
 /// CSI sequences other than `m` (cursor moves, etc.) and OSC blocks
 /// are silently dropped.
+/// Per-process cache for the status line's `AttributedString`. Without
+/// this, `statusLineRow` re-runs `ANSIRenderer.attributedString` on
+/// every body evaluation; the produced struct compares unequal between
+/// runs even when the input is identical (style identities — `Font`,
+/// `Color` — diverge across `setAttributes` calls), so SwiftUI treats
+/// every render as a content change and re-applies the AttributedString
+/// to the underlying NSTextField. Combined with `.textSelection(.enabled)`
+/// that triggers `SelectionOverlay.updateNSView`'s `replacingLineBreakModes`
+/// pass and `_NSPresentationIntentDirtying` intent re-resolution — the
+/// observed runaway loop on the Release fork.
+///
+/// Key is the literal status line text; the baseFont/defaultColor
+/// arguments are practically constant (`.secondary` + `system(size:11)`)
+/// but baked into the key as well for safety in case future callers
+/// share the cache.
+final class ChatStatusLineAttributedCache {
+    static let shared = ChatStatusLineAttributedCache()
+
+    private final class Box { let attr: AttributedString; init(_ a: AttributedString) { self.attr = a } }
+    private let cache = NSCache<NSString, Box>()
+    private let lock = NSLock()
+
+    init() {
+        cache.countLimit = 64
+    }
+
+    func attributed(
+        for text: String,
+        baseFont: Font,
+        defaultColor: Color
+    ) -> AttributedString {
+        // The base font / default color are fixed at the call site for
+        // the status line, so encoding them in the key by description
+        // is enough. If a future caller varies them, the key still
+        // disambiguates.
+        let key = "\(text)|\(baseFont)|\(defaultColor)" as NSString
+        if let box = cache.object(forKey: key) {
+            return box.attr
+        }
+        lock.lock()
+        defer { lock.unlock() }
+        if let box = cache.object(forKey: key) {
+            return box.attr
+        }
+        let attr = ANSIRenderer.attributedString(
+            from: text,
+            baseFont: baseFont,
+            defaultColor: defaultColor
+        )
+        cache.setObject(Box(attr), forKey: key)
+        return attr
+    }
+}
+
 enum ANSIRenderer {
     static func attributedString(
         from text: String,

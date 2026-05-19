@@ -86,6 +86,8 @@ enum SlashCommandRegistry {
         static let permissions = "permissions"
         static let model = "model"
         static let help = "help"
+        static let mcp = "mcp"
+        static let bashes = "bashes"
     }
 
     static let builtinCommands: [SlashCommand] = [
@@ -142,6 +144,24 @@ enum SlashCommandRegistry {
             ),
             source: .builtin,
             action: .runBuiltin(BuiltinKey.help)
+        ),
+        SlashCommand(
+            name: "mcp",
+            description: String(
+                localized: "claudeChat.slash.mcp.desc",
+                defaultValue: "Manage MCP servers — list, edit, and reconnect"
+            ),
+            source: .builtin,
+            action: .runBuiltin(BuiltinKey.mcp)
+        ),
+        SlashCommand(
+            name: "bashes",
+            description: String(
+                localized: "claudeChat.slash.bashes.desc",
+                defaultValue: "Show background bash shells and kill them"
+            ),
+            source: .builtin,
+            action: .runBuiltin(BuiltinKey.bashes)
         ),
     ]
 

@@ -17,11 +17,46 @@ import Foundation
 /// Anything else is mapped to `.other` so future schema additions never
 /// crash the chat.
 enum ClaudeStreamEvent {
-    case systemInit(sessionId: String, model: String?, cwd: String?)
+    case systemInit(sessionId: String, model: String?, cwd: String?, mcpServers: [McpServerInitStatus])
     case assistant(messageId: String?, blocks: [ChatMessageBlock], usage: ChatTokenUsage?)
     case user(blocks: [ChatMessageBlock])
     case result(isError: Bool, sessionId: String?, errorMessage: String?, totalCostUSD: Double?, usage: ChatTokenUsage?)
+    /// Lifecycle event for a background task (today, only `local_bash`
+    /// shells via `run_in_background: true`). The `task_started`,
+    /// `task_updated` and `task_notification` subtypes all decode here
+    /// — see `phase` for which one. `taskId` is the same identifier
+    /// Claude Code exposes through its `/bashes` UI and `KillShell`
+    /// tool.
+    case backgroundTask(
+        phase: BackgroundTaskPhase,
+        taskId: String,
+        toolUseId: String?,
+        taskType: String?,
+        status: String?,
+        exitCode: String?,
+        summary: String?
+    )
     case other(typeName: String)
+}
+
+enum BackgroundTaskPhase: Equatable {
+    case started
+    case updated
+    case notification
+}
+
+/// One entry of the `mcp_servers` array carried in the `system/init`
+/// event that `claude -p --output-format stream-json --verbose` emits
+/// when it has finished spinning up. The exact statuses Claude Code
+/// reports today are `connected`, `failed`, and `needs-auth`; we keep
+/// the raw string around so the UI can colour-code any future addition
+/// without code changes.
+struct McpServerInitStatus: Equatable {
+    let name: String
+    let status: String
+    /// Free-form error blob the CLI sometimes includes alongside a
+    /// `failed` status. Nil when the server connected cleanly.
+    let error: String?
 }
 
 /// Token-usage snapshot reported by claude on each `assistant` message
@@ -131,9 +166,83 @@ extension ClaudeStreamEvent {
         let model = dict["model"] as? String
         let cwd = dict["cwd"] as? String
         if subtype == "init" {
-            return .systemInit(sessionId: sessionId, model: model, cwd: cwd)
+            let servers = parseMcpServers(dict["mcp_servers"])
+            return .systemInit(sessionId: sessionId, model: model, cwd: cwd, mcpServers: servers)
+        }
+        if subtype == "task_started" || subtype == "task_updated" || subtype == "task_notification" {
+            return parseBackgroundTask(dict, subtype: subtype ?? "")
         }
         return .other(typeName: "system." + (subtype ?? "?"))
+    }
+
+    /// Decode a `task_*` system message. Shape (across the three
+    /// subtypes seen in the wild):
+    ///
+    /// ```json
+    /// {type:"system", subtype:"task_started", task_id:"…",
+    ///  tool_use_id:"…", task_type:"local_bash", description:"…", …}
+    /// {type:"system", subtype:"task_updated", task_id:"…",
+    ///  patch:{status:"completed", end_time:…}, …}
+    /// {type:"system", subtype:"task_notification", task_id:"…",
+    ///  tool_use_id:"…", status:"completed",
+    ///  summary:"… completed (exit code 0)", …}
+    /// ```
+    private static func parseBackgroundTask(_ dict: [String: Any], subtype: String) -> ClaudeStreamEvent {
+        let taskId = (dict["task_id"] as? String) ?? ""
+        let toolUseId = dict["tool_use_id"] as? String
+        let taskType = dict["task_type"] as? String
+        let phase: BackgroundTaskPhase
+        var status: String?
+        switch subtype {
+        case "task_started":
+            phase = .started
+            status = "running"
+        case "task_updated":
+            phase = .updated
+            if let patch = dict["patch"] as? [String: Any] {
+                status = patch["status"] as? String
+            }
+        default:
+            phase = .notification
+            status = dict["status"] as? String
+        }
+        let summary = dict["summary"] as? String
+        let exitCode = parseExitCode(fromSummary: summary)
+        return .backgroundTask(
+            phase: phase,
+            taskId: taskId,
+            toolUseId: toolUseId,
+            taskType: taskType,
+            status: status,
+            exitCode: exitCode,
+            summary: summary
+        )
+    }
+
+    /// Pull "(exit code 0)" / "(exit code -1)" out of a task_notification
+    /// summary string. Returns nil when the summary is missing or has no
+    /// such fragment.
+    private static func parseExitCode(fromSummary summary: String?) -> String? {
+        guard let summary,
+              let range = summary.range(of: #"exit\s*code\s*(-?\d+)"#, options: [.regularExpression, .caseInsensitive])
+        else { return nil }
+        let slice = summary[range]
+        let digits = slice.unicodeScalars.filter { ("0"..."9").contains(Character($0)) || $0 == "-" }
+        return digits.isEmpty ? nil : String(String.UnicodeScalarView(digits))
+    }
+
+    /// Pull the array of MCP server status entries out of a `system/init`
+    /// dict. Claude Code reports `[{name, status, error?}]` today, but
+    /// older builds may use slightly different keys — we accept both
+    /// `error` and `message` for the failure blob.
+    private static func parseMcpServers(_ raw: Any?) -> [McpServerInitStatus] {
+        guard let array = raw as? [[String: Any]] else { return [] }
+        return array.compactMap { item in
+            guard let name = item["name"] as? String, !name.isEmpty else { return nil }
+            let status = (item["status"] as? String) ?? "unknown"
+            let error = (item["error"] as? String) ?? (item["message"] as? String)
+            return McpServerInitStatus(name: name, status: status, error: error)
+        }
     }
 
     private static func parseAssistant(_ dict: [String: Any]) -> ClaudeStreamEvent {
