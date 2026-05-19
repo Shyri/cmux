@@ -2187,7 +2187,7 @@ struct ContentView: View {
         ZStack(alignment: alignment) {
             sidebarBackdropLayer(width: width, role: role, appearance: appearance)
             content()
-                .environment(\.colorScheme, appearance.chromeColorScheme)
+                .environment(\.colorScheme, appearance.sidebarContentColorScheme)
         }
         .frame(width: width)
     }
@@ -2678,6 +2678,7 @@ struct ContentView: View {
                 .overlay(alignment: .topLeading) {
                     if isFullScreen && sidebarState.isVisible && !isMinimalMode {
                         fullscreenControls
+                            .environment(\.colorScheme, appearance.sidebarContentColorScheme)
                             .padding(.leading, 10)
                             .padding(.top, 4)
                     }
@@ -12543,7 +12544,8 @@ private struct TabItemView: View, Equatable {
     private func selectedWorkspaceForegroundNSColor(opacity: CGFloat) -> NSColor {
         sidebarSelectedWorkspaceForegroundNSColor(
             on: selectedWorkspaceBackgroundNSColor,
-            opacity: opacity
+            opacity: opacity,
+            usesDefaultSelectionColor: sidebarSelectionColorHex == nil
         )
     }
 
