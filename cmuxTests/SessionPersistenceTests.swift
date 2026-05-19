@@ -4025,6 +4025,36 @@ extension SessionPersistenceTests {
         XCTAssertFalse(effectiveBinding.allowsAutomaticResume)
     }
 
+    func testSurfaceResumeApprovalDoesNotPromptForExplicitCLICommand() throws {
+        let binding = SurfaceResumeBindingSnapshot(
+            command: "tmux attach -t work",
+            cwd: "/tmp/project",
+            source: "cli"
+        )
+
+        XCTAssertFalse(SurfaceResumeApprovalStore.shouldPromptForProposal(
+            binding: binding,
+            existingRecord: nil,
+            isMainThread: true,
+            isRunningTests: false
+        ))
+    }
+
+    func testSurfaceResumeApprovalPromptsForUnknownManualProposal() throws {
+        let binding = SurfaceResumeBindingSnapshot(
+            command: "tmux attach -t work",
+            cwd: "/tmp/project",
+            source: nil
+        )
+
+        XCTAssertTrue(SurfaceResumeApprovalStore.shouldPromptForProposal(
+            binding: binding,
+            existingRecord: nil,
+            isMainThread: true,
+            isRunningTests: false
+        ))
+    }
+
     func testSurfaceResumePromptPolicyDoesNotRunAutomaticallyUnderTest() throws {
         let storeURL = try makeSurfaceResumeApprovalStoreURL()
         let secret = Data("approval-secret".utf8)
