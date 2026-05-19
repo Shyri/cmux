@@ -3024,8 +3024,6 @@ class GhosttyApp {
     }
 
     static func runtimeColorSchemeSynchronizationDecision(
-        applied _: ghostty_color_scheme_e?,
-        requested _: ghostty_color_scheme_e,
         isSynchronizing: Bool
     ) -> RuntimeColorSchemeSynchronizationDecision {
         if isSynchronizing {
@@ -3332,8 +3330,6 @@ class GhosttyApp {
     ) {
         guard let app else { return }
         let decision = Self.runtimeColorSchemeSynchronizationDecision(
-            applied: appliedGhosttyRuntimeColorScheme,
-            requested: runtimeColorScheme,
             isSynchronizing: runtimeColorSchemeSynchronizationDepth > 0
         )
         guard decision == .apply else {
