@@ -239,9 +239,35 @@ private enum MainWindowKeyRegainRefresh {
         guard !view.isHidden else { return }
         view.needsDisplay = true
         view.layer?.setNeedsDisplay()
+        // Do not descend into SwiftUI's NSHostingView subtree. SwiftUI
+        // owns its own invalidation pipeline and forcing `needsDisplay`
+        // on every descendant racing with its layout pass corrupts
+        // `Image(systemName:)` rendering — symbols collapse to zero
+        // size on window-key regain, leaving the surrounding `Text` /
+        // `Button` chrome behind. The host view above has already been
+        // marked dirty, which is enough for SwiftUI to schedule a
+        // proper update.
+        if isSwiftUIHostingBoundary(view) { return }
         for subview in view.subviews {
             invalidateDisplayTree(rootedAt: subview)
         }
+    }
+
+    /// True when `view` is a SwiftUI hosting boundary (`NSHostingView`,
+    /// `_NSHostingView`, or any future variant Apple ships). We match
+    /// on the class name because `NSHostingView` is generic over its
+    /// content type, so an `is NSHostingView<…>` cast cannot cover all
+    /// shapes at once.
+    private static func isSwiftUIHostingBoundary(_ view: NSView) -> Bool {
+        var cls: AnyClass? = type(of: view)
+        while let current = cls {
+            let name = NSStringFromClass(current)
+            if name.contains("NSHostingView") || name.contains("NSHostingPlatformView") {
+                return true
+            }
+            cls = current.superclass()
+        }
+        return false
     }
 }
 
