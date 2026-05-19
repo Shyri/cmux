@@ -5251,6 +5251,11 @@ final class TerminalSurface: Identifiable, ObservableObject {
         desiredFocusState
     }
 
+    @MainActor
+    func debugAdditionalEnvironmentForTesting() -> [String: String] {
+        additionalEnvironment
+    }
+
     func debugForceRefreshCount() -> Int {
         debugForceRefreshCountLock.lock()
         defer { debugForceRefreshCountLock.unlock() }
