@@ -1,75 +1,39 @@
 import SwiftUI
 import AppKit
 
-struct NotesSidebarContentView: View {
+/// Notes panel for a workspace. Used as the collapsible header inside the right sidebar
+/// (above the mode tabs). The previous standalone sidebar that also embedded GitLab
+/// has been removed; GitLab is now its own right-sidebar tab.
+struct WorkspaceNotesPanelView: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var notesStore = WorkspaceNotesStore.shared
     @Binding var editingNoteId: UUID?
     @State private var draggedNoteId: UUID?
     @State private var dropTargetNoteId: UUID?
-    @AppStorage("notesSidebarSplitRatio") private var splitRatio: Double = 0.5
-    @State private var isDraggingSplitter: Bool = false
+
+    /// When true, the panel is rendered with the dark "darcula" surface used by the
+    /// legacy notes sidebar. The right-sidebar header uses the surrounding chrome
+    /// instead so we render transparently there.
+    var darkBackground: Bool = false
+
+    /// When true, render the header bar (title + add/cleanup actions). The right
+    /// sidebar provides its own collapsible header so it sets this to false.
+    var showsHeader: Bool = true
 
     var body: some View {
-        GeometryReader { geometry in
-            let totalHeight = geometry.size.height
-            let notesHeight = max(80, totalHeight * CGFloat(splitRatio))
-            let mrHeight = max(80, totalHeight - notesHeight)
-
-            VStack(spacing: 0) {
-                // Top: Notes
-                notesSection
-                    .frame(height: notesHeight)
-
-                // Draggable divider
-                splitDivider(totalHeight: totalHeight)
-
-                // Bottom: GitLab (MRs + Pipelines)
-                GitLabSidebarView(workspace: workspace)
-                    .id(workspace.id)
-                    .frame(height: mrHeight)
-            }
-            .background(Color.darculaSidebarBackground)
-            .preferredColorScheme(.dark)
-        }
-    }
-
-    private var notesSection: some View {
         VStack(spacing: 0) {
-            notesSidebarHeader
-            Divider()
+            if showsHeader {
+                notesSidebarHeader
+                Divider()
+            }
             if workspace.notes.isEmpty {
                 notesEmptyState
             } else {
                 notesList
             }
         }
-    }
-
-    private func splitDivider(totalHeight: CGFloat) -> some View {
-        Rectangle()
-            .fill(isDraggingSplitter ? Color.darculaAccent : Color.darculaBorder)
-            .frame(height: isDraggingSplitter ? 2 : 1)
-            .frame(maxWidth: .infinity)
-            .contentShape(Rectangle().inset(by: -4))
-            .onHover { hovering in
-                if hovering {
-                    NSCursor.resizeUpDown.push()
-                } else {
-                    NSCursor.pop()
-                }
-            }
-            .gesture(
-                DragGesture(minimumDistance: 1, coordinateSpace: .local)
-                    .onChanged { value in
-                        isDraggingSplitter = true
-                        let newRatio = (CGFloat(splitRatio) * totalHeight + value.translation.height) / totalHeight
-                        splitRatio = Double(min(0.85, max(0.15, newRatio)))
-                    }
-                    .onEnded { _ in
-                        isDraggingSplitter = false
-                    }
-            )
+        .background(darkBackground ? Color.darculaSidebarBackground : Color.clear)
+        .preferredColorScheme(darkBackground ? .dark : nil)
     }
 
     private var notesSidebarHeader: some View {
@@ -90,9 +54,7 @@ struct NotesSidebarContentView: View {
                 .help(String(localized: "notes.sidebar.deleteCompleted", defaultValue: "Delete completed notes"))
             }
             Button {
-                let note = WorkspaceNote()
-                workspace.notes.append(note)
-                editingNoteId = note.id
+                addNote()
             } label: {
                 Image(systemName: "plus")
                     .font(.body.weight(.medium))
@@ -102,6 +64,12 @@ struct NotesSidebarContentView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+
+    func addNote() {
+        let note = WorkspaceNote()
+        workspace.notes.append(note)
+        editingNoteId = note.id
     }
 
     private func deleteCompletedNotes() {

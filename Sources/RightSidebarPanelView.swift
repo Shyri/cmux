@@ -15,6 +15,7 @@ nonisolated enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
     case sessions
     case feed
     case dock
+    case gitlab
 
     var label: String {
         switch self {
@@ -23,6 +24,7 @@ nonisolated enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .sessions: return String(localized: "rightSidebar.mode.sessions", defaultValue: "Vault")
         case .feed: return String(localized: "rightSidebar.mode.feed", defaultValue: "Feed")
         case .dock: return String(localized: "rightSidebar.mode.dock", defaultValue: "Dock")
+        case .gitlab: return String(localized: "rightSidebar.mode.gitlab", defaultValue: "GitLab")
         }
     }
 
@@ -33,6 +35,7 @@ nonisolated enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .sessions: return "books.vertical"
         case .feed: return "dot.radiowaves.left.and.right"
         case .dock: return "dock.rectangle"
+        case .gitlab: return "arrow.triangle.merge"
         }
     }
 
@@ -43,6 +46,7 @@ nonisolated enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .sessions: return .switchRightSidebarToSessions
         case .feed: return .switchRightSidebarToFeed
         case .dock: return .switchRightSidebarToDock
+        case .gitlab: return .switchRightSidebarToGitlab
         }
     }
 }
@@ -74,6 +78,10 @@ extension RightSidebarMode {
         if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToDock).matches(event: event),
            RightSidebarMode.dock.isAvailable() {
             return .dock
+        }
+        if KeyboardShortcutSettings.shortcut(for: .switchRightSidebarToGitlab).matches(event: event),
+           RightSidebarMode.gitlab.isAvailable() {
+            return .gitlab
         }
         return nil
     }
@@ -153,10 +161,22 @@ struct RightSidebarPanelView: View {
     @ObservedObject var sessionIndexStore: SessionIndexStore
     let titlebarHeight: CGFloat
     let workspaceId: UUID?
+    var workspace: Workspace? = nil
+    var editingNoteId: Binding<UUID?>? = nil
     let onResumeSession: ((SessionEntry) -> Void)?
     let onOpenFilePreview: (String) -> Void
     let onOpenAsPane: (RightSidebarMode) -> Void
     let onClose: () -> Void
+
+    @AppStorage("rightSidebar.notes.collapsed")
+    private var notesCollapsed: Bool = false
+    @AppStorage("rightSidebar.notes.height")
+    private var notesPanelHeight: Double = 180
+    @State private var notesDragStartHeight: CGFloat?
+    @State private var isDraggingNotesDivider: Bool = false
+
+    private static let notesPanelMinHeight: CGFloat = 80
+    private static let notesPanelMaxHeight: CGFloat = 500
 
     @State private var modeShortcutHintMonitor = WindowScopedShortcutHintModifierMonitor(activation: .commandOrControl) { window in
         guard let responder = window.firstResponder else { return false }
@@ -187,6 +207,7 @@ struct RightSidebarPanelView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            notesHeaderSection
             modeBar
                 .rightSidebarChromeBottomBorder()
             contentForMode
@@ -388,6 +409,152 @@ struct RightSidebarPanelView: View {
             FeedPanelView()
         case .dock:
             DockPanelView(rootDirectory: sessionIndexDirectory, workspaceId: workspaceId, store: dockStore)
+        case .gitlab:
+            if let ws = workspace {
+                GitLabSidebarView(workspace: ws)
+                    .id(ws.id)
+            } else {
+                Color.clear
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var notesHeaderSection: some View {
+        if let ws = workspace, let editingBinding = editingNoteId {
+            VStack(spacing: 0) {
+                notesHeaderBar(workspace: ws, editingNoteId: editingBinding)
+                if !notesCollapsed {
+                    WorkspaceNotesPanelView(
+                        workspace: ws,
+                        editingNoteId: editingBinding,
+                        darkBackground: false,
+                        showsHeader: false
+                    )
+                    .frame(height: clampedNotesHeight)
+                    notesResizeDivider
+                }
+            }
+            .rightSidebarChromeBottomBorder()
+        }
+    }
+
+    private var clampedNotesHeight: CGFloat {
+        let raw = CGFloat(notesPanelHeight)
+        return min(max(raw, Self.notesPanelMinHeight), Self.notesPanelMaxHeight)
+    }
+
+    private func notesHeaderBar(
+        workspace: Workspace,
+        editingNoteId: Binding<UUID?>
+    ) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                notesCollapsed.toggle()
+            } label: {
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .rotationEffect(.degrees(notesCollapsed ? 0 : 90))
+                    .frame(width: 14, height: 14)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(notesCollapsed
+                ? String(localized: "rightSidebar.notes.expand", defaultValue: "Expand notes")
+                : String(localized: "rightSidebar.notes.collapse", defaultValue: "Collapse notes"))
+
+            Text(String(localized: "notes.sidebar.title", defaultValue: "Notes"))
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+
+            if !workspace.notes.isEmpty {
+                Text("\(workspace.notes.count)")
+                    .font(.system(size: 10, weight: .medium).monospacedDigit())
+                    .foregroundStyle(.tertiary)
+            }
+
+            Spacer(minLength: 4)
+
+            if !notesCollapsed,
+               workspace.notes.contains(where: { $0.isCompleted }) {
+                Button {
+                    deleteCompletedNotes(in: workspace, editingNoteId: editingNoteId)
+                } label: {
+                    Image(systemName: "checkmark.circle.badge.xmark")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .help(String(localized: "notes.sidebar.deleteCompleted", defaultValue: "Delete completed notes"))
+            }
+
+            Button {
+                if notesCollapsed { notesCollapsed = false }
+                let note = WorkspaceNote()
+                workspace.notes.append(note)
+                editingNoteId.wrappedValue = note.id
+            } label: {
+                Image(systemName: "plus")
+                    .font(.system(size: 11, weight: .medium))
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel(String(localized: "rightSidebar.notes.add", defaultValue: "Add note"))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 6)
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) {
+            notesCollapsed.toggle()
+        }
+    }
+
+    private var notesResizeDivider: some View {
+        Rectangle()
+            .fill(isDraggingNotesDivider ? Color.accentColor.opacity(0.6) : Color.secondary.opacity(0.15))
+            .frame(height: isDraggingNotesDivider ? 2 : 1)
+            .frame(maxWidth: .infinity)
+            .contentShape(Rectangle().inset(by: -4))
+            .onHover { hovering in
+                if hovering {
+                    NSCursor.resizeUpDown.push()
+                } else {
+                    NSCursor.pop()
+                }
+            }
+            .gesture(
+                DragGesture(minimumDistance: 1, coordinateSpace: .local)
+                    .onChanged { value in
+                        if notesDragStartHeight == nil {
+                            notesDragStartHeight = clampedNotesHeight
+                        }
+                        isDraggingNotesDivider = true
+                        let start = notesDragStartHeight ?? clampedNotesHeight
+                        let proposed = start + value.translation.height
+                        notesPanelHeight = Double(
+                            min(max(proposed, Self.notesPanelMinHeight), Self.notesPanelMaxHeight)
+                        )
+                    }
+                    .onEnded { _ in
+                        notesDragStartHeight = nil
+                        isDraggingNotesDivider = false
+                    }
+            )
+    }
+
+    private func deleteCompletedNotes(
+        in workspace: Workspace,
+        editingNoteId: Binding<UUID?>
+    ) {
+        let removedIds = Set(workspace.notes.filter { $0.isCompleted }.map { $0.id })
+        guard !removedIds.isEmpty else { return }
+        if let editing = editingNoteId.wrappedValue, removedIds.contains(editing) {
+            editingNoteId.wrappedValue = nil
+        }
+        withAnimation(.easeInOut(duration: 0.2)) {
+            workspace.notes.removeAll { removedIds.contains($0.id) }
         }
     }
 

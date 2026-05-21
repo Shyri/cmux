@@ -1054,7 +1054,6 @@ struct ContentView: View {
     @EnvironmentObject var sidebarSelectionState: SidebarSelectionState
     @EnvironmentObject var cmuxConfigStore: CmuxConfigStore
     @EnvironmentObject var fileExplorerState: FileExplorerState
-    @EnvironmentObject var notesSidebarState: NotesSidebarState
     @Environment(\.colorScheme) private var colorScheme
     @AppStorage("titlebarControlsStyle") private var titlebarControlsStyleRawValue = TitlebarControlsStyle.classic.rawValue
     @State private var sidebarWidth: CGFloat = 200
@@ -1075,9 +1074,6 @@ struct ContentView: View {
     @State private var backgroundWorkspacePrimeCoordinator = BackgroundWorkspacePrimeCoordinator()
     @State private var fileExplorerWidth: CGFloat = 220
     @State private var fileExplorerDragStartWidth: CGFloat?
-    @State private var notesSidebarWidth: CGFloat = NotesSidebarState.defaultWidth
-    @State private var notesSidebarDragStartWidth: CGFloat?
-    @State private var isNotesSidebarResizerDragging = false
     @State private var editingNoteId: UUID?
     @State private var previousSelectedWorkspaceId: UUID?
     @State private var retiringWorkspaceId: UUID?
@@ -1579,7 +1575,6 @@ struct ContentView: View {
     private enum SidebarResizerHandle: Hashable {
         case divider
         case explorerDivider
-        case notesDivider
     }
 
     /// Returns the current drag width, start width capture, width update, and drag end cleanup for a resizer handle.
@@ -1623,24 +1618,6 @@ struct ContentView: View {
                 finishDrag: {
                     fileExplorerDragStartWidth = nil
                     fileExplorerState.width = fileExplorerWidth
-                }
-            )
-        case .notesDivider:
-            return (
-                currentWidth: notesSidebarWidth,
-                captureStart: { notesSidebarDragStartWidth = notesSidebarWidth },
-                updateWidth: { translation in
-                    let startWidth = notesSidebarDragStartWidth ?? notesSidebarWidth
-                    // Trailing edge: drag-left grows the sidebar, drag-right shrinks it.
-                    let nextWidth = NotesSidebarState.clampedWidth(startWidth - translation)
-                    withTransaction(Transaction(animation: nil)) {
-                        notesSidebarWidth = nextWidth
-                    }
-                },
-                finishDrag: {
-                    notesSidebarDragStartWidth = nil
-                    isNotesSidebarResizerDragging = false
-                    notesSidebarState.persistedWidth = notesSidebarWidth
                 }
             )
         }
@@ -1997,31 +1974,6 @@ struct ContentView: View {
         )
     }
 
-    private var notesSidebarResizerOverlay: some View {
-        // Notes sidebar lives at the far right of the layout (after the
-        // upstream file-explorer/right-sidebar), so its drag handle sits at
-        // `totalWidth - notesSidebarWidth`.
-        placedSidebarResizerOverlay(
-            handle: .notesDivider,
-            edge: .trailing,
-            accessibilityIdentifier: "NotesSidebarResizer",
-            dividerX: { totalWidth in totalWidth - notesSidebarWidth }
-        )
-    }
-
-    @ViewBuilder
-    private var notesSidebarView: some View {
-        if let workspace = tabManager.selectedWorkspace {
-            NotesSidebarContentView(
-                workspace: workspace,
-                editingNoteId: $editingNoteId
-            )
-            .frame(width: notesSidebarWidth)
-            .frame(maxHeight: .infinity, alignment: .topTrailing)
-            .background(.ultraThinMaterial)
-        }
-    }
-
     private var sidebarView: some View {
         VerticalTabsSidebar(
             updateViewModel: updateViewModel,
@@ -2218,6 +2170,8 @@ struct ContentView: View {
             sessionIndexStore: sessionIndexStore,
             titlebarHeight: RightSidebarChromeMetrics.titlebarHeight,
             workspaceId: tabManager.selectedTabId,
+            workspace: tabManager.selectedWorkspace,
+            editingNoteId: $editingNoteId,
             onResumeSession: { entry in
                 resumeSession(entry: entry)
             },
@@ -2384,12 +2338,6 @@ struct ContentView: View {
             ? MinimalModeTitlebarDebugSettings.trafficLightTabBarLeadingInset()
             : 0
         tabManager.syncWorkspaceTabBarLeadingInset(inset)
-    }
-
-    private func syncNotesSidebarStateFromSelectedWorkspace() {
-        let target = tabManager.selectedWorkspace?.notesSidebarVisible ?? false
-        guard notesSidebarState.isVisible != target else { return }
-        notesSidebarState.isVisible = target
     }
 
     private func applyTitlebarDebugChromeChange() {
@@ -2611,18 +2559,12 @@ struct ContentView: View {
                     HStack(spacing: 0) {
                         terminalContentWithSidebarDropOverlay(appearance: appearance)
                             .padding(.leading, sidebarState.isVisible ? sidebarWidth : 0)
-                            .padding(.trailing, notesSidebarState.isVisible ? notesSidebarWidth : 0)
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
                         rightSidebarPanelWithBackdrop(appearance: appearance)
                     }
                     if sidebarState.isVisible {
                         sidebarPanelWithBackdrop(appearance: appearance)
-                    }
-                }
-                .overlay(alignment: .trailing) {
-                    if notesSidebarState.isVisible {
-                        notesSidebarView
                     }
                 }
             )
@@ -2634,9 +2576,6 @@ struct ContentView: View {
                         sidebarPanelWithBackdrop(appearance: appearance)
                     }
                     terminalContentWithRightSidebarPanel(appearance: appearance)
-                    if notesSidebarState.isVisible {
-                        notesSidebarView
-                    }
                 }
             )
         }
@@ -2652,12 +2591,6 @@ struct ContentView: View {
                 .overlay(alignment: .leading) {
                     if rightSidebarVisible {
                         rightSidebarResizerOverlay
-                            .zIndex(1000)
-                    }
-                }
-                .overlay(alignment: .trailing) {
-                    if notesSidebarState.isVisible {
-                        notesSidebarResizerOverlay
                             .zIndex(1000)
                     }
                 }
@@ -2703,14 +2636,6 @@ struct ContentView: View {
             if abs(sidebarState.persistedWidth - restoredWidth) > 0.5 {
                 sidebarState.persistedWidth = restoredWidth
             }
-            // Mirror the same persisted-width hydration for the notes sidebar.
-            let restoredNotesWidth = NotesSidebarState.clampedWidth(notesSidebarState.persistedWidth)
-            if abs(notesSidebarWidth - restoredNotesWidth) > 0.5 {
-                notesSidebarWidth = restoredNotesWidth
-            }
-            if abs(notesSidebarState.persistedWidth - restoredNotesWidth) > 0.5 {
-                notesSidebarState.persistedWidth = restoredNotesWidth
-            }
             if selectedTabIds.isEmpty, let selectedId = tabManager.selectedTabId {
                 selectedTabIds = [selectedId]
                 lastSidebarSelectionIndex = tabManager.tabs.firstIndex { $0.id == selectedId }
@@ -2719,7 +2644,6 @@ struct ContentView: View {
             applyUITestSidebarSelectionIfNeeded(tabs: tabManager.tabs)
             updateTitlebarText()
             syncTrafficLightInset()
-            syncNotesSidebarStateFromSelectedWorkspace()
 
             // Startup recovery (#399): if session restore or a race condition leaves the
             // view in a broken state (empty tabs, no selection, unmounted workspaces),
@@ -2792,16 +2716,17 @@ struct ContentView: View {
             updateTitlebarText()
         })
 
-        view = AnyView(view.onChange(of: notesSidebarState.isVisible) { newValue in
-            tabManager.selectedWorkspace?.notesSidebarVisible = newValue
-        })
-
         view = AnyView(view.onReceive(NotificationCenter.default.publisher(for: .cmuxWorkspaceRequestToggleNotesSidebar)) { notification in
             guard
                 let workspaceId = notification.userInfo?[Workspace.toggleNotesWorkspaceIdKey] as? UUID,
                 workspaceId == tabManager.selectedTabId
             else { return }
-            notesSidebarState.isVisible.toggle()
+            // Notes now live inside the right sidebar as a collapsible header above
+            // the mode tabs. Open the right sidebar and expand the notes section.
+            if !fileExplorerState.isVisible {
+                fileExplorerState.isVisible = true
+            }
+            UserDefaults.standard.set(false, forKey: "rightSidebar.notes.collapsed")
         })
 
         view = AnyView(view.onChange(of: selectedTabIds) { _ in

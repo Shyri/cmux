@@ -9,7 +9,6 @@ struct cmuxApp: App {
     @StateObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject private var sidebarState = SidebarState()
     @StateObject private var sidebarSelectionState = SidebarSelectionState()
-    @ObservedObject private var notesSidebarState = NotesSidebarState.shared
     @StateObject private var keyboardShortcutSettingsObserver = KeyboardShortcutSettingsObserver.shared
     @ObservedObject private var sessionPresetStore = SessionPresetStore.shared
     private let primaryWindowId = UUID()
@@ -711,7 +710,7 @@ struct cmuxApp: App {
             }
 
             Button(String(localized: "menu.view.toggleNotes", defaultValue: "Toggle Notes")) {
-                notesSidebarState.toggle()
+                AppDelegate.shared?.toggleRightSidebarNotesSection()
             }
 
             Divider()

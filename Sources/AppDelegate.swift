@@ -6295,6 +6295,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         mainWindowContexts.values.first(where: { $0.windowId == windowId })?.sidebarState.isVisible
     }
 
+    /// Toggle the notes section that lives at the top of the right sidebar.
+    /// If the right sidebar is closed, open it and expand notes. If open and
+    /// collapsed, expand. If open and expanded, collapse.
+    func toggleRightSidebarNotesSection(preferredWindow: NSWindow? = nil) {
+        let key = "rightSidebar.notes.collapsed"
+        let collapsed = UserDefaults.standard.bool(forKey: key)
+        let context = preferredRegisteredMainWindowContext(preferredWindow: preferredWindow)
+        let state = context?.fileExplorerState ?? fileExplorerState
+        if let state, !state.isVisible {
+            state.setVisible(true)
+            UserDefaults.standard.set(false, forKey: key)
+            return
+        }
+        UserDefaults.standard.set(!collapsed, forKey: key)
+    }
+
     func applicationDockMenu(_ sender: NSApplication) -> NSMenu? {
         let menu = NSMenu(title: "")
         let newWindowItem = NSMenuItem(
@@ -7288,7 +7304,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             .environmentObject(sidebarSelectionState)
             .environmentObject(fileExplorerState)
             .environmentObject(cmuxConfigStore)
-            .environmentObject(NotesSidebarState.shared)
             .environmentObject(SessionPresetStore.shared)
 
         // Use the current key window's size for new windows so Cmd+Shift+N

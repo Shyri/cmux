@@ -13,6 +13,8 @@ extension RightSidebarMode {
             return .feed
         case "dock":
             return .dock
+        case "gitlab":
+            return .gitlab
         default:
             return nil
         }
@@ -32,7 +34,7 @@ extension RightSidebarMode {
 
     func isAvailable(dockEnabled: Bool) -> Bool {
         switch self {
-        case .files, .find, .sessions, .feed:
+        case .files, .find, .sessions, .feed, .gitlab:
             return true
         case .dock:
             return dockEnabled
