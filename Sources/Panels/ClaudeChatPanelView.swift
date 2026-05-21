@@ -4794,6 +4794,7 @@ private struct TextBlockRow: View, Equatable {
     @Environment(\.chatPalette) private var palette
     @State private var isHovered: Bool = false
     @State private var isExpanded: Bool = false
+    @State private var didCopy: Bool = false
 
     /// Compare only data inputs so SwiftUI can skip `body` re-evaluation
     /// when nothing visible changed. Closures (`onRewindToHere`) and the
@@ -4844,6 +4845,10 @@ private struct TextBlockRow: View, Equatable {
                                 defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
                             ))
                             .transition(.opacity)
+                        }
+                        if !isPending, isHovered, !text.isEmpty {
+                            copyButton
+                                .transition(.opacity)
                         }
                         VStack(alignment: .trailing, spacing: 6) {
                             if !attachmentURLs.isEmpty {
@@ -4907,23 +4912,76 @@ private struct TextBlockRow: View, Equatable {
                 // multiplied across the LazyVStack so every visible row
                 // mounted its own SelectionOverlay; once one entered
                 // the oscillation it perpetuated through layout
-                // invalidation. For copying we already expose the
-                // dedicated "copy chat" button; per-bubble selection
-                // can be revisited via `.copyable` or an explicit
-                // context menu without involving SelectionOverlay.
-                switch ChatMarkdownComplexityProbe.shared.classify(text) {
-                case .simple:
-                    Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
-                        .foregroundStyle(palette.fg(isDark))
-                        .font(.system(size: 13))
-                        .tint(isDark ? ChatPalette.cyan : Color.accentColor)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                case .heavy:
-                    Markdown(ChatMarkdownContentCache.shared.content(for: text))
-                        .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                // invalidation. For copying we expose the dedicated
+                // "copy chat" button in the panel header plus a
+                // per-bubble copy button (see `copyButton` below) that
+                // writes the raw text to NSPasteboard without involving
+                // SelectionOverlay.
+                VStack(alignment: .leading, spacing: 2) {
+                    Group {
+                        switch ChatMarkdownComplexityProbe.shared.classify(text) {
+                        case .simple:
+                            Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
+                                .foregroundStyle(palette.fg(isDark))
+                                .font(.system(size: 13))
+                                .tint(isDark ? ChatPalette.cyan : Color.accentColor)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        case .heavy:
+                            Markdown(ChatMarkdownContentCache.shared.content(for: text))
+                                .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                    }
+                    if !text.isEmpty {
+                        // Bottom rail reserves height permanently so the
+                        // copy button can fade in/out on hover without
+                        // changing the row's intrinsic height. A reflow
+                        // here would cause hover flicker as the bottom
+                        // edge moves under the pointer.
+                        HStack(spacing: 0) {
+                            Spacer(minLength: 0)
+                            copyButton
+                                .opacity(isHovered ? 1 : 0)
+                                .allowsHitTesting(isHovered)
+                        }
+                        .frame(height: 16)
+                    }
+                }
+                .onHover { hovering in
+                    isHovered = hovering
                 }
             }
+        }
+    }
+
+    /// Per-bubble copy affordance. Mounted next to the rewind button on
+    /// user bubbles and on a reserved bottom rail under assistant/system
+    /// bubbles. Replaces the per-bubble `.textSelection(.enabled)` path
+    /// that triggered the SelectionOverlay runaway loop (see the long
+    /// comment in `body` above).
+    private var copyButton: some View {
+        Button(action: performCopy) {
+            Image(systemName: didCopy ? "checkmark" : "doc.on.clipboard")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundColor(didCopy ? .green : .secondary)
+                .frame(width: 14, height: 14, alignment: .center)
+                .padding(.top, 6)
+        }
+        .buttonStyle(.plain)
+        .help(String(
+            localized: "claudeChat.copyMessage.tooltip",
+            defaultValue: "Copy this message to the clipboard"
+        ))
+    }
+
+    private func performCopy() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        withAnimation(.easeInOut(duration: 0.15)) { didCopy = true }
+        Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_200_000_000)
+            withAnimation(.easeInOut(duration: 0.2)) { didCopy = false }
         }
     }
 
