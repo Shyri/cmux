@@ -417,6 +417,8 @@ struct BrowserPanelView: View {
     @State private var omnibarState = OmnibarState()
     @State private var addressBarFocused: Bool = false
     @AppStorage(BrowserSearchSettings.searchEngineKey) private var searchEngineRaw = BrowserSearchSettings.defaultSearchEngine.rawValue
+    @AppStorage(BrowserSearchSettings.customSearchEngineNameKey) private var customSearchEngineName = BrowserSearchSettings.defaultCustomSearchEngineName
+    @AppStorage(BrowserSearchSettings.customSearchEngineURLTemplateKey) private var customSearchEngineURLTemplate = BrowserSearchSettings.defaultCustomSearchEngineURLTemplate
     @AppStorage(BrowserSearchSettings.searchSuggestionsEnabledKey) private var searchSuggestionsEnabledStorage = BrowserSearchSettings.defaultSearchSuggestionsEnabled
     @AppStorage(BrowserDevToolsButtonDebugSettings.iconNameKey) private var devToolsIconNameRaw = BrowserDevToolsButtonDebugSettings.defaultIcon.rawValue
     @AppStorage(BrowserDevToolsButtonDebugSettings.iconColorKey) private var devToolsIconColorRaw = BrowserDevToolsButtonDebugSettings.defaultColor.rawValue
@@ -438,6 +440,9 @@ struct BrowserPanelView: View {
     @State private var emptyStateImportBrowserRefreshTask: Task<Void, Never>?
     @State private var emptyStateImportBrowserRefreshGeneration: UInt64 = 0
     @State private var inlineCompletion: OmnibarInlineCompletion?
+    @State private var screenshotPageCopied: Bool = false
+    @State private var screenshotPageCaptureInProgress: Bool = false
+    @State private var screenshotPageCopiedTimer: Timer?
     @State private var omnibarSelectionRange: NSRange = NSRange(location: NSNotFound, length: 0)
     @State private var omnibarHasMarkedText: Bool = false
     @State private var suppressNextFocusLostRevert: Bool = false
@@ -463,8 +468,12 @@ struct BrowserPanelView: View {
     private let addressBarVerticalPadding: CGFloat = 4
     private let devToolsButtonIconSize: CGFloat = 11
 
-    private var searchEngine: BrowserSearchEngine {
-        BrowserSearchEngine(rawValue: searchEngineRaw) ?? BrowserSearchSettings.defaultSearchEngine
+    private var searchConfiguration: BrowserSearchConfiguration {
+        BrowserSearchSettings.configuration(
+            engineRaw: searchEngineRaw,
+            customName: customSearchEngineName,
+            customURLTemplate: customSearchEngineURLTemplate
+        )
     }
 
     private var searchSuggestionsEnabled: Bool {
@@ -580,7 +589,7 @@ struct BrowserPanelView: View {
             panelId: panel.id,
             popupFrame: frame,
             colorScheme: browserChromeColorScheme,
-            engineName: searchEngine.displayName,
+            engineName: searchConfiguration.displayName,
             items: omnibarState.suggestions,
             selectedIndex: omnibarState.selectedSuggestionIndex,
             isLoadingRemoteSuggestions: isLoadingRemoteSuggestions,
@@ -676,6 +685,33 @@ struct BrowserPanelView: View {
         panel.reload()
     }
 
+    private func handleScreenshotPageButtonAction() {
+        guard !screenshotPageCaptureInProgress else { return }
+        screenshotPageCaptureInProgress = true
+#if DEBUG
+        cmuxDebugLog("browser.screenshot.page.toolbar panel=\(panel.id.uuidString.prefix(5))")
+#endif
+        Task { @MainActor in
+            defer {
+                screenshotPageCaptureInProgress = false
+            }
+            let didCopy = await panel.captureScreenshotPageToClipboard()
+            guard didCopy else { return }
+            showScreenshotPageCopiedIndicator()
+        }
+    }
+
+    private func showScreenshotPageCopiedIndicator() {
+        screenshotPageCopiedTimer?.invalidate()
+        screenshotPageCopied = true
+        screenshotPageCopiedTimer = Timer.scheduledTimer(withTimeInterval: 1.4, repeats: false) { _ in
+            MainActor.assumeIsolated {
+                screenshotPageCopiedTimer = nil
+                screenshotPageCopied = false
+            }
+        }
+    }
+
     var body: some View {
         // Layering contract: browser find UI is mounted in the portal-hosted AppKit
         // container. Rendering it here can hide it behind the portal-hosted WKWebView.
@@ -705,16 +741,12 @@ struct BrowserPanelView: View {
             }
         }
         .overlay {
-            RoundedRectangle(cornerRadius: FocusFlashPattern.ringCornerRadius)
-                .stroke(cmuxAccentColor().opacity(focusFlashOpacity), lineWidth: 3)
-                .shadow(color: cmuxAccentColor().opacity(focusFlashOpacity * 0.35), radius: 10)
-                .padding(FocusFlashPattern.ringInset)
-                .allowsHitTesting(false)
+            WorkspaceAttentionFlashRingView(opacity: focusFlashOpacity)
         }
         .overlay(alignment: .topLeading) {
             if shouldRenderOmnibarSuggestionsInSwiftUI {
                 OmnibarSuggestionsView(
-                    engineName: searchEngine.displayName,
+                    engineName: searchConfiguration.displayName,
                     items: omnibarState.suggestions,
                     selectedIndex: omnibarState.selectedSuggestionIndex,
                     isLoadingRemoteSuggestions: isLoadingRemoteSuggestions,
@@ -765,6 +797,8 @@ struct BrowserPanelView: View {
         .onAppear {
             UserDefaults.standard.register(defaults: [
                 BrowserSearchSettings.searchEngineKey: BrowserSearchSettings.defaultSearchEngine.rawValue,
+                BrowserSearchSettings.customSearchEngineNameKey: BrowserSearchSettings.defaultCustomSearchEngineName,
+                BrowserSearchSettings.customSearchEngineURLTemplateKey: BrowserSearchSettings.defaultCustomSearchEngineURLTemplate,
                 BrowserSearchSettings.searchSuggestionsEnabledKey: BrowserSearchSettings.defaultSearchSuggestionsEnabled,
                 BrowserToolbarAccessorySpacingDebugSettings.key: BrowserToolbarAccessorySpacingDebugSettings.defaultSpacing,
                 BrowserProfilePopoverDebugSettings.horizontalPaddingKey: BrowserProfilePopoverDebugSettings.defaultHorizontalPadding,
@@ -809,6 +843,11 @@ struct BrowserPanelView: View {
             logBrowserFocusState(event: "view.onAppear")
 #endif
         }
+        .onDisappear {
+            screenshotPageCopiedTimer?.invalidate()
+            screenshotPageCopiedTimer = nil
+            screenshotPageCopied = false
+        }
         .onChange(of: panel.focusFlashToken) { _ in
             triggerFocusFlashAnimation()
         }
@@ -820,10 +859,10 @@ struct BrowserPanelView: View {
             if addressBarFocused,
                !panel.shouldSuppressWebViewFocus(),
                addressWasEmpty,
-               !isWebViewBlank() {
+               !isBrowserContentBlankForOmnibar() {
                 setAddressBarFocused(false, reason: "panel.currentURL.loaded")
             }
-            if isWebViewBlank() {
+            if panel.isShowingNewTabPage {
                 refreshEmptyStateImportBrowsers()
             }
             panel.resetReactGrabState(
@@ -994,6 +1033,7 @@ struct BrowserPanelView: View {
                 if shouldShowToolbarImportHintChip {
                     browserImportHintToolbarChip
                 }
+                screenshotPageButton
                 reactGrabButton
                 browserProfileButton
                 browserThemeModeButton
@@ -1072,6 +1112,53 @@ struct BrowserPanelView: View {
                 .safeHelp(String(localized: "browser.downloadInProgress", defaultValue: "Download in progress"))
             }
         }
+    }
+
+    private var screenshotPageButton: some View {
+        Button(action: handleScreenshotPageButtonAction) {
+            Image(systemName: screenshotPageCopied ? "checkmark" : "camera")
+                .symbolRenderingMode(.monochrome)
+                .cmuxFlatSymbolColorRendering()
+                .font(.system(size: devToolsButtonIconSize, weight: .medium))
+                .foregroundStyle(screenshotPageButtonColor)
+                .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        }
+        .buttonStyle(OmnibarAddressButtonStyle())
+        .frame(width: addressBarButtonSize, height: addressBarButtonSize, alignment: .center)
+        .disabled(!panel.shouldRenderWebView || screenshotPageCaptureInProgress)
+        .opacity(panel.shouldRenderWebView ? 1.0 : 0.4)
+        .safeHelp(
+            screenshotPageCopied
+                ? String(localized: "browser.screenshotPage.copied.help", defaultValue: "Screenshot copied to clipboard")
+                : String(localized: "browser.screenshotPage.copy.help", defaultValue: "Screenshot Page to Clipboard")
+        )
+        .accessibilityIdentifier("BrowserScreenshotPageButton")
+        .overlay(alignment: .top) {
+            if screenshotPageCopied {
+                Label(String(localized: "browser.screenshotPage.copied", defaultValue: "Copied"), systemImage: "checkmark")
+                    .font(.system(size: 11, weight: .medium))
+                    .labelStyle(.titleAndIcon)
+                    .foregroundStyle(.primary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
+                    .background(.thinMaterial, in: Capsule())
+                    .overlay(
+                        Capsule().stroke(Color.white.opacity(0.14), lineWidth: 1)
+                    )
+                    .fixedSize()
+                    .offset(y: -28)
+                    .allowsHitTesting(false)
+                    .transition(.opacity)
+            }
+        }
+        .animation(.easeOut(duration: 0.12), value: screenshotPageCopied)
+    }
+
+    private var screenshotPageButtonColor: Color {
+        if screenshotPageCopied {
+            return .green
+        }
+        return panel.shouldRenderWebView ? devToolsColorOption.color : Color.secondary
     }
 
     private var reactGrabButton: some View {
@@ -1864,7 +1951,7 @@ struct BrowserPanelView: View {
     }
 
     private var shouldShowEmptyStateImportOverlay: Bool {
-        !panel.shouldRenderWebView && isWebViewBlank()
+        panel.isShowingNewTabPage
     }
 
     private func presentImportDialogFromHint() {
@@ -1900,10 +1987,9 @@ struct BrowserPanelView: View {
         isBrowserImportHintPopoverPresented = false
     }
 
-    /// Treat a WebView with no URL (or about:blank) as "blank" for UX purposes.
-    private func isWebViewBlank() -> Bool {
-        guard let url = panel.webView.url else { return true }
-        return url.absoluteString == "about:blank"
+    /// Treat content as blank only if neither WebKit nor the panel model has a nonblank URL.
+    private func isBrowserContentBlankForOmnibar() -> Bool {
+        panel.preferredURLStringForOmnibar() == nil
     }
 
     private func autoFocusOmnibarIfBlank() {
@@ -1939,7 +2025,7 @@ struct BrowserPanelView: View {
 #endif
             return
         }
-        guard isWebViewBlank() else {
+        guard isBrowserContentBlankForOmnibar() else {
 #if DEBUG
             logBrowserFocusState(event: "addressBarFocus.autoFocus.skip", detail: "reason=webview_not_blank")
 #endif
@@ -2227,16 +2313,25 @@ struct BrowserPanelView: View {
         }()
         let openTabMatches = query.isEmpty ? [] : matchingOpenTabSuggestions(for: query, limit: 12)
         let isSingleCharacterQuery = omnibarSingleCharacterQuery(for: query) != nil
+        let remoteSuggestionsEngine = searchConfiguration.remoteSuggestionsEngine
+        let allowsRemoteSuggestions = remoteSuggestionsEnabled && remoteSuggestionsEngine != nil
+        if !allowsRemoteSuggestions {
+            latestRemoteSuggestionQuery = ""
+            latestRemoteSuggestions = []
+        }
         let staleRemote: [String]
         if query.isEmpty || isSingleCharacterQuery {
             staleRemote = []
         } else {
-            staleRemote = staleRemoteSuggestionsForDisplay(query: query)
+            staleRemote = staleRemoteSuggestionsForDisplay(
+                query: query,
+                allowsRemoteSuggestions: allowsRemoteSuggestions
+            )
         }
         let resolvedURL = query.isEmpty ? nil : panel.resolveNavigableURL(from: query)
         let items = buildOmnibarSuggestions(
             query: query,
-            engineName: searchEngine.displayName,
+            engineName: searchConfiguration.displayName,
             historyEntries: historyEntries,
             openTabMatches: openTabMatches,
             remoteQueries: staleRemote,
@@ -2263,7 +2358,7 @@ struct BrowserPanelView: View {
             latestRemoteSuggestions = forcedRemote
             let merged = buildOmnibarSuggestions(
                 query: query,
-                engineName: searchEngine.displayName,
+                engineName: searchConfiguration.displayName,
                 historyEntries: historyEntries,
                 openTabMatches: openTabMatches,
                 remoteQueries: forcedRemote,
@@ -2287,7 +2382,7 @@ struct BrowserPanelView: View {
         guard omnibarInputIntent(for: query) != .urlLike else { return }
 
         // Keep current remote rows visible while fetching fresh predictions.
-        let engine = searchEngine
+        guard let engine = remoteSuggestionsEngine else { return }
         isLoadingRemoteSuggestions = true
         suggestionTask = Task {
             let remote = await BrowserSearchSuggestionService.shared.suggestions(engine: engine, query: query)
@@ -2302,7 +2397,7 @@ struct BrowserPanelView: View {
                 latestRemoteSuggestions = remote
                 let merged = buildOmnibarSuggestions(
                     query: query,
-                    engineName: searchEngine.displayName,
+                    engineName: searchConfiguration.displayName,
                     historyEntries: panel.historyStore.suggestions(for: query, limit: 12),
                     openTabMatches: matchingOpenTabSuggestions(for: query, limit: 12),
                     remoteQueries: remote,
@@ -2324,11 +2419,15 @@ struct BrowserPanelView: View {
         }
     }
 
-    private func staleRemoteSuggestionsForDisplay(query: String) -> [String] {
+    private func staleRemoteSuggestionsForDisplay(
+        query: String,
+        allowsRemoteSuggestions: Bool = true
+    ) -> [String] {
         staleOmnibarRemoteSuggestionsForDisplay(
             query: query,
             previousRemoteQuery: latestRemoteSuggestionQuery,
-            previousRemoteSuggestions: latestRemoteSuggestions
+            previousRemoteSuggestions: latestRemoteSuggestions,
+            allowsRemoteSuggestions: allowsRemoteSuggestions
         )
     }
 
@@ -2883,8 +2982,10 @@ func staleOmnibarRemoteSuggestionsForDisplay(
     query: String,
     previousRemoteQuery: String,
     previousRemoteSuggestions: [String],
+    allowsRemoteSuggestions: Bool = true,
     limit: Int = 8
 ) -> [String] {
+    guard allowsRemoteSuggestions else { return [] }
     let trimmedQuery = query.trimmingCharacters(in: .whitespacesAndNewlines)
     let trimmedPreviousQuery = previousRemoteQuery.trimmingCharacters(in: .whitespacesAndNewlines)
     let loweredQuery = trimmedQuery.lowercased()

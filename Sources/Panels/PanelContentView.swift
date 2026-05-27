@@ -15,8 +15,11 @@ struct PanelContentView: View, Equatable {
     let isSplit: Bool
     let appearance: PanelAppearance
     let hasUnreadNotification: Bool
+    let terminalAgentContext: String
     let onFocus: () -> Void
     let onRequestPanelFocus: () -> Void
+    let onResumeAgentHibernation: () -> Void
+    let onAutoResumeAgentHibernation: () -> Void
     let onTriggerFlash: () -> Void
 
     /// Parent re-render fence. The wrapped panel view conforms to
@@ -81,7 +84,10 @@ struct PanelContentView: View, Equatable {
                     isSplit: isSplit,
                     appearance: appearance,
                     hasUnreadNotification: hasUnreadNotification,
+                    terminalAgentContext: terminalAgentContext,
                     onFocus: onFocus,
+                    onResumeAgentHibernation: onResumeAgentHibernation,
+                    onAutoResumeAgentHibernation: onAutoResumeAgentHibernation,
                     onTriggerFlash: onTriggerFlash
                 )
             }

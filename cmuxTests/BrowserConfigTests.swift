@@ -7,6 +7,7 @@ import WebKit
 import ObjectiveC.runtime
 import Bonsplit
 import UserNotifications
+import Network
 
 #if canImport(cmux_DEV)
 @testable import cmux_DEV
@@ -1876,6 +1877,20 @@ final class BrowserDeveloperToolsConfigurationTests: XCTestCase {
         XCTAssertFalse(panel.isShowingNewTabPage)
     }
 
+    func testBrowserPanelWithDeferredInitialURLIsNotNewTabPage() throws {
+        let url = try XCTUnwrap(URL(string: "https://example.com/restored"))
+        let panel = BrowserPanel(
+            workspaceId: UUID(),
+            initialURL: url,
+            renderInitialNavigation: false
+        )
+
+        XCTAssertFalse(panel.shouldRenderWebView)
+        XCTAssertEqual(panel.currentURL, url)
+        XCTAssertFalse(panel.isShowingNewTabPage)
+        XCTAssertEqual(panel.webViewLifecycleState, .deferredURL)
+    }
+
     func testBrowserPanelThemeModeUpdatesWebViewAppearance() {
         let panel = BrowserPanel(workspaceId: UUID())
 
@@ -2438,6 +2453,149 @@ final class BrowserJavaScriptDialogDelegateTests: XCTestCase {
 
 @MainActor
 final class BrowserSessionHistoryRestoreTests: XCTestCase {
+    private final class ProvisionalNavigationRaceServer {
+        enum ServerError: Error {
+            case listenerDidNotBecomeReady
+            case listenerPortUnavailable
+        }
+
+        private static let queueKey = DispatchSpecificKey<Void>()
+        private let listener: NWListener
+        private let queue = DispatchQueue(label: "cmux.browser.provisional-navigation-race-server")
+        private let lock = NSLock()
+        private var heldBConnections: [NWConnection] = []
+        private var receivedBRequest = false
+        private(set) var port: UInt16 = 0
+
+        init() throws {
+            let parameters = NWParameters.tcp
+            parameters.requiredLocalEndpoint = .hostPort(
+                host: NWEndpoint.Host("127.0.0.1"),
+                port: .any
+            )
+            listener = try NWListener(using: parameters)
+            queue.setSpecific(key: Self.queueKey, value: ())
+
+            let ready = DispatchSemaphore(value: 0)
+            listener.stateUpdateHandler = { state in
+                if case .ready = state {
+                    ready.signal()
+                }
+            }
+            listener.newConnectionHandler = { [weak self] connection in
+                self?.handle(connection)
+            }
+            listener.start(queue: queue)
+
+            guard ready.wait(timeout: .now() + 2.0) == .success else {
+                throw ServerError.listenerDidNotBecomeReady
+            }
+            guard let port = listener.port?.rawValue else {
+                throw ServerError.listenerPortUnavailable
+            }
+            self.port = port
+        }
+
+        var didReceiveBRequest: Bool {
+            lock.lock()
+            defer { lock.unlock() }
+            return receivedBRequest
+        }
+
+        func url(path: String) -> URL {
+            URL(string: "http://127.0.0.1:\(port)\(path)")!
+        }
+
+        func releaseHeldBResponses() -> Int {
+            if DispatchQueue.getSpecific(key: Self.queueKey) != nil {
+                return releaseHeldBResponsesOnQueue()
+            }
+            return queue.sync {
+                releaseHeldBResponsesOnQueue()
+            }
+        }
+
+        private func releaseHeldBResponsesOnQueue() -> Int {
+            let connections: [NWConnection]
+            lock.lock()
+            connections = heldBConnections
+            heldBConnections.removeAll()
+            lock.unlock()
+
+            for connection in connections {
+                sendPage("B", on: connection)
+            }
+            return connections.count
+        }
+
+        func stop() {
+            listener.cancel()
+            _ = releaseHeldBResponses()
+        }
+
+        private func handle(_ connection: NWConnection) {
+            connection.start(queue: queue)
+            receiveRequest(on: connection)
+        }
+
+        private func receiveRequest(on connection: NWConnection, buffer: Data = Data()) {
+            connection.receive(minimumIncompleteLength: 1, maximumLength: 4096) { [weak self] data, _, _, error in
+                guard let self else { return }
+                if error != nil {
+                    connection.cancel()
+                    return
+                }
+
+                var nextBuffer = buffer
+                if let data {
+                    nextBuffer.append(data)
+                }
+
+                guard let requestText = String(data: nextBuffer, encoding: .utf8),
+                      requestText.contains("\r\n\r\n") else {
+                    self.receiveRequest(on: connection, buffer: nextBuffer)
+                    return
+                }
+
+                let requestLine = requestText.split(separator: "\r\n", maxSplits: 1).first ?? ""
+                let path = requestLine.split(separator: " ").dropFirst().first.map(String.init) ?? "/"
+                if path == "/b" {
+                    self.lock.lock()
+                    self.receivedBRequest = true
+                    self.heldBConnections.append(connection)
+                    self.lock.unlock()
+                    return
+                }
+
+                self.sendPage("A", on: connection)
+            }
+        }
+
+        private func sendPage(_ marker: String, on connection: NWConnection) {
+            let body = """
+            <!doctype html>
+            <html>
+            <head><title>Race \(marker)</title></head>
+            <body>
+            <script>window.__cmuxRacePage = "\(marker)";</script>
+            <main id="page">Race \(marker)</main>
+            </body>
+            </html>
+            """
+            let response = """
+            HTTP/1.1 200 OK\r
+            Content-Type: text/html; charset=utf-8\r
+            Content-Length: \(body.utf8.count)\r
+            Connection: close\r
+            \r
+            \(body)
+            """
+            connection.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+                connection.cancel()
+            })
+        }
+    }
+
     private func writeBrowserFixturePage(
         at url: URL,
         title: String,
@@ -2457,6 +2615,29 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
             XCTFail("Failed to write browser fixture page: \(error)", file: file, line: line)
             throw error
         }
+    }
+
+    private func waitUntil(
+        _ description: String,
+        timeout: TimeInterval = 5.0,
+        file: StaticString = #filePath,
+        line: UInt = #line,
+        predicate: () -> Bool
+    ) throws {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline {
+            if predicate() {
+                return
+            }
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
+
+        XCTFail("Timed out waiting for \(description)", file: file, line: line)
+        throw BrowserTestTimeout(description: description)
+    }
+
+    private struct BrowserTestTimeout: Error, CustomStringConvertible {
+        let description: String
     }
 
     private func waitForBrowserPanel(
@@ -2483,6 +2664,7 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
 
     func testSessionNavigationHistorySnapshotUsesRestoredStacks() {
         let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
 
         panel.restoreSessionNavigationHistory(
             backHistoryURLStrings: [
@@ -2511,6 +2693,7 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
 
     func testSessionNavigationHistoryBackAndForwardUpdateStacks() {
         let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
 
         panel.restoreSessionNavigationHistory(
             backHistoryURLStrings: [
@@ -2561,6 +2744,7 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
             workspaceId: UUID(),
             initialURL: pageB
         )
+        defer { panel.close() }
         waitForBrowserPanel(panel, url: pageB)
 
         panel.restoreSessionNavigationHistory(
@@ -2585,11 +2769,52 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
         waitForBrowserPanel(panel, url: pageA)
     }
 
+    func testBackDuringProvisionalNavigationDoesNotDesyncPublishedURLFromRenderedPage() throws {
+        let server = try ProvisionalNavigationRaceServer()
+        defer { server.stop() }
+
+        let pageA = server.url(path: "/a")
+        let pageB = server.url(path: "/b")
+        let panel = BrowserPanel(workspaceId: UUID(), initialURL: pageA)
+        defer { panel.close() }
+
+        waitForBrowserPanel(panel, url: pageA)
+        XCTAssertEqual(panel.pageTitle, "Race A")
+
+        panel.navigate(to: pageB)
+        try waitUntil("server to receive provisional page B request") {
+            server.didReceiveBRequest
+        }
+        try waitUntil("browser back availability during provisional page B navigation") {
+            panel.canGoBack && panel.webView.isLoading
+        }
+        XCTAssertFalse(panel.canGoForward)
+
+        panel.goBack()
+        try waitUntil("back action to expose page B as forward history before it can commit") {
+            panel.currentURL?.path == pageA.path && !panel.webView.isLoading
+                && panel.canGoForward
+        }
+
+        let releasedBResponseCount = server.releaseHeldBResponses()
+        XCTAssertGreaterThan(releasedBResponseCount, 0)
+        try waitUntil("browser to remain on page A after held page B response is released") {
+            !panel.webView.isLoading &&
+                panel.pageTitle == "Race A" &&
+                panel.currentURL?.path == pageA.path
+        }
+
+        let publishedURL = try XCTUnwrap(panel.currentURL)
+        XCTAssertEqual(publishedURL.path, pageA.path)
+        XCTAssertEqual(panel.pageTitle, "Race A")
+    }
+
     func testWebViewReplacementAfterProcessTerminationUpdatesInstanceIdentity() {
         let panel = BrowserPanel(
             workspaceId: UUID(),
             initialURL: URL(string: "https://example.com")
         )
+        defer { panel.close() }
         let oldWebView = panel.webView
         let oldInstanceID = panel.webViewInstanceID
 
@@ -2603,6 +2828,7 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
 
     func testWebViewReplacementPreservesEmptyNewTabRenderState() {
         let panel = BrowserPanel(workspaceId: UUID())
+        defer { panel.close() }
         XCTAssertFalse(panel.shouldRenderWebView)
 
         panel.debugSimulateWebContentProcessTermination()
@@ -2612,6 +2838,7 @@ final class BrowserSessionHistoryRestoreTests: XCTestCase {
 
     func testResetSidebarContextClearsBrowserPanelsIntoNewTabState() throws {
         let workspace = Workspace()
+        defer { workspace.teardownAllPanels() }
         let paneId = try XCTUnwrap(workspace.bonsplitController.allPaneIds.first)
         let contextPanelId = try XCTUnwrap(workspace.focusedPanelId)
         let browser = try XCTUnwrap(
@@ -3689,7 +3916,14 @@ final class BrowserDeveloperToolsVisibilityPersistenceTests: XCTestCase {
             backing: .buffered,
             defer: false
         )
-        defer { window.orderOut(nil) }
+        window.isReleasedWhenClosed = false
+        defer {
+            panel.closeDeveloperToolsForTeardown()
+            panel.webView.cmuxSetUnitTestInspector(nil)
+            panel.webView.removeFromSuperview()
+            window.close()
+            RunLoop.current.run(until: Date().addingTimeInterval(0.05))
+        }
         guard let contentView = window.contentView else {
             XCTFail("Expected content view")
             return
@@ -3699,6 +3933,7 @@ final class BrowserDeveloperToolsVisibilityPersistenceTests: XCTestCase {
         visibleHosting.frame = contentView.bounds
         visibleHosting.autoresizingMask = [.width, .height]
         contentView.addSubview(visibleHosting)
+        defer { visibleHosting.removeFromSuperview() }
         window.makeKeyAndOrderFront(nil)
         window.displayIfNeeded()
         contentView.layoutSubtreeIfNeeded()
@@ -3719,6 +3954,7 @@ final class BrowserDeveloperToolsVisibilityPersistenceTests: XCTestCase {
         )
         inspectorView.autoresizingMask = [.width]
         visibleSlot.addSubview(inspectorView)
+        defer { inspectorView.removeFromSuperview() }
         panel.webView.frame = NSRect(
             x: 0,
             y: inspectorView.frame.maxY,
@@ -3732,6 +3968,7 @@ final class BrowserDeveloperToolsVisibilityPersistenceTests: XCTestCase {
         offWindowHosting.frame = detachedRoot.bounds
         offWindowHosting.autoresizingMask = [.width, .height]
         detachedRoot.addSubview(offWindowHosting)
+        defer { offWindowHosting.removeFromSuperview() }
         detachedRoot.layoutSubtreeIfNeeded()
         offWindowHosting.layoutSubtreeIfNeeded()
         RunLoop.current.run(until: Date().addingTimeInterval(0.05))
@@ -4404,6 +4641,134 @@ final class BrowserSearchEngineTests: XCTestCase {
         XCTAssertEqual(url.host, "www.bing.com")
         XCTAssertEqual(url.path, "/search")
         XCTAssertTrue(url.absoluteString.contains("q=hello%20world"))
+    }
+
+    func testKagiSearchURL() throws {
+        let url = try XCTUnwrap(BrowserSearchEngine.kagi.searchURL(query: "hello world"))
+        XCTAssertEqual(url.host, "kagi.com")
+        XCTAssertEqual(url.path, "/search")
+        XCTAssertTrue(url.absoluteString.contains("q=hello%20world"))
+    }
+
+    func testAdditionalPresetSearchURLs() throws {
+        let expectations: [(BrowserSearchEngine, String, String)] = [
+            (.brave, "search.brave.com", "q=hello%20world"),
+            (.perplexity, "www.perplexity.ai", "q=hello%20world"),
+            (.exa, "exa.ai", "q=hello%20world"),
+            (.yahoo, "search.yahoo.com", "p=hello%20world"),
+            (.ecosia, "www.ecosia.org", "q=hello%20world"),
+            (.qwant, "www.qwant.com", "q=hello%20world"),
+            (.mojeek, "www.mojeek.com", "q=hello%20world"),
+            (.wikipedia, "en.wikipedia.org", "search=hello%20world"),
+            (.github, "github.com", "q=hello%20world"),
+            (.baidu, "www.baidu.com", "wd=hello%20world"),
+            (.yandex, "yandex.com", "text=hello%20world"),
+        ]
+
+        for (engine, host, encodedQuery) in expectations {
+            let url = try XCTUnwrap(engine.searchURL(query: "hello world"), engine.rawValue)
+            XCTAssertEqual(url.host, host, engine.rawValue)
+            XCTAssertTrue(url.absoluteString.contains(encodedQuery), engine.rawValue)
+        }
+    }
+
+    func testCustomSearchURLTemplateReplacesQueryPlaceholder() throws {
+        let url = try XCTUnwrap(BrowserSearchSettings.searchURL(
+            fromTemplate: "https://search.example.test/find?q={query}&src=cmux",
+            query: "hello world"
+        ))
+
+        XCTAssertEqual(url.host, "search.example.test")
+        XCTAssertTrue(url.absoluteString.contains("q=hello%20world"))
+        XCTAssertTrue(url.absoluteString.contains("src=cmux"))
+    }
+
+    func testCustomSearchURLTemplateReplacesPercentPlaceholder() throws {
+        let url = try XCTUnwrap(BrowserSearchSettings.searchURL(
+            fromTemplate: "https://search.example.test/find?term=%s",
+            query: "c++ && swift"
+        ))
+
+        XCTAssertEqual(url.host, "search.example.test")
+        XCTAssertTrue(url.absoluteString.contains("term=c%2B%2B%20%26%26%20swift"))
+    }
+
+    func testCustomSearchURLTemplateAppendsQueryItemWhenPlaceholderIsMissing() throws {
+        let url = try XCTUnwrap(BrowserSearchSettings.searchURL(
+            fromTemplate: "https://search.example.test/find?source=cmux",
+            query: "hello world"
+        ))
+
+        XCTAssertEqual(url.host, "search.example.test")
+        XCTAssertTrue(url.absoluteString.contains("source=cmux"))
+        XCTAssertTrue(url.absoluteString.contains("q=hello%20world"))
+    }
+
+    func testCustomSearchURLTemplateFallbackEscapesPlusSigns() throws {
+        let url = try XCTUnwrap(BrowserSearchSettings.searchURL(
+            fromTemplate: "https://search.example.test/find?source=cmux",
+            query: "c++ && swift"
+        ))
+
+        XCTAssertEqual(url.host, "search.example.test")
+        XCTAssertTrue(url.absoluteString.contains("source=cmux"))
+        XCTAssertTrue(url.absoluteString.contains("q=c%2B%2B%20%26%26%20swift"))
+        XCTAssertFalse(url.absoluteString.contains("q=c++"))
+    }
+
+    func testCustomSearchURLTemplateRejectsNonHTTPURLs() {
+        XCTAssertNil(BrowserSearchSettings.searchURL(
+            fromTemplate: "file:///tmp/search?q={query}",
+            query: "hello world"
+        ))
+        XCTAssertFalse(BrowserSearchSettings.isValidSearchURLTemplate("cmux://search?q={query}"))
+    }
+
+    func testCurrentSearchConfigurationUsesCustomProvider() throws {
+        let suiteName = "BrowserSearchEngineTests.\(UUID().uuidString)"
+        guard let defaults = UserDefaults(suiteName: suiteName) else {
+            XCTFail("Failed to create isolated UserDefaults suite")
+            return
+        }
+        defer {
+            defaults.removePersistentDomain(forName: suiteName)
+        }
+
+        defaults.set(BrowserSearchEngine.custom.rawValue, forKey: BrowserSearchSettings.searchEngineKey)
+        defaults.set("Kagi Fast", forKey: BrowserSearchSettings.customSearchEngineNameKey)
+        defaults.set("https://kagi.com/search?q={query}", forKey: BrowserSearchSettings.customSearchEngineURLTemplateKey)
+
+        let configuration = BrowserSearchSettings.currentConfiguration(defaults: defaults)
+        let url = try XCTUnwrap(configuration.searchURL(query: "swift actors"))
+
+        XCTAssertEqual(configuration.displayName, "Kagi Fast")
+        XCTAssertEqual(configuration.remoteSuggestionsEngine, nil)
+        XCTAssertEqual(url.host, "kagi.com")
+        XCTAssertTrue(url.absoluteString.contains("q=swift%20actors"))
+    }
+
+    func testCurrentSearchConfigurationFallsBackForInvalidCustomURLTemplate() throws {
+        let configuration = BrowserSearchSettings.configuration(
+            engineRaw: BrowserSearchEngine.custom.rawValue,
+            customName: "",
+            customURLTemplate: "ftp://search.example.test?q={query}"
+        )
+        let url = try XCTUnwrap(configuration.searchURL(query: "swift actors"))
+
+        XCTAssertEqual(configuration.displayName, BrowserSearchEngine.custom.displayName)
+        XCTAssertEqual(url.host, "www.google.com")
+        XCTAssertTrue(url.absoluteString.contains("q=swift%20actors"))
+    }
+
+    func testStaleRemoteSuggestionsSuppressedWhenProviderDoesNotSupportRemoteSuggestions() {
+        let suggestions = staleOmnibarRemoteSuggestionsForDisplay(
+            query: "swift",
+            previousRemoteQuery: "swi",
+            previousRemoteSuggestions: ["swift actors"],
+            allowsRemoteSuggestions: false
+        )
+
+        XCTAssertTrue(suggestions.isEmpty)
     }
 }
 
