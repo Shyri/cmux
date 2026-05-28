@@ -9919,6 +9919,28 @@ enum SidebarShortcutHintFreezePolicy {
     }
 }
 
+struct SidebarTabItemPresentationSnapshot: Equatable {
+    let tabId: UUID
+    let unreadCount: Int
+    let latestNotificationText: String?
+    let showsModifierShortcutHints: Bool
+}
+
+struct SidebarTabItemPresentationResolutionPolicy {
+    static func resolved(
+        live: SidebarTabItemPresentationSnapshot,
+        frozen: SidebarTabItemPresentationSnapshot?
+    ) -> SidebarTabItemPresentationSnapshot {
+        guard let frozen, frozen.tabId == live.tabId else { return live }
+        return SidebarTabItemPresentationSnapshot(
+            tabId: live.tabId,
+            unreadCount: live.unreadCount,
+            latestNotificationText: live.latestNotificationText,
+            showsModifierShortcutHints: frozen.showsModifierShortcutHints
+        )
+    }
+}
+
 struct VerticalTabsSidebar: View {
     @ObservedObject var updateViewModel: UpdateViewModel
     @ObservedObject var fileExplorerState: FileExplorerState
