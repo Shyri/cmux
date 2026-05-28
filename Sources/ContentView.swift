@@ -9966,6 +9966,7 @@ struct VerticalTabsSidebar: View {
     // row sitting behind the open menu. See `SidebarShortcutHintFreezePolicy`.
     @State private var frozenShortcutHintsTabId: UUID?
     @State private var frozenShortcutHintsValue: Bool = false
+    @State private var frozenTabItemPresentation: SidebarTabItemPresentationSnapshot?
     @State private var terminalScrollBarVisibilityGeneration: UInt64 = 0
     @State private var laidOutWorkspaceRowIds: Set<UUID> = []
     @State private var pendingSelectedWorkspaceScrollId: UUID?
@@ -11349,6 +11350,13 @@ struct VerticalTabsSidebar: View {
                 frozenShortcutHintsTabId = nil
             }
         }
+
+        let livePresentation = SidebarTabItemPresentationSnapshot(
+            tabId: tab.id,
+            unreadCount: liveUnreadCount,
+            latestNotificationText: liveLatestNotificationText,
+            showsModifierShortcutHints: resolvedShowsModifierShortcutHints
+        )
 
         // Per-row drag/drop snapshots. Reading `dragState` here in the parent
         // is intentional: the parent owns the @Observable store, and these
