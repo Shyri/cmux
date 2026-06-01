@@ -37,7 +37,7 @@ enum SessionPresetSchema {
     static let directoryName = "presets"
 
     /// `~/Library/Application Support/cmux/presets-<safeBundleId>/`. Separated
-    /// per-bundle-id so cmux and cmux Fork keep independent preset collections.
+    /// per-bundle-id so cmux and Chatmux keep independent preset collections.
     static func defaultDirectoryURL(
         bundleIdentifier: String? = Bundle.main.bundleIdentifier,
         appSupportDirectory: URL? = nil

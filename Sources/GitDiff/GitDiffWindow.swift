@@ -64,6 +64,18 @@ final class GitDiffViewModel: ObservableObject {
     }
 
     func reload() {
+        if let iid = spec.mergeRequestIID {
+            // Drop cached diff_refs, target-branch fetch state, and merge-tree
+            // so a new push to the MR (or to target) is picked up on the next
+            // load.
+            let dir = spec.directory
+            let target = spec.base
+            Task {
+                await MRDiffRefsStore.shared.invalidate(iid: iid, directory: dir)
+                await TargetBranchFetchCache.shared.invalidate(branch: target, directory: dir)
+                await MRMergedTreeStore.shared.invalidateAll(directory: dir)
+            }
+        }
         loadFileList()
         loadDiscussionsIfNeeded()
         loadOverviewIfNeeded()
@@ -169,9 +181,17 @@ final class GitDiffViewModel: ObservableObject {
         let refs = missingRefs
         let remote = missingRefsRemote
         let directory = spec.directory
+        let mrIID = spec.mergeRequestIID
         isFetchingRefs = true
         do {
-            try await fetchGitBranches(refs, remote: remote, directory: directory)
+            // SHAs (from MR diff_refs) need a different fetch path than branch
+            // names: GitLab may not advertise them by name, so we ask the
+            // server for the SHA directly or fall back to refs/merge-requests.
+            if refs.allSatisfy(looksLikeGitSHA) {
+                try await ensureGitCommitsPresent(refs, remote: remote, directory: directory, mrIID: mrIID)
+            } else {
+                try await fetchGitBranches(refs, remote: remote, directory: directory)
+            }
             isFetchingRefs = false
             missingRefs = []
             filesError = nil

@@ -452,6 +452,37 @@ final class ChatDropZoneNSView: NSView {
     }
 }
 
+// MARK: - FileDropPaneTarget conformance
+//
+// `FileDropOverlayView` sits above the SwiftUI hosting view to intercept
+// file/image drags (nested `NSHostingController` layers block AppKit's
+// native drag-destination routing from reaching deeply embedded views like
+// `ChatDropZoneNSView`). The overlay forwards drops to whatever target
+// implements `FileDropPaneTarget` under the cursor. Without this
+// conformance the drop is routed to the outer `PaneDropTargetView` and
+// opens the file in a sibling file-preview pane instead of attaching it
+// to the pending chat message.
+extension ChatDropZoneNSView: FileDropPaneTarget {
+    func fileDropDraggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingEntered(sender)
+    }
+    func fileDropDraggingUpdated(_ sender: any NSDraggingInfo) -> NSDragOperation {
+        draggingUpdated(sender)
+    }
+    func fileDropDraggingExited(_ sender: (any NSDraggingInfo)?) {
+        draggingExited(sender)
+    }
+    func fileDropPrepareForDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        prepareForDragOperation(sender)
+    }
+    func fileDropPerformDragOperation(_ sender: any NSDraggingInfo) -> Bool {
+        performDragOperation(sender)
+    }
+    func fileDropConcludeDragOperation(_ sender: (any NSDraggingInfo)?) {
+        concludeDragOperation(sender)
+    }
+}
+
 // MARK: - Attachment chip
 
 /// Inline thumbnails shown on a `.user` message bubble for files that
@@ -765,13 +796,12 @@ struct ClaudeChatPanelView: View {
         case bashes
         var id: String { rawValue }
     }
-    /// Whether the right-side diff pane is open. Persists for the
-    /// lifetime of this view; restart the panel to reset.
-    @State private var showingDiffPane: Bool = false
-    /// We only auto-open the diff pane on the *first* turn of this panel
-    /// session that produces edits. Subsequent turns leave the pane state
-    /// alone so the user keeps whatever they last set.
-    @State private var hasAutoOpenedDiffPaneThisSession: Bool = false
+    // Diff side pane state (open/close + "auto-opened once this session"
+    // memo) lives on `panel` so it survives SwiftUI re-instantiating
+    // this view. See the matching @Published fields on `ClaudeChatPanel`
+    // for the rationale — keeping these as @State here regressed the
+    // "once user closes it, never auto-reopen" rule because workspace
+    // / bonsplit churn dropped the memo and re-triggered the auto-open.
     /// Confirmation dialog for the trash button / `/clear`. Mirrors the
     /// pattern used by the undo/rewind dialog so destructive actions are
     /// consistent.
@@ -780,9 +810,6 @@ struct ClaudeChatPanelView: View {
     /// status line. Default expanded so a freshly-emitted list is
     /// immediately visible; the user can fold it after that.
     @State private var todosBannerExpanded: Bool = true
-    /// Mirror of `panel.lastTurnEdits.count` from the previous render —
-    /// used to detect 0→≥1 transitions and auto-open the side pane.
-    @State private var lastTurnEditsCountSeen: Int = 0
     @State private var showingUndoConfirmation: Bool = false
     /// Non-nil when the dialog is being raised from an inline rewind
     /// button — the rewind targets that user message. nil means rewind
@@ -927,18 +954,19 @@ struct ClaudeChatPanelView: View {
             }
         }
         .onChange(of: panel.lastTurnEdits.count) { newCount in
-            // First time this panel session sees a turn produce edits,
-            // pop the side pane open so the user discovers it. From then
-            // on we leave the pane state alone — they can re-open it via
-            // the toolbar button whenever they want.
-            if !hasAutoOpenedDiffPaneThisSession,
-               lastTurnEditsCountSeen == 0,
+            // Auto-open the diff side pane *once* per panel session, the
+            // first time a turn produces edits. After that — and crucially
+            // after the user manually closes it — leave the pane state
+            // alone for the rest of the session. Both flags live on
+            // `panel` so they survive view re-creation; otherwise the
+            // memo would reset and we'd re-pop the pane every time
+            // SwiftUI rebuilt this view.
+            if !panel.hasAutoOpenedDiffPaneThisSession,
                newCount > 0,
-               !showingDiffPane {
-                showingDiffPane = true
-                hasAutoOpenedDiffPaneThisSession = true
+               !panel.diffPaneOpen {
+                panel.diffPaneOpen = true
+                panel.hasAutoOpenedDiffPaneThisSession = true
             }
-            lastTurnEditsCountSeen = newCount
         }
         .onChange(of: panel.inputFocusRequestToken) { _ in
             // Panel asked for keyboard focus (e.g. bonsplit selected this
@@ -996,12 +1024,18 @@ struct ClaudeChatPanelView: View {
     private var chatContent: some View {
         HStack(spacing: 0) {
             chatColumn
-            if showingDiffPane {
+            if panel.diffPaneOpen {
                 Divider()
                 DiffPaneView(
                     edits: panel.lastTurnEdits,
                     isDark: colorScheme == .dark,
-                    onClose: { showingDiffPane = false }
+                    onClose: {
+                        panel.diffPaneOpen = false
+                        // User just expressed an explicit preference —
+                        // suppress any future auto-open for the rest
+                        // of this session.
+                        panel.hasAutoOpenedDiffPaneThisSession = true
+                    }
                 )
                 .frame(minWidth: 280, idealWidth: 360, maxWidth: 480)
                 .transition(.move(edge: .trailing).combined(with: .opacity))
@@ -1015,7 +1049,7 @@ struct ClaudeChatPanelView: View {
                     .allowsHitTesting(false)
             }
         }
-        .animation(.easeInOut(duration: 0.18), value: showingDiffPane)
+        .animation(.easeInOut(duration: 0.18), value: panel.diffPaneOpen)
         // The chat palette must be injected here, INSIDE the AppKit
         // hosting container — environments do not cross the
         // NSHostingView boundary, so an outer `.environment` would never
@@ -1331,10 +1365,13 @@ struct ClaudeChatPanelView: View {
 
     private var diffPaneButton: some View {
         Button {
-            showingDiffPane.toggle()
+            panel.diffPaneOpen.toggle()
+            // Manual toggle counts as the user having made their
+            // choice — don't auto-open again on later turns.
+            panel.hasAutoOpenedDiffPaneThisSession = true
         } label: {
             HStack(spacing: 3) {
-                Image(systemName: showingDiffPane ? "sidebar.right" : "doc.on.doc")
+                Image(systemName: panel.diffPaneOpen ? "sidebar.right" : "doc.on.doc")
                     .font(.system(size: 11))
                 if !panel.lastTurnEdits.isEmpty {
                     Text("\(panel.lastTurnEdits.count)")
@@ -1562,7 +1599,7 @@ struct ClaudeChatPanelView: View {
             .onChange(of: forceScrollToBottomToken) { _ in
                 scrollToBottom(proxy: proxy)
             }
-            .onChange(of: showingDiffPane) { _ in
+            .onChange(of: panel.diffPaneOpen) { _ in
                 // Toggling the diff pane resizes `chatColumn` over the
                 // 0.18s `.easeInOut` set on `chatContent`. The
                 // LazyVStack re-wraps rows mid-animation and the
@@ -1813,6 +1850,9 @@ struct ClaudeChatPanelView: View {
         ClaudeChatComposerView(
             draft: panel.draft,
             permissionMode: panel.permissionMode,
+            modelSelection: panel.modelSelection,
+            thinkingEffort: panel.thinkingEffort,
+            resolvedCLIDefaultEffort: panel.resolvedCLIDefaultEffort,
             measuredHeight: inputMeasuredHeight,
             modelName: panel.modelName,
             isSending: { if case .sending = panel.status { return true } else { return false } }(),
@@ -1830,6 +1870,8 @@ struct ClaudeChatPanelView: View {
             onDraftChange: { panel.draft = $0 },
             onMeasuredHeightChange: { inputMeasuredHeight = $0 },
             onPermissionModeChange: { panel.permissionMode = $0 },
+            onModelSelectionChange: { panel.modelSelection = $0 },
+            onThinkingEffortChange: { panel.thinkingEffort = $0 },
             onPickSlashCommand: { idx in
                 slashSelectedIndex = idx
                 confirmSlashSelection()
@@ -2269,6 +2311,9 @@ struct ClaudeChatPanelView: View {
 private struct ClaudeChatComposerView: View, Equatable {
     let draft: String
     let permissionMode: ChatPermissionMode
+    let modelSelection: ChatModelSelection
+    let thinkingEffort: ChatThinkingEffort
+    let resolvedCLIDefaultEffort: ChatThinkingEffort?
     let measuredHeight: CGFloat
     let modelName: String?
     let isSending: Bool
@@ -2287,6 +2332,8 @@ private struct ClaudeChatComposerView: View, Equatable {
     let onDraftChange: (String) -> Void
     let onMeasuredHeightChange: (CGFloat) -> Void
     let onPermissionModeChange: (ChatPermissionMode) -> Void
+    let onModelSelectionChange: (ChatModelSelection) -> Void
+    let onThinkingEffortChange: (ChatThinkingEffort) -> Void
     let onPickSlashCommand: (Int) -> Void
     let onSubmit: () -> Void
     let onCancel: () -> Void
@@ -2300,6 +2347,9 @@ private struct ClaudeChatComposerView: View, Equatable {
     static func == (lhs: ClaudeChatComposerView, rhs: ClaudeChatComposerView) -> Bool {
         return lhs.draft == rhs.draft
             && lhs.permissionMode == rhs.permissionMode
+            && lhs.modelSelection == rhs.modelSelection
+            && lhs.thinkingEffort == rhs.thinkingEffort
+            && lhs.resolvedCLIDefaultEffort == rhs.resolvedCLIDefaultEffort
             && lhs.measuredHeight == rhs.measuredHeight
             && lhs.modelName == rhs.modelName
             && lhs.isSending == rhs.isSending
@@ -2335,6 +2385,14 @@ private struct ClaudeChatComposerView: View, Equatable {
         let permissionBinding = Binding<ChatPermissionMode>(
             get: { permissionMode },
             set: { onPermissionModeChange($0) }
+        )
+        let modelBinding = Binding<ChatModelSelection>(
+            get: { modelSelection },
+            set: { onModelSelectionChange($0) }
+        )
+        let thinkingBinding = Binding<ChatThinkingEffort>(
+            get: { thinkingEffort },
+            set: { onThinkingEffortChange($0) }
         )
 
         VStack(alignment: .leading, spacing: 6) {
@@ -2399,29 +2457,60 @@ private struct ClaudeChatComposerView: View, Equatable {
                 ))
                 .frame(maxWidth: 110)
 
-                if let model = modelName, !model.isEmpty {
-                    // lineLimit + layoutPriority(-1): the model capsule
-                    // is the flexible item in this row. With the diff
-                    // pane open the composer narrows and an un-clipped
-                    // Text expands to its intrinsic width, squeezing
-                    // the trailing Send/Stop buttons until the borderless
-                    // image inside each one is clipped out of the
-                    // button's frame (visible empty buttons). Letting
-                    // the capsule truncate first preserves the buttons.
-                    Text(model)
-                        .font(.system(size: 10, design: .monospaced))
-                        .foregroundColor(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(Capsule().fill(palette.cardBg(isDark)))
-                        .layoutPriority(-1)
-                        .help(String(
-                            localized: "claudeChat.model.tooltip",
-                            defaultValue: "Active Claude model"
-                        ))
+                // Model picker. Mirrors the permission-mode picker: the
+                // selection is persisted on the panel and bakes into
+                // `claude --model` at spawn. `ClaudeChatRunner` tracks
+                // `launchedModel` and respawns mid-session (preserving
+                // the session via `--resume`) when the user changes it.
+                // The live `modelName` from `system/init` shows in the
+                // tooltip so the user can confirm the swap took.
+                Picker("", selection: modelBinding) {
+                    ForEach(ChatModelSelection.allCases) { sel in
+                        Label(sel.label, systemImage: sel.iconName).tag(sel)
+                    }
                 }
+                .pickerStyle(.menu)
+                .labelsHidden()
+                .controlSize(.small)
+                .layoutPriority(-1)
+                .frame(maxWidth: 140)
+                .help({
+                    let live = (modelName?.isEmpty == false) ? modelName! : "—"
+                    return String(format: String(
+                        localized: "claudeChat.model.picker.tooltip",
+                        defaultValue: "Claude model the next turn will use. Active: %@"
+                    ), live)
+                }())
+
+                // Thinking-effort picker. Same lifecycle as the model
+                // picker — `claude --effort <level>` is baked at spawn
+                // and the runner respawns when the selection changes.
+                // When the user picks "Default" (no `--effort` flag),
+                // the collapsed label shows the resolved value in
+                // parentheses (e.g. "Default (xhigh)") so the active
+                // effort is always visible without opening the menu.
+                Menu {
+                    ForEach(ChatThinkingEffort.allCases) { eff in
+                        Button {
+                            onThinkingEffortChange(eff)
+                        } label: {
+                            Label(eff.label, systemImage: eff.iconName)
+                        }
+                    }
+                } label: {
+                    Label(
+                        thinkingEffort.activeLabel(resolvedDefault: resolvedCLIDefaultEffort),
+                        systemImage: thinkingEffort.iconName
+                    )
+                }
+                .menuStyle(.borderlessButton)
+                .controlSize(.small)
+                .layoutPriority(-1)
+                .fixedSize()
+                .help(String(
+                    localized: "claudeChat.thinking.picker.tooltip",
+                    defaultValue: "Thinking effort for the next turn (--effort flag). Higher levels give Claude a larger thinking budget but cost more tokens."
+                ))
 
                 Spacer(minLength: 4)
 
@@ -4792,7 +4881,6 @@ private struct TextBlockRow: View, Equatable {
     var isPending: Bool = false
 
     @Environment(\.chatPalette) private var palette
-    @State private var isHovered: Bool = false
     @State private var isExpanded: Bool = false
     @State private var didCopy: Bool = false
 
@@ -4830,7 +4918,15 @@ private struct TextBlockRow: View, Equatable {
                     HStack(alignment: .top, spacing: 6) {
                         // Don't expose rewind on a still-queued bubble: it
                         // points at a turn that never happened.
-                        if !isPending, canRewindToHere, isHovered, let id = messageId {
+                        //
+                        // Rewind + copy used to fade in on hover via a
+                        // sibling `.onHover` on this HStack. That installed
+                        // an `NSTrackingArea` inside the LazyVStack hosting
+                        // subtree which broke the AppKit dragging
+                        // destination scan owned by the chat panel root
+                        // (`ChatDropZoneNSView`). Keep both controls
+                        // mounted permanently so file-drop keeps working.
+                        if !isPending, canRewindToHere, let id = messageId {
                             Button {
                                 onRewindToHere?(id)
                             } label: {
@@ -4844,11 +4940,9 @@ private struct TextBlockRow: View, Equatable {
                                 localized: "claudeChat.rewindToHere.tooltip",
                                 defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
                             ))
-                            .transition(.opacity)
                         }
-                        if !isPending, isHovered, !text.isEmpty {
+                        if !isPending, !text.isEmpty {
                             copyButton
-                                .transition(.opacity)
                         }
                         VStack(alignment: .trailing, spacing: 6) {
                             if !attachmentURLs.isEmpty {
@@ -4888,9 +4982,6 @@ private struct TextBlockRow: View, Equatable {
                             }
                         }
                         .frame(maxWidth: .infinity, alignment: .trailing)
-                    }
-                    .onHover { hovering in
-                        isHovered = hovering
                     }
                 }
             case .assistant, .system:
@@ -4933,22 +5024,28 @@ private struct TextBlockRow: View, Equatable {
                         }
                     }
                     if !text.isEmpty {
-                        // Bottom rail reserves height permanently so the
-                        // copy button can fade in/out on hover without
-                        // changing the row's intrinsic height. A reflow
-                        // here would cause hover flicker as the bottom
-                        // edge moves under the pointer.
+                        // Persistent bottom rail with the copy button.
+                        //
+                        // The earlier implementation hid the button behind
+                        // `.onHover` so it faded in only over the bubble.
+                        // That installed an `NSTrackingArea` inside the
+                        // LazyVStack's hosting view subtree which, on macOS
+                        // Sonoma+, interferes with the AppKit dragging
+                        // destination scan that lives at the chat panel root
+                        // (`ChatDropZoneNSView`). Symptom: dragging a file
+                        // from Finder no longer shows the blue drop ring and
+                        // `draggingEntered` never fires.
+                        //
+                        // Keep the button mounted and always hittable. The
+                        // visual cost is minimal — a single tiny clipboard
+                        // glyph in the trailing corner — and drag-and-drop
+                        // of attachments works again.
                         HStack(spacing: 0) {
                             Spacer(minLength: 0)
                             copyButton
-                                .opacity(isHovered ? 1 : 0)
-                                .allowsHitTesting(isHovered)
                         }
                         .frame(height: 16)
                     }
-                }
-                .onHover { hovering in
-                    isHovered = hovering
                 }
             }
         }

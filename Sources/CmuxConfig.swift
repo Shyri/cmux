@@ -1128,6 +1128,7 @@ struct CmuxSurfaceTabBarButton: Codable, Sendable, Hashable, Identifiable {
     static let splitDown = actionReference(CmuxSurfaceTabBarBuiltInAction.splitDown.configID)
     static let openInFinder = actionReference(CmuxSurfaceTabBarBuiltInAction.openInFinder.configID)
     static let openInIDE = actionReference(CmuxSurfaceTabBarBuiltInAction.openInIDE.configID)
+    static let openInSourcetree = actionReference(CmuxSurfaceTabBarBuiltInAction.openInSourcetree.configID)
     static let toggleNotes = actionReference(CmuxSurfaceTabBarBuiltInAction.toggleNotes.configID)
     static let newClaudeChat = actionReference(CmuxSurfaceTabBarBuiltInAction.newClaudeChat.configID)
 
@@ -1139,7 +1140,8 @@ struct CmuxSurfaceTabBarButton: Codable, Sendable, Hashable, Identifiable {
         .splitDown,
         .toggleNotes,
         .openInFinder,
-        .openInIDE
+        .openInIDE,
+        .openInSourcetree
     ]
 
     static func builtIn(
@@ -1534,6 +1536,9 @@ struct CmuxResolvedConfigAction: Identifiable, Sendable, Hashable {
         case .openInIDE:
             title = String(localized: "command.openInIDE.title", defaultValue: "Open in IDE")
             keywords = ["open", "ide", "intellij", "android studio", "editor"]
+        case .openInSourcetree:
+            title = String(localized: "command.openInSourcetree.title", defaultValue: "Open in Sourcetree")
+            keywords = ["open", "sourcetree", "atlassian", "git", "client"]
         case .toggleNotes:
             title = String(localized: "command.toggleNotes.title", defaultValue: "Toggle Notes")
             keywords = ["toggle", "notes", "sidebar", "gitlab"]
@@ -2223,7 +2228,8 @@ final class CmuxConfigStore: ObservableObject {
             .builtIn(.splitDown),
             .builtIn(.toggleNotes),
             .builtIn(.openInFinder),
-            .builtIn(.openInIDE)
+            .builtIn(.openInIDE),
+            .builtIn(.openInSourcetree)
         ]
         let resolvedButtons = resolvedSurfaceTabBarButtons(
             configuredButtons,

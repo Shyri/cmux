@@ -71,6 +71,18 @@ struct MROverview: Equatable, Sendable {
     let authorUsername: String
     let createdAt: Date?
     let webURL: String
+    /// SHAs registered by GitLab for the current MR-version's diff. When set,
+    /// callers should anchor `git diff` to these instead of recomputing the
+    /// merge-base from live refs — guarantees parity with the panel web view.
+    let diffRefs: MRDiffRefs?
+}
+
+/// Snapshot of the SHAs GitLab uses for a given MR-version's diff. Mirrors the
+/// `diff_refs` object returned by `GET /projects/:id/merge_requests/:iid`.
+struct MRDiffRefs: Equatable, Sendable {
+    let baseSHA: String
+    let headSHA: String
+    let startSHA: String
 }
 
 private struct GLMROverviewResponse: Decodable {
@@ -78,11 +90,17 @@ private struct GLMROverviewResponse: Decodable {
         let name: String?
         let username: String?
     }
+    struct DiffRefs: Decodable {
+        let base_sha: String?
+        let head_sha: String?
+        let start_sha: String?
+    }
     let title: String?
     let description: String?
     let author: Author?
     let created_at: String?
     let web_url: String?
+    let diff_refs: DiffRefs?
 }
 
 /// Fetches the MR title/description/author via `glab api projects/:id/merge_requests/<iid>`.
@@ -137,8 +155,34 @@ private func runGlabMROverview(mrIID: Int, directory: String) throws -> MROvervi
         authorName: decoded.author?.name ?? "",
         authorUsername: decoded.author?.username ?? "",
         createdAt: parseISO(decoded.created_at),
-        webURL: decoded.web_url ?? ""
+        webURL: decoded.web_url ?? "",
+        diffRefs: makeDiffRefs(decoded.diff_refs)
     )
+}
+
+private func makeDiffRefs(_ raw: GLMROverviewResponse.DiffRefs?) -> MRDiffRefs? {
+    guard let raw,
+          let base = raw.base_sha, !base.isEmpty,
+          let head = raw.head_sha, !head.isEmpty else { return nil }
+    return MRDiffRefs(
+        baseSHA: base,
+        headSHA: head,
+        startSHA: raw.start_sha ?? base
+    )
+}
+
+/// Fetches just the `diff_refs` SHAs for an MR via the same endpoint used by
+/// `fetchMROverview`, throwing if the API is unreachable or the MR has no
+/// diff_refs (deleted, no commits, etc.). Used by `MRDiffRefsStore` to anchor
+/// `git diff` to the exact SHAs GitLab snapshots for the current MR-version.
+func fetchMRDiffRefs(mrIID: Int, directory: String) async throws -> MRDiffRefs {
+    let overview = try await fetchMROverview(mrIID: mrIID, directory: directory)
+    guard let refs = overview.diffRefs else {
+        throw MRDiscussionsFetchError.processError(
+            "GitLab did not return diff_refs for MR !\(mrIID)"
+        )
+    }
+    return refs
 }
 
 // MARK: - Fetcher

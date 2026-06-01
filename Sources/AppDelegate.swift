@@ -14156,6 +14156,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 workspace.openFocusedPaneDirectoryInIDE(pane: paneId)
                 onExecuted?()
                 return true
+            case .openInSourcetree:
+                guard let workspace = context.tabManager.selectedWorkspace,
+                      let paneId = workspace.bonsplitController.focusedPaneId
+                          ?? workspace.bonsplitController.allPaneIds.first else {
+                    return false
+                }
+                workspace.openFocusedPaneDirectoryInSourcetree(pane: paneId)
+                onExecuted?()
+                return true
             case .toggleNotes:
                 guard let workspace = context.tabManager.selectedWorkspace else {
                     return false

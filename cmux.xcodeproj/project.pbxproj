@@ -330,7 +330,9 @@
 		E1000000A1B2C3D4E5F60718 /* MenuKeyEquivalentRoutingUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = E1000001A1B2C3D4E5F60718 /* MenuKeyEquivalentRoutingUITests.swift */; };
 		A764CCC85CC08ECEE34BC54C /* MergeRequestsListView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 31FE4D4369D439C82FAB8599 /* MergeRequestsListView.swift */; };
 		C0DE3150A00000000000001 /* MinimalModeSidebarControls.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE3150A00000000000002 /* MinimalModeSidebarControls.swift */; };
+		D1F8FD20A1B2C3D4E5F60001 /* MRDiffRefsStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F8FD21A1B2C3D4E5F60001 /* MRDiffRefsStore.swift */; };
 		FCF3489CD02F5578CE92F610 /* MRDiscussions.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9F8FD1F43F0CCC0477066FC /* MRDiscussions.swift */; };
+		D1F8FD22A1B2C3D4E5F60002 /* MRMergedTreeStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1F8FD23A1B2C3D4E5F60002 /* MRMergedTreeStore.swift */; };
 		B9000015A1B2C3D4E5F60719 /* MultiWindowNotificationsUITests.swift in Sources */ = {isa = PBXBuildFile; fileRef = B9000016A1B2C3D4E5F60719 /* MultiWindowNotificationsUITests.swift */; };
 		DDD53D04D52DA86B0D3965C2 /* NotesSidebarContentView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 81118300ACAD103CF4320724 /* NotesSidebarContentView.swift */; };
 		4613574E3CA54C2EE9B39C32 /* NotesSidebarState.swift in Sources */ = {isa = PBXBuildFile; fileRef = BD7B4B904168F76E6A226A70 /* NotesSidebarState.swift */; };
@@ -955,7 +957,9 @@
 		E1000001A1B2C3D4E5F60718 /* MenuKeyEquivalentRoutingUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuKeyEquivalentRoutingUITests.swift; sourceTree = "<group>"; };
 		31FE4D4369D439C82FAB8599 /* MergeRequestsListView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MergeRequestsListView.swift; sourceTree = "<group>"; };
 		C0DE3150A00000000000002 /* MinimalModeSidebarControls.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Update/MinimalModeSidebarControls.swift; sourceTree = "<group>"; };
+		D1F8FD21A1B2C3D4E5F60001 /* MRDiffRefsStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MRDiffRefsStore.swift; sourceTree = "<group>"; };
 		B9F8FD1F43F0CCC0477066FC /* MRDiscussions.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MRDiscussions.swift; sourceTree = "<group>"; };
+		D1F8FD23A1B2C3D4E5F60002 /* MRMergedTreeStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = MRMergedTreeStore.swift; sourceTree = "<group>"; };
 		B9000016A1B2C3D4E5F60719 /* MultiWindowNotificationsUITests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MultiWindowNotificationsUITests.swift; sourceTree = "<group>"; };
 		81118300ACAD103CF4320724 /* NotesSidebarContentView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotesSidebarContentView.swift; sourceTree = "<group>"; };
 		BD7B4B904168F76E6A226A70 /* NotesSidebarState.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = NotesSidebarState.swift; sourceTree = "<group>"; };
@@ -1730,6 +1734,7 @@
 				00F9C4E5EC8BF79D91CFBFDA /* GitLabRelease.swift */,
 				2A3C28DA8BF779695813F2B3 /* GitLabSidebarView.swift */,
 				526BBEF12E0B1E54472F7D3C /* IssuesListView.swift */,
+				D1F8FD21A1B2C3D4E5F60001 /* MRDiffRefsStore.swift */,
 				B9F8FD1F43F0CCC0477066FC /* MRDiscussions.swift */,
 				31FE4D4369D439C82FAB8599 /* MergeRequestsListView.swift */,
 				8D4FF477D57CE2FE989D6A80 /* PipelinesListView.swift */,
@@ -1746,6 +1751,7 @@
 				AD0F6F13B089525015326A2F /* DiffThreeWayCodeTextView.swift */,
 				270FCD1A6C0439FA5F039925 /* GitDiff.swift */,
 				865698E6B4097E69F6CEE67F /* GitDiffWindow.swift */,
+				D1F8FD23A1B2C3D4E5F60002 /* MRMergedTreeStore.swift */,
 				E4ED7E9050105ED7643AFFB9 /* LCSDiff.swift */,
 				8153062965048757CEFD53C0 /* SyntaxHighlighter.swift */,
 			);
@@ -2398,7 +2404,9 @@
 				3865A0033865A0033865A003 /* MenubarSearchPopover.swift in Sources */,
 				A764CCC85CC08ECEE34BC54C /* MergeRequestsListView.swift in Sources */,
 				C0DE3150A00000000000001 /* MinimalModeSidebarControls.swift in Sources */,
+				D1F8FD20A1B2C3D4E5F60001 /* MRDiffRefsStore.swift in Sources */,
 				FCF3489CD02F5578CE92F610 /* MRDiscussions.swift in Sources */,
+				D1F8FD22A1B2C3D4E5F60002 /* MRMergedTreeStore.swift in Sources */,
 				DDD53D04D52DA86B0D3965C2 /* NotesSidebarContentView.swift in Sources */,
 				4613574E3CA54C2EE9B39C32 /* NotesSidebarState.swift in Sources */,
 					A5001094 /* NotificationsPage.swift in Sources */,

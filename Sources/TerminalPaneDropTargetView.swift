@@ -82,6 +82,15 @@ final class PaneDropTargetView: NSView {
         }
 
         let pasteboardTypes = NSPasteboard(name: .drag).types
+        // Claude Chat panels own their own `ChatDropZoneNSView` that handles
+        // file-and-image drops as message attachments. If we capture the
+        // hit-test here for a file payload, the drag never reaches the
+        // chat's drop zone and the file ends up routed to a file preview
+        // instead of being attached. Tab transfers must still capture so
+        // pane reordering keeps working.
+        if shouldDeferFileDropToHostedTarget(pasteboardTypes: pasteboardTypes) {
+            return nil
+        }
         let eventType = NSApp.currentEvent?.type
         let capture = Self.shouldCaptureHitTesting(
             pasteboardTypes: pasteboardTypes,
@@ -91,6 +100,31 @@ final class PaneDropTargetView: NSView {
         logHitTestDecision(capture: capture, pasteboardTypes: pasteboardTypes, eventType: eventType)
 #endif
         return capture ? self : nil
+    }
+
+    private func shouldDeferFileDropToHostedTarget(
+        pasteboardTypes: [NSPasteboard.PasteboardType]?
+    ) -> Bool {
+        guard let dropContext else { return false }
+        // Tab transfers (drag a tab between panes) must continue to be
+        // captured by this view — only file/image payloads should be
+        // forwarded to the panel's own drop zone.
+        if DragOverlayRoutingPolicy.hasBonsplitTabTransfer(pasteboardTypes) {
+            return false
+        }
+        guard DragOverlayRoutingPolicy.hasFileDropPayload(pasteboardTypes) else {
+            return false
+        }
+        guard let workspace = AppDelegate.shared?.workspaceFor(tabId: dropContext.workspaceId),
+              let panel = workspace.panels[dropContext.panelId] else {
+            return false
+        }
+        switch panel.panelType {
+        case .claudeChat:
+            return true
+        case .terminal, .browser, .filePreview, .markdown, .rightSidebarTool:
+            return false
+        }
     }
 
     override func draggingEntered(_ sender: any NSDraggingInfo) -> NSDragOperation {

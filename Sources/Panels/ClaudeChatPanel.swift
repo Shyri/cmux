@@ -53,6 +53,163 @@ struct ChatAttachment: Identifiable, Equatable {
 
 /// Permission modes mapped 1:1 to Claude Code's four canonical modes.
 /// (Claude Code interactive uses Shift+Tab to cycle through them.)
+/// Which Claude model the chat tells the CLI to use via `--model`.
+/// `default` means we don't pass `--model` and let the `claude` binary
+/// pick (whatever `~/.claude/settings.json` or `$ANTHROPIC_MODEL` says,
+/// otherwise the CLI's hard-coded default — Sonnet 4.6 today).
+///
+/// Just like `--permission-mode`, the CLI bakes `--model` into argv at
+/// spawn time and cannot change it mid-session — `ClaudeChatRunner`
+/// tracks `launchedModel` and respawns with `--resume <sessionId>`
+/// when the selection differs from the running process.
+enum ChatModelSelection: String, CaseIterable, Identifiable {
+    case `default`
+    case opus48
+    case opus48Long
+    case opus
+    case opusLong
+    case sonnet
+    case haiku
+
+    var id: String { rawValue }
+
+    /// The value passed to `claude --model`. `nil` means "don't pass
+    /// `--model` at all" (the `default` case).
+    var claudeFlag: String? {
+        switch self {
+        case .default: return nil
+        case .opus48: return "claude-opus-4-8"
+        case .opus48Long: return "claude-opus-4-8[1m]"
+        case .opus: return "claude-opus-4-7"
+        case .opusLong: return "claude-opus-4-7[1m]"
+        case .sonnet: return "claude-sonnet-4-6"
+        case .haiku: return "claude-haiku-4-5"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .default:
+            return String(localized: "claudeChat.model.default", defaultValue: "Default")
+        case .opus48:
+            return String(localized: "claudeChat.model.opus48", defaultValue: "Opus 4.8")
+        case .opus48Long:
+            return String(localized: "claudeChat.model.opus48Long", defaultValue: "Opus 4.8 (1M)")
+        case .opus:
+            return String(localized: "claudeChat.model.opus", defaultValue: "Opus 4.7")
+        case .opusLong:
+            return String(localized: "claudeChat.model.opusLong", defaultValue: "Opus 4.7 (1M)")
+        case .sonnet:
+            return String(localized: "claudeChat.model.sonnet", defaultValue: "Sonnet 4.6")
+        case .haiku:
+            return String(localized: "claudeChat.model.haiku", defaultValue: "Haiku 4.5")
+        }
+    }
+
+    var iconName: String {
+        switch self {
+        case .default: return "wand.and.stars"
+        case .opus48, .opus: return "sparkles"
+        case .opus48Long, .opusLong: return "infinity"
+        case .sonnet: return "circle.hexagongrid"
+        case .haiku: return "leaf"
+        }
+    }
+}
+
+/// Thinking effort the chat passes to the CLI via `--effort <level>`.
+/// `default` means we don't pass `--effort`, letting the binary fall
+/// back to its own default (typically `medium`).
+///
+/// Just like `--permission-mode` and `--model`, `--effort` is baked into
+/// argv at spawn time — `ClaudeChatRunner` tracks `launchedEffort` and
+/// respawns with `--resume <sessionId>` when the selection changes.
+enum ChatThinkingEffort: String, CaseIterable, Identifiable {
+    case `default`
+    case low
+    case medium
+    case high
+    case xhigh
+    case max
+
+    /// What `default` resolves to when the user has not picked an explicit
+    /// `--effort` flag. Precedence mirrors the CLI:
+    ///   1. `~/.claude/settings.json` → `effortLevel`
+    ///   2. CLI built-in (Claude Code 2.1+ defaults to `high`)
+    /// `nil` here means we couldn't read settings.json so we surface the
+    /// CLI built-in as a fallback in the UI.
+    static func resolveCLIDefault() -> ChatThinkingEffort? {
+        let url = FileManager.default
+            .homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/settings.json")
+        if let data = try? Data(contentsOf: url),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let raw = json["effortLevel"] as? String,
+           let resolved = ChatThinkingEffort(rawValue: raw),
+           resolved != .default {
+            return resolved
+        }
+        // Recent claude releases ship with a built-in default of `high`
+        // (see the binary string "Now defaults to high effort").
+        return .high
+    }
+
+    var id: String { rawValue }
+
+    /// The value passed to `claude --effort`. `nil` means "don't pass
+    /// `--effort` at all" (the `default` case).
+    var claudeFlag: String? {
+        switch self {
+        case .default: return nil
+        case .low: return "low"
+        case .medium: return "medium"
+        case .high: return "high"
+        case .xhigh: return "xhigh"
+        case .max: return "max"
+        }
+    }
+
+    var label: String {
+        switch self {
+        case .default:
+            return String(localized: "claudeChat.thinking.default", defaultValue: "Default")
+        case .low:
+            return String(localized: "claudeChat.thinking.low", defaultValue: "Low")
+        case .medium:
+            return String(localized: "claudeChat.thinking.medium", defaultValue: "Medium")
+        case .high:
+            return String(localized: "claudeChat.thinking.high", defaultValue: "High")
+        case .xhigh:
+            return String(localized: "claudeChat.thinking.xhigh", defaultValue: "Extra")
+        case .max:
+            return String(localized: "claudeChat.thinking.max", defaultValue: "Max")
+        }
+    }
+
+    /// Label shown on the collapsed picker button (vs. the static `label`
+    /// used for the menu items themselves). For `.default` we append the
+    /// resolved fall-through value in parentheses so the user always
+    /// sees the effort that's actually in play — even when they haven't
+    /// pinned an explicit `--effort`. e.g. `Default (xhigh)`.
+    func activeLabel(resolvedDefault: ChatThinkingEffort?) -> String {
+        guard self == .default, let resolved = resolvedDefault else {
+            return label
+        }
+        return "\(label) (\(resolved.label))"
+    }
+
+    var iconName: String {
+        switch self {
+        case .default: return "brain"
+        case .low: return "tortoise"
+        case .medium: return "brain.head.profile"
+        case .high: return "bolt"
+        case .xhigh: return "bolt.fill"
+        case .max: return "flame.fill"
+        }
+    }
+}
+
 enum ChatPermissionMode: String, CaseIterable, Identifiable {
     /// `--permission-mode plan`. Claude can read and reason but cannot
     /// modify the workspace (no Edit/Write/Bash side effects).
@@ -217,6 +374,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `mcp__cmux__ask_user_question` mid-turn before the first call has
     /// returned, producing the "duplicate question" the user sees.)
     private var questionDedupeAliases: [String: [String]] = [:]
+    /// Same idea for `approval_prompt`: claude can re-fire the same tool
+    /// approval with a fresh `tool_use_id` while the first card is still
+    /// pending (resume races, stream-json retries, model emitting two
+    /// `tool_use` blocks for the same call). Track the followers so when
+    /// the user clicks Allow/Deny on the primary card, we drain every
+    /// aliased resolver with the same response — no duplicate card
+    /// surfaces in the UI.
+    private var approvalDedupeAliases: [String: [String]] = [:]
 
     /// Tools the user marked "Allow always" within this chat. Future
     /// approval requests for these tools auto-allow without surfacing the
@@ -235,6 +400,23 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// sends a new message so the side pane always reflects "what claude
     /// did since I last spoke."
     @Published private(set) var lastTurnEdits: [TurnEdit] = []
+
+    /// Whether the right-hand "this turn's edits" side pane is currently
+    /// open. Lives on the panel (not on the view) so the user's open/close
+    /// choice survives view re-instantiation. SwiftUI rebuilds
+    /// `ClaudeChatPanelView` whenever its identity changes (workspace
+    /// switching, bonsplit tab churn, …) and a `@State` here would reset
+    /// to its default and lose the user's last action.
+    @Published var diffPaneOpen: Bool = false
+
+    /// True once this panel session has auto-opened the diff pane for the
+    /// first edit-producing turn. Sticky for the rest of the session: even
+    /// if the user closes the pane and a later turn produces more edits,
+    /// we do not re-auto-open it. Reset only on `clearTranscript()`
+    /// (treated as a brand-new session). Same rationale as `diffPaneOpen`
+    /// — must live on the panel so view re-creation doesn't drop the
+    /// memo and trigger a phantom re-open.
+    @Published var hasAutoOpenedDiffPaneThisSession: Bool = false
 
     /// Stack of rewind checkpoints, one per finished turn (oldest first).
     /// The view layer reads this to expose a "↶" button next to every
@@ -525,6 +707,49 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `-p` cannot change its `--permission-mode` after launch, so the
     /// panel applies the new policy itself by short-circuiting the
     /// approval pipeline.
+    /// Model selection for the next turn. Persisted globally via
+    /// `UserDefaults` so the same choice applies the next time the user
+    /// opens a fresh chat. `claude -p` bakes `--model` into argv at spawn
+    /// time, so changing this mid-session triggers a runner respawn (the
+    /// `--resume <sessionId>` flag keeps the conversation intact).
+    @Published var modelSelection: ChatModelSelection {
+        didSet {
+            UserDefaults.standard.set(modelSelection.rawValue, forKey: Self.modelSelectionDefaultsKey)
+        }
+    }
+
+    private static let modelSelectionDefaultsKey = "cmux.claudeChat.modelSelection"
+
+    static func loadInitialModelSelection() -> ChatModelSelection {
+        let raw = UserDefaults.standard.string(forKey: modelSelectionDefaultsKey) ?? ""
+        return ChatModelSelection(rawValue: raw) ?? .default
+    }
+
+    /// Thinking effort for the next turn. Persisted globally via
+    /// `UserDefaults`. Same lifecycle as `modelSelection`: changing
+    /// mid-session triggers a runner respawn because `--effort` bakes
+    /// into argv at spawn time.
+    @Published var thinkingEffort: ChatThinkingEffort {
+        didSet {
+            UserDefaults.standard.set(thinkingEffort.rawValue, forKey: Self.thinkingEffortDefaultsKey)
+        }
+    }
+
+    private static let thinkingEffortDefaultsKey = "cmux.claudeChat.thinkingEffort"
+
+    static func loadInitialThinkingEffort() -> ChatThinkingEffort {
+        let raw = UserDefaults.standard.string(forKey: thinkingEffortDefaultsKey) ?? ""
+        return ChatThinkingEffort(rawValue: raw) ?? .default
+    }
+
+    /// The effort level the CLI will fall back to when the user has not
+    /// pinned an explicit `--effort` value. Resolved from
+    /// `~/.claude/settings.json → effortLevel`, with a Claude Code 2.1+
+    /// built-in of `high` as a backup. The composer's tooltip displays
+    /// this so picking "Default" doesn't feel like a black box.
+    @Published private(set) var resolvedCLIDefaultEffort: ChatThinkingEffort? =
+        ChatThinkingEffort.resolveCLIDefault()
+
     @Published var permissionMode: ChatPermissionMode = .normal {
         didSet {
             guard permissionMode == .auto else { return }
@@ -546,9 +771,16 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         guard !pendingApprovals.isEmpty else { return }
         let snapshot = pendingApprovals
         pendingApprovals.removeAll()
+        let aliasesSnapshot = approvalDedupeAliases
+        approvalDedupeAliases.removeAll()
         for request in snapshot {
             if let resolver = approvalResolvers.removeValue(forKey: request.id) {
                 resolver(.allow)
+            }
+            for aliasId in aliasesSnapshot[request.id] ?? [] {
+                if let aliasResolver = approvalResolvers.removeValue(forKey: aliasId) {
+                    aliasResolver(.allow)
+                }
             }
         }
     }
@@ -677,6 +909,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         self.workingDirectory = workingDirectory
         self.sessionId = sessionId
         self.messages = initialMessages
+        self.modelSelection = ClaudeChatPanel.loadInitialModelSelection()
+        self.thinkingEffort = ClaudeChatPanel.loadInitialThinkingEffort()
         // Cap the initial render window so opening a chat with a long
         // history doesn't have to lay out every prior message at once.
         // If the transcript is shorter than the default, we just show
@@ -850,6 +1084,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let cwd = workingDirectory
         let resumeId = sessionId
         let mode = permissionMode
+        let model = modelSelection.claudeFlag
+        let effort = thinkingEffort.claudeFlag
 
         Task { @MainActor [weak self] in
             guard let self else { return }
@@ -865,6 +1101,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 cwd: cwd,
                 sessionId: resumeId,
                 permissionMode: mode.claudeFlag,
+                model: model,
+                effort: effort,
                 mcpConfigPath: mcpConfigPath,
                 permissionPromptTool: mode.usesPermissionPromptTool ? "mcp__cmux__approval_prompt" : nil,
                 appendSystemPrompt: ClaudeChatPanel.cmuxToolsSystemPrompt,
@@ -942,6 +1180,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let cwd = workingDirectory
         let resumeId = sessionId
         let mode = permissionMode
+        let model = modelSelection.claudeFlag
+        let effort = thinkingEffort.claudeFlag
 
         // The MCP server is started for every chat (regardless of mode) so
         // we can disable Claude Code's built-in `AskUserQuestion` (which
@@ -964,6 +1204,8 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 cwd: cwd,
                 sessionId: resumeId,
                 permissionMode: mode.claudeFlag,
+                model: model,
+                effort: effort,
                 mcpConfigPath: mcpConfigPath,
                 permissionPromptTool: mode.usesPermissionPromptTool ? "mcp__cmux__approval_prompt" : nil,
                 appendSystemPrompt: ClaudeChatPanel.cmuxToolsSystemPrompt,
@@ -1027,6 +1269,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         approvalResolvers.removeAll()
         questionResolvers.removeAll()
         questionDedupeAliases.removeAll()
+        approvalDedupeAliases.removeAll()
         sessionId = nil
         pendingTurnStaging = nil
         if case .sending = status { status = .idle }
@@ -1422,10 +1665,16 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingApprovals.removeAll()
         pendingQuestions.removeAll()
         questionDedupeAliases.removeAll()
+        approvalDedupeAliases.removeAll()
         toolResultsByToolUseId.removeAll()
         pendingAttachments.removeAll()
         lastTurnEdits.removeAll()
         undoCheckpoints.removeAll()
+        // `/clear` is a brand-new session: drop the diff-pane memo so
+        // the first edit-producing turn after this re-triggers the
+        // one-time auto-open behavior, and close the pane itself.
+        diffPaneOpen = false
+        hasAutoOpenedDiffPaneThisSession = false
         pendingTurnStaging = nil
         currentTodos = nil
         taskRegistryById.removeAll()
@@ -1458,7 +1707,15 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             return
         }
         pendingApprovals.removeAll { $0.id == toolUseId }
+        // Resolve any duplicate calls claude fired with identical
+        // tool_name/input that we silently aliased onto this card.
+        let aliasIds = approvalDedupeAliases.removeValue(forKey: toolUseId) ?? []
         resolver(.allow)
+        for aliasId in aliasIds {
+            if let aliasResolver = approvalResolvers.removeValue(forKey: aliasId) {
+                aliasResolver(.allow)
+            }
+        }
     }
 
     /// Approve this request and add the tool to the workspace's
@@ -1481,7 +1738,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             return
         }
         pendingApprovals.removeAll { $0.id == toolUseId }
+        let aliasIds = approvalDedupeAliases.removeValue(forKey: toolUseId) ?? []
         resolver(.deny(reason: reason))
+        for aliasId in aliasIds {
+            if let aliasResolver = approvalResolvers.removeValue(forKey: aliasId) {
+                aliasResolver(.deny(reason: reason))
+            }
+        }
     }
 
     /// Revoke a tool from the "always allow" set (UI exposes this as a
@@ -2083,6 +2346,18 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             break
         }
 
+        // Dedupe by content: if a pending card has the same toolName +
+        // inputJSON, treat the new request as a follower of the primary
+        // one. Store its resolver so we can answer claude's duplicate
+        // call with the same response when the user clicks Allow/Deny
+        // once, but don't surface a second card.
+        if let existing = pendingApprovals.first(where: {
+            $0.toolName == request.toolName && $0.inputJSON == request.inputJSON
+        }) {
+            approvalResolvers[request.id] = completion
+            approvalDedupeAliases[existing.id, default: []].append(request.id)
+            return
+        }
         approvalResolvers[request.id] = completion
         pendingApprovals.append(request)
     }

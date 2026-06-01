@@ -17886,6 +17886,28 @@ extension Workspace: BonsplitDelegate {
         NSWorkspace.shared.activateFileViewerSelecting([url])
     }
 
+    /// Open the focused pane's working directory in Sourcetree (Atlassian
+    /// git client). Falls back to a beep if Sourcetree isn't installed.
+    func openFocusedPaneDirectoryInSourcetree(pane: PaneID) {
+        guard let dir = resolvedOpenActionDirectory(forPane: pane) else {
+            NSSound.beep()
+            return
+        }
+        guard let appURL = TerminalDirectoryOpenTarget.sourcetree.applicationURL() else {
+            NSSound.beep()
+            return
+        }
+        let projectURL = URL(fileURLWithPath: dir)
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        NSWorkspace.shared.open(
+            [projectURL],
+            withApplicationAt: appURL,
+            configuration: configuration,
+            completionHandler: nil
+        )
+    }
+
     /// Open the focused pane's working directory in IntelliJ IDEA or
     /// Android Studio, picking the IDE by sniffing for Gradle build
     /// scripts (`build.gradle` / `build.gradle.kts`) at the directory
@@ -17994,6 +18016,8 @@ extension Workspace: BonsplitDelegate {
                 revealFocusedPaneDirectoryInFinder(pane: pane)
             case .openInIDE:
                 openFocusedPaneDirectoryInIDE(pane: pane)
+            case .openInSourcetree:
+                openFocusedPaneDirectoryInSourcetree(pane: pane)
             case .toggleNotes:
                 NotificationCenter.default.post(
                     name: .cmuxWorkspaceRequestToggleNotesSidebar,

@@ -51,8 +51,21 @@ enum McpHealthProber {
                 let process = Process()
                 let stdoutPipe = Pipe()
                 let stderrPipe = Pipe()
-                process.executableURL = URL(fileURLWithPath: claudePath)
-                process.arguments = args
+                // Wrap `claude mcp list`/`get` in the same login shell as
+                // the chat's persistent `claude -p` process. claude
+                // health-checks each MCP server by spawning its
+                // `command` (npx/uvx/pipx/bun/glab/…); without the
+                // wrapper those subprocesses see the GUI app's stripped
+                // env and fail, so the popover would mark servers as
+                // failed even when they're connected in the running
+                // chat session. Both paths must observe the same env to
+                // avoid flapping/contradictory badges.
+                let (executableURL, processArguments) = ClaudeLoginShellWrapper.wrap(
+                    claudePath: claudePath,
+                    arguments: args
+                )
+                process.executableURL = executableURL
+                process.arguments = processArguments
                 process.currentDirectoryURL = URL(fileURLWithPath: cwd)
                 process.standardOutput = stdoutPipe
                 process.standardError = stderrPipe

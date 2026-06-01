@@ -1,312 +1,152 @@
-> Ovaj prijevod je generisan od strane Claude. Ako imate prijedloge za poboljšanje, otvorite PR.
-
-<h1 align="center">cmux</h1>
-<p align="center">macOS terminal baziran na Ghostty sa vertikalnim tabovima i obavještenjima za AI agente za programiranje</p>
+<h1 align="center">Chatmux</h1>
+<p align="center">Lični fork <a href="https://github.com/manaflow-ai/cmux">cmux</a>-a sa nativnom Claude integracijom, alatima za GitLab radni tok i drugim poboljšanjima kvaliteta života.</p>
 
 <p align="center">
-  <a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-    <img src="./docs/assets/macos-badge.png" alt="Preuzmi cmux za macOS" width="180" />
-  </a>
+  <a href="#instalacija-iz-izvora">Instalacija iz izvora</a> · <a href="#šta-ovaj-fork-dodaje">Šta ovaj fork dodaje</a> · <a href="#sinhronizacija-sa-upstream">Sinhronizacija sa upstream</a> · <a href="https://github.com/manaflow-ai/cmux">cmux upstream</a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.vi.md">Tiếng Việt</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.de.md">Deutsch</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.it.md">Italiano</a> | <a href="README.da.md">Dansk</a> | <a href="README.pl.md">Polski</a> | <a href="README.ru.md">Русский</a> | Bosanski | <a href="README.ar.md">العربية</a> | <a href="README.no.md">Norsk</a> | <a href="README.pt-BR.md">Português (Brasil)</a> | <a href="README.th.md">ไทย</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.km.md">ភាសាខ្មែរ</a> | <a href="README.uk.md">Українська</a>
-</p>
+---
 
-<p align="center">
-  <a href="https://x.com/manaflowai"><img src="https://img.shields.io/badge/@manaflow-555?logo=x" alt="X / Twitter" /></a>
-  <a href="https://discord.gg/xsgFEVrWCZ"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-  <a href="https://github.com/manaflow-ai/cmux"><img src="https://img.shields.io/github/stars/manaflow-ai/cmux?style=flat&logo=github&label=stars&color=4c71f2" alt="GitHub stars" /></a>
-</p>
+Chatmux je izgrađen na vrhu [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) — Ghostty-zasnovan macOS terminal sa vertikalnim karticama i obavještenjima za AI kodirajuće agente. Sve što je dokumentovano u [upstream README](https://github.com/manaflow-ai/cmux/blob/main/README.bs.md) i dalje važi: prstenovi obavještenja, in-app pregledač, vertikalne+horizontalne kartice, SSH, Claude Code Teams, vraćanje sesije, cmux CLI/socket API, itd.
 
-<p align="center">
-  <img src="./docs/assets/main-first-image.png" alt="cmux snimak ekrana" width="900" />
-</p>
+Ovaj dokument pokriva samo ono što Chatmux dodaje povrh toga.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=i-WxO5YUTOs">▶ Demo video</a> · <a href="https://cmux.com/blog/zen-of-cmux">The Zen of cmux</a>
-</p>
+## Šta ovaj fork dodaje
 
-## Funkcije
+### Claude Chat panel
 
-<table>
-<tr>
-<td width="40%" valign="middle">
-<h3>Prstenovi obavještenja</h3>
-Paneli dobijaju plavi prsten, a tabovi se osvjetljavaju kada agenti za programiranje trebaju vašu pažnju
-</td>
-<td width="60%">
-<img src="./docs/assets/notification-rings.png" alt="Prstenovi obavještenja" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Panel obavještenja</h3>
-Pregledajte sva obavještenja na čekanju na jednom mjestu, skočite na najnovije nepročitano
-</td>
-<td width="60%">
-<img src="./docs/assets/sidebar-notification-badge.png" alt="Značka obavještenja u bočnoj traci" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Ugrađeni preglednik</h3>
-Podijelite preglednik pored terminala sa skriptabilnim API portiranim iz <a href="https://github.com/vercel-labs/agent-browser">agent-browser</a>
-</td>
-<td width="60%">
-<img src="./docs/assets/built-in-browser.png" alt="Ugrađeni preglednik" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Vertikalni + horizontalni tabovi</h3>
-Bočna traka prikazuje git granu, status/broj povezanog PR-a, radni direktorij, portove koji slušaju i tekst posljednjeg obavještenja. Horizontalna i vertikalna podjela.
-</td>
-<td width="60%">
-<img src="./docs/assets/vertical-horizontal-tabs-and-splits.png" alt="Vertikalni tabovi i podijeljeni paneli" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>SSH</h3>
-<code>cmux ssh user@remote</code> kreira radni prostor za udaljenu mašinu. Paneli preglednika se usmjeravaju kroz udaljenu mrežu tako da localhost jednostavno radi. Prevucite sliku u udaljenu sesiju za upload putem scp.
-</td>
-<td width="60%">
-<img src="./docs/assets/ssh.png" alt="cmux SSH" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Claude Code Teams</h3>
-<code>cmux claude-teams</code> pokreće teammate režim Claude Code sa jednom komandom. Članovi tima se pojavljuju kao nativni podijeljeni paneli sa metapodacima u bočnoj traci i obavještenjima. Nije potreban tmux.
-</td>
-<td width="60%">
-<img src="./docs/assets/claude-code-teams.png" alt="Claude Code Teams" width="100%" />
-</td>
-</tr>
-</table>
+In-app Claude SDK panel koji živi unutar bilo kojeg pane-a — preuzima radni direktorij workspace-a, strimuje odgovore i čuva historiju razgovora po surface-u.
 
-- **Uvoz preglednika** — Uvezite kolačiće, historiju i sesije iz Chrome, Firefox, Arc i 20+ preglednika tako da paneli preglednika počnu autentificirani
-- **Prilagođene komande** — Definirajte akcije specifične za projekt u [`cmux.json`](https://cmux.com/docs/custom-commands) koje se pokreću iz palete komandi
-- **Skriptabilan** — CLI i socket API za kreiranje radnih prostora, dijeljenje panela, slanje pritisaka tipki i automatizaciju preglednika
-- **Nativna macOS aplikacija** — Izgrađena sa Swift i AppKit, ne Electron. Brzo pokretanje, niska potrošnja memorije.
-- **Kompatibilan sa Ghostty** — Čita vašu postojeću konfiguraciju `~/.config/ghostty/config` za teme, fontove i boje
-- **GPU-ubrzanje** — Pokreće ga libghostty za glatko renderiranje
+- MCP integracija: ugrađen **MCP Manager** popover za registraciju/upravljanje MCP serverima i health prober koji prikazuje status servera inline
+- Slash command registry: definirajte vlastite slash komande po chat-u
+- Status line runner: dugotrajni zadaci prikazuju live status liniju u zaglavlju chat-a
+- Historija sesija: svaki chat se beleži na disk i može se nastaviti između cmux restartovanja
+- Engine pravila dozvola: konfigurirajte koje alate chat može automatski pozvati, a koji zahtijevaju potvrdu
 
-## Instalacija
+Ugrađena akcija tab bara `cmux.newClaudeChat` otvara novi Claude Chat u fokusiranom pane-u.
 
-### DMG (preporučeno)
+### GitLab integracija
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-  <img src="./docs/assets/macos-badge.png" alt="Preuzmi cmux za macOS" width="180" />
-</a>
+Desni sidebar panel u opsegu GitLab projekta workspace-a:
 
-Otvorite `.dmg` datoteku i prevucite cmux u folder Aplikacije. cmux se automatski ažurira putem Sparkle, tako da trebate preuzeti samo jednom.
+- Lista **Merge Requests** sa filterima po dodijeljenom/autoru i otvaranjem jednim klikom
+- Lista **Issues** sa istim sistemom filtera, podržana od `GitLabIssueFiltersStore`
+- Lista **Pipelines** sa indikatorima statusa
+- Lista **Releases**
+- Pregledač **MR Discussions** sa podrškom za three-way diff (`MRDiscussions.swift`)
+- Skladišta diff refs i merged-tree tako da pregledač diff-a uvijek zna prave base/target SHA
 
-### Homebrew
+Koristi vašu lokalnu `glab` / `git` konfiguraciju — nisu potrebni dodatni vjerodajnice.
+
+### Git diff pregledač
+
+Samostalni diff prozor za bilo koji commit, granu ili working tree (`GitDiffWindow.swift`):
+
+- Side-by-side `DiffCodeTextView` i three-way `DiffThreeWayCodeTextView`
+- Vlastiti `LCSDiff` engine i `SyntaxHighlighter` za Swift, TypeScript, Markdown, itd.
+- Dijeljen sa pregledačem MR diskusija GitLab-a
+
+### Sidebar Workspace Notes
+
+Markdown bilješke po workspace-u koje putuju sa workspace-om:
+
+- Sidebar slot postavljen pored GitLab panela (desni sidebar)
+- Auto-arhiviranje kod zatvaranja workspace-a — bilješke se nikad ne gube tiho (vidite sigurnosnu mrežu u `TabManager.closeWorkspace`)
+- Samostalan prozor **Notes Manager** (`WorkspaceNotesManagerWindowController`) za pregledanje i vraćanje arhiviranih bilješki kroz sve workspace-ove
+- Ugrađena akcija tab bara `cmux.toggleNotes` za prebacivanje sidebar-a sa tastature ili prilagođene komande
+
+### Preseti sesije
+
+Sačuvajte trenutni raspored sesije (panes, surfaces, terminale, URL pregledača, stanje sidebar-a) kao imenovani preset, pa ga kasnije ponovo instancirajte:
+
+- Sačuvaj: `File → Save Session as Preset…` (ili command palette)
+- Učitaj: `File → Load Preset → …`
+- Ažuriraj: `File → Update Current Preset`
+- Skladištenje je u opsegu po bundle-id tako da cmux i Chatmux drže nezavisne kolekcije preseta (`SessionPresetSchema.defaultDirectoryURL`)
+
+### Popoveri MCP Manager + Background Shells
+
+Dva popovera dostupna iz title bara:
+
+- **MCP Manager** — otkrijte, omogućite, onemogućite i provjerite zdravlje MCP servera koje koristi Claude chat
+- **Background Shells** — pregledajte odvojene shells pokrenute od chat-a / surface API-ja, pogledajte njihov izlaz i nastavite ih u vidljivom surface-u
+
+### Open in Sourcetree
+
+Nova ugrađena akcija tab bara `cmux.openInSourcetree` pored `openInFinder` i `openInIDE`. Otvara radni direktorij fokusiranog pane-a u [Atlassian Sourcetree](https://www.sourcetreeapp.com/) (ispušta zvuk ako Sourcetree nije instaliran u `/Applications/Sourcetree.app`).
+
+Postavite ga u vlastiti raspored dugmadi u `~/.config/cmux/cmux.json` ili koristite zadani tab bar.
+
+### Skripta za samoinstalaciju
+
+`scripts/install-fork.sh` gradi Release konfiguraciju, ad-hoc potpisuje sa različitim bundle id-om i kopira bundle u `/Applications/Chatmux.app` tako da radi paralelno sa upstream cmux-om:
 
 ```bash
-brew tap manaflow-ai/cmux
-brew install --cask cmux
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-Za ažuriranje kasnije:
+Zadani identitet:
+
+| Polje | Vrijednost |
+|---|---|
+| Naziv aplikacije | `Chatmux` |
+| Bundle id | `com.cmuxterm.app.fork` |
+| Putanja instalacije | `/Applications/Chatmux.app` |
+
+Premostite sa `--name`, `--bundle-id` ili `--dest` ako želite drugačiji identitet (npr. staging build). Fiksiranje bundle id-a kroz `codesign -i <bundle-id>` je kritično za stabilnost macOS TCC dozvola — bez toga, dozvole Documents/App Management se ponovno traže prilikom svakog pokretanja.
+
+Workspace-ovi, snapshoti sesija, preseti, bilješke, MCP konfiguracija i TCC odobrenja su svi indeksirani po `CFBundleIdentifier`, tako da opstaju kroz reinstalacije sve dok držite isti bundle id.
+
+### Slash komanda `/sync-upstream`
+
+Prilagođena Claude Code slash komanda (u `.claude/commands/`) automatizira chatmux ↔ upstream merge ples:
+
+- Fast-forward `main` na `manaflow-ai/cmux:main`
+- Zrcali odgovarajući `vendor/bonsplit` submodule pointer na vaš bonsplit fork
+- Pravi privremenu granu `chatmux-merge-<timestamp>` i mergea upstream u nju
+- Automatski rešava `cmux.xcodeproj/project.pbxproj` konflikte kombinujući obe strane + deduplikujući po ID-u
+- Zaustavlja se i prikazuje svaki konflikt u `Sources/`, `Packages/` ili `Resources/` za ljudsko rešavanje
+- Pusha privremenu granu i čeka potvrdu build-a prije fast-forward-a `chatmux`-a
+
+Vidite `.claude/commands/sync-upstream.md` za potpuni radni tok i `scripts/sync-upstream-resolve.py` za pbxproj helper.
+
+## Instalacija iz izvora
+
+Chatmux se ne objavljuje kao DMG. Izgradite i instalirajte sa fork skriptom:
 
 ```bash
-brew upgrade --cask cmux
+# Klonirajte sa submodulima
+git clone --recurse-submodules https://github.com/Shyri/cmux.git
+cd cmux
+
+# Početno postavljanje (preuzima Ghostty submodul, GhosttyKit, itd.)
+./scripts/setup.sh
+
+# Izgradi Release + instaliraj u /Applications/Chatmux.app + pokreni
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-Pri prvom pokretanju, macOS vas može zamoliti da potvrdite otvaranje aplikacije od identificiranog programera. Kliknite **Otvori** da nastavite.
+Zašto prefiks `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1`? Lokalno pokrećemo Zig 0.16, ali Ghostty zahtijeva 0.15.2. Preskakanje zig build-a tjera skriptu da koristi pre-izgrađen GhosttyKit.xcframework iz `manaflow-ai/ghostty` izdanja. Čišćenje `zig-pkg/` drži build key čistim tako da cache hit pre-build-a funkcioniše.
 
-## Zašto cmux?
-
-Pokrećem mnogo Claude Code i Codex sesija paralelno. Koristio sam Ghostty sa gomilom podijeljenih panela i oslanjao se na nativna macOS obavještenja da znam kada agent treba mene. Ali tijelo obavještenja Claude Code je uvijek samo „Claude is waiting for your input" bez konteksta, a sa dovoljno otvorenih tabova nisam mogao ni pročitati naslove.
-
-Isprobao sam nekoliko orkestratora za kodiranje, ali većina ih je bila Electron/Tauri aplikacije i performanse su me nervirale. Također jednostavno preferiram terminal jer GUI orkestratori vas zaključavaju u svoj radni tok. Zato sam izgradio cmux kao nativnu macOS aplikaciju u Swift/AppKit. Koristi libghostty za renderiranje terminala i čita vašu postojeću Ghostty konfiguraciju za teme, fontove i boje.
-
-Glavni dodaci su bočna traka i sistem obavještenja. Bočna traka ima vertikalne tabove koji prikazuju git granu, status/broj povezanog PR-a, radni direktorij, portove koji slušaju i tekst posljednjeg obavještenja za svaki radni prostor. Sistem obavještenja hvata terminalne sekvence (OSC 9/99/777) i ima CLI (`cmux notify`) koji možete povezati sa hookovima agenata za Claude Code, OpenCode itd. Kada agent čeka, njegov panel dobija plavi prsten, a tab se osvjetljava u bočnoj traci, tako da mogu vidjeti koji me treba kroz podjele i tabove. Cmd+Shift+U skače na najnovije nepročitano.
-
-Ugrađeni preglednik ima skriptabilni API portiran iz [agent-browser](https://github.com/vercel-labs/agent-browser). Agenti mogu snimiti stablo pristupačnosti, dobiti reference elemenata, kliknuti, popuniti formulare i evaluirati JS. Možete podijeliti panel preglednika pored terminala i omogućiti Claude Code da direktno komunicira sa vašim razvojnim serverom.
-
-Sve je skriptabilno kroz CLI i socket API — kreiranje radnih prostora/tabova, dijeljenje panela, slanje pritisaka tipki, otvaranje URL-ova u pregledniku.
-
-## The Zen of cmux
-
-cmux ne propisuje programerima kako da koriste svoje alate. To je terminal i preglednik sa CLI-jem, a ostatak je na vama.
-
-cmux je primitiv, ne rješenje. Daje vam terminal, preglednik, obavještenja, radne prostore, podjele, tabove i CLI za kontrolu svega toga. cmux vas ne prisiljava na određeni način korištenja agenata za kodiranje. Ono što izgradite sa tim primitivima je vaše.
-
-Najbolji programeri su oduvijek gradili vlastite alate. Niko još nije otkrio najbolji način rada sa agentima, a timovi koji grade zatvorene proizvode to također nisu uradili. Programeri koji su najbliži svojim bazama koda će to otkriti prvi.
-
-Dajte milion programera kompozabilne primitive i oni će kolektivno pronaći najefikasnije tokove rada brže nego što bi bilo koji produktni tim mogao dizajnirati odozgo prema dolje.
-
-## Dokumentacija
-
-Za više informacija o konfiguraciji cmux, posjetite [našu dokumentaciju](https://cmux.com/docs/getting-started?utm_source=readme).
-
-## Prečice na Tastaturi
-
-### Radni prostori
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ N | Novi radni prostor |
-| ⌘ 1–8 | Skoči na radni prostor 1–8 |
-| ⌘ 9 | Skoči na posljednji radni prostor |
-| ⌃ ⌘ ] | Sljedeći radni prostor |
-| ⌃ ⌘ [ | Prethodni radni prostor |
-| ⌘ ⇧ W | Zatvori radni prostor |
-| ⌘ ⇧ R | Preimenuj radni prostor |
-| ⌘ B | Prikaži/sakrij bočnu traku |
-
-### Površine
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ T | Nova površina |
-| ⌘ ⇧ ] | Sljedeća površina |
-| ⌘ ⇧ [ | Prethodna površina |
-| ⌃ Tab | Sljedeća površina |
-| ⌃ ⇧ Tab | Prethodna površina |
-| ⌃ 1–8 | Skoči na površinu 1–8 |
-| ⌃ 9 | Skoči na posljednju površinu |
-| ⌘ W | Zatvori površinu |
-
-### Podijeljeni Paneli
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ D | Podijeli desno |
-| ⌘ ⇧ D | Podijeli dolje |
-| ⌥ ⌘ ← → ↑ ↓ | Fokusiraj panel po smjeru |
-| ⌘ ⇧ H | Trepni fokusiranim panelom |
-
-### Preglednik
-
-Prečice razvojnih alata preglednika prate Safari zadane postavke i mogu se prilagoditi u `Postavke → Prečice na tastaturi`.
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ ⇧ L | Otvori preglednik u podjeli |
-| ⌘ L | Fokusiraj adresnu traku |
-| ⌘ [ | Nazad |
-| ⌘ ] | Naprijed |
-| ⌘ R | Ponovo učitaj stranicu |
-| ⌥ ⌘ I | Prikaži/sakrij Alate za Programere (Safari zadano) |
-| ⌥ ⌘ C | Prikaži JavaScript Konzolu (Safari zadano) |
-
-### Obavještenja
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ I | Prikaži panel obavještenja |
-| ⌘ ⇧ U | Skoči na posljednje nepročitano |
-
-### Pretraga
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ F | Pretraži |
-| ⌘ G / ⌘ ⇧ G | Nađi sljedeći / prethodni |
-| ⌘ ⇧ F | Sakrij traku pretrage |
-| ⌘ E | Koristi selekciju za pretragu |
-
-### Terminal
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ K | Očisti scrollback |
-| ⌘ C | Kopiraj (sa selekcijom) |
-| ⌘ V | Zalijepi |
-| ⌘ + / ⌘ - | Povećaj / smanji veličinu fonta |
-| ⌘ 0 | Resetuj veličinu fonta |
-
-### Prozor
-
-| Prečica | Akcija |
-|----------|--------|
-| ⌘ ⇧ N | Novi prozor |
-| ⌘ , | Postavke |
-| ⌘ ⇧ , | Ponovo učitaj konfiguraciju |
-| ⌘ Q | Zatvori |
-
-## Noćne verzije
-
-[Preuzmi cmux NIGHTLY](https://github.com/manaflow-ai/cmux/releases/download/nightly/cmux-nightly-macos.dmg)
-
-cmux NIGHTLY je zasebna aplikacija sa vlastitim bundle ID-om, tako da radi uporedo sa stabilnom verzijom. Automatski se gradi iz najnovijeg `main` commita i ažurira se putem vlastitog Sparkle feeda.
-
-## Vraćanje sesije
-
-Kada zatvorite cmux, trenutna sesija se sprema. Pri ponovnom pokretanju cmux vraća stanje kojim upravlja aplikacija:
-- Raspored prozora/radnih prostora/panela
-- Radne direktorije
-- Scrollback terminala (po mogućnosti)
-- URL preglednika i historija navigacije
-
-cmux ne pravi checkpoint proizvoljnog stanja živih procesa. tmux, vim, shellovi i nepodržane terminalne aplikacije ponovo se otvaraju kao obični terminali.
-
-Podržane agent sesije mogu se nastaviti kada hooks spreme izvorni ID sesije:
+## Sinhronizacija sa upstream
 
 ```bash
-cmux hooks setup
-cmux hooks setup codex
-cmux hooks setup --agent opencode
+# Unutar Claude Code sesije u ovom repo:
+/sync-upstream
 ```
 
-Napredni korisnici i integracije mogu vezati prilagođenu komandu za nastavak na trenutni terminal surface. To je korisno za alate s vlastitim trajnim stanjem, poput tmux sesija ili prilagođenih agent CLI alata:
+Slash komanda obrađuje cijeli merge radni tok uključujući trijažu konflikata. Vidite [Šta ovaj fork dodaje → /sync-upstream](#slash-komanda-sync-upstream).
 
-```bash
-cmux surface resume set --kind tmux --checkpoint work --shell "tmux attach -t work"
-cmux surface resume show --json
-cmux surface resume clear --checkpoint work
-```
+Za ručne merge-ove, slijedite iste korake u `.claude/commands/sync-upstream.md`.
 
-Binding ostaje vezan za cmux surface. Bindingi napravljeni javnim CLI-jem ili socketom čuvaju se za pregled i ručni nastavak. cmux automatski pokreće samo resume bindinge koje označi pouzdanim, poput tmux bindinga otkrivenih iz živih procesa. Osjetljivi ključevi okruženja, poput tokena, lozinki, tajni i API ključeva, odbacuju se prije spremanja resume bindinga.
+## Prečice na tastaturi
 
-## Historija zvjezdica
+Sve prečice upstream cmux-a rade nepromijenjene. Vidite [upstream README](https://github.com/manaflow-ai/cmux/blob/main/README.bs.md#keyboard-shortcuts) za kompletnu tabelu. Prečice ekskluzivne za Chatmux su konfigurabilne u Settings → Keyboard Shortcuts i pojavljuju se u `~/.config/cmux/cmux.json` kao i svaka druga cmux prečica.
 
-<a href="https://star-history.com/#manaflow-ai/cmux&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" width="600" />
- </picture>
-</a>
+## Zahvale
 
-## Doprinos
-
-Načini da se uključite:
-
-- Pratite nas na X za ažuriranja [@manaflowai](https://x.com/manaflowai), [@lawrencecchen](https://x.com/lawrencecchen) i [@austinywang](https://x.com/austinywang)
-- Pridružite se razgovoru na [Discordu](https://discord.gg/xsgFEVrWCZ)
-- Kreirajte i učestvujte u [GitHub issues](https://github.com/manaflow-ai/cmux/issues) i [diskusijama](https://github.com/manaflow-ai/cmux/discussions)
-- Javite nam šta gradite sa cmux
-
-## Zajednica
-
-- [Discord](https://discord.gg/xsgFEVrWCZ)
-- [GitHub](https://github.com/manaflow-ai/cmux)
-- [X / Twitter](https://twitter.com/manaflowai)
-- [YouTube](https://www.youtube.com/channel/UCAa89_j-TWkrXfk9A3CbASw)
-- [LinkedIn](https://www.linkedin.com/company/manaflow-ai/)
-- [Reddit](https://www.reddit.com/r/cmux/)
-
-## Osnivačko izdanje
-
-cmux je besplatan, otvorenog koda i uvijek će biti. Ako želite podržati razvoj i dobiti rani pristup onome što dolazi:
-
-**[Nabavite Osnivačko izdanje](https://buy.stripe.com/3cI00j2Ld0it5OU33r5EY0q)**
-
-- **Prioritetni zahtjevi za funkcije/ispravke grešaka**
-- **Rani pristup: cmux AI koji vam daje kontekst o svakom radnom prostoru, tabu i panelu**
-- **Rani pristup: iOS aplikacija sa terminalima sinhroniziranim između desktopa i telefona**
-- **Rani pristup: Cloud VM-ovi**
-- **Rani pristup: Glasovni režim**
-- **Moj lični iMessage/WhatsApp**
+Chatmux je fork [cmux](https://github.com/manaflow-ai/cmux)-a od [Manaflow](https://manaflow.com)-a. Sve upstream funkcije i terminal engine su njihove — molim dajte zvjezdicu originalnom projektu i podržite ga.
 
 ## Licenca
 
-cmux je otvorenog koda pod [GPL-3.0-or-later](LICENSE) licencom.
-
-Ako vaša organizacija ne može ispuniti uslove GPL-a, dostupna je komercijalna licenca. Kontaktirajte [founders@manaflow.com](mailto:founders@manaflow.com) za detalje.
+Ista kao upstream: [GPL-3.0-or-later](LICENSE).

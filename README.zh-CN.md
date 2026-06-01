@@ -1,312 +1,152 @@
-> 此翻译由 Claude 生成。如有改进建议，欢迎提交 PR。
-
-<h1 align="center">cmux</h1>
-<p align="center">基于 Ghostty 的 macOS 终端，带有垂直标签页和为 AI 编程代理设计的通知系统</p>
+<h1 align="center">Chatmux</h1>
+<p align="center"><a href="https://github.com/manaflow-ai/cmux">cmux</a> 的个人分支，集成了原生 Claude、GitLab 工作流工具以及其他便利功能。</p>
 
 <p align="center">
-  <a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-    <img src="./docs/assets/macos-badge.png" alt="下载 cmux macOS 版" width="180" />
-  </a>
+  <a href="#从源代码安装">从源代码安装</a> · <a href="#此分支新增的功能">此分支新增的功能</a> · <a href="#与上游同步">与上游同步</a> · <a href="https://github.com/manaflow-ai/cmux">cmux 上游</a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.vi.md">Tiếng Việt</a> | 简体中文 | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.de.md">Deutsch</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.it.md">Italiano</a> | <a href="README.da.md">Dansk</a> | <a href="README.pl.md">Polski</a> | <a href="README.ru.md">Русский</a> | <a href="README.bs.md">Bosanski</a> | <a href="README.ar.md">العربية</a> | <a href="README.no.md">Norsk</a> | <a href="README.pt-BR.md">Português (Brasil)</a> | <a href="README.th.md">ไทย</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.km.md">ភាសាខ្មែរ</a> | <a href="README.uk.md">Українська</a>
-</p>
+---
 
-<p align="center">
-  <a href="https://x.com/manaflowai"><img src="https://img.shields.io/badge/@manaflow-555?logo=x" alt="X / Twitter" /></a>
-  <a href="https://discord.gg/xsgFEVrWCZ"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-  <a href="https://github.com/manaflow-ai/cmux"><img src="https://img.shields.io/github/stars/manaflow-ai/cmux?style=flat&logo=github&label=stars&color=4c71f2" alt="GitHub stars" /></a>
-</p>
+Chatmux 基于 [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) 构建——一款基于 Ghostty 的 macOS 终端，具有垂直标签页和针对 AI 编码代理的通知功能。上游 [README](https://github.com/manaflow-ai/cmux/blob/main/README.zh-CN.md) 中记录的所有内容（通知圆环、内置浏览器、垂直+水平标签页、SSH、Claude Code Teams、会话恢复、cmux CLI/socket API 等）仍然适用。
 
-<p align="center">
-  <img src="./docs/assets/main-first-image.png" alt="cmux 截图" width="900" />
-</p>
+本文档仅介绍 Chatmux 在此基础上新增的内容。
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=i-WxO5YUTOs">▶ 演示视频</a> · <a href="https://cmux.com/blog/zen-of-cmux">The Zen of cmux</a>
-</p>
+## 此分支新增的功能
 
-## 功能特性
+### Claude Chat 面板
 
-<table>
-<tr>
-<td width="40%" valign="middle">
-<h3>通知提示环</h3>
-当编程代理需要您注意时，窗格会显示蓝色光环，标签页会高亮
-</td>
-<td width="60%">
-<img src="./docs/assets/notification-rings.png" alt="通知提示环" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>通知面板</h3>
-在一处查看所有待处理通知，快速跳转到最新未读通知
-</td>
-<td width="60%">
-<img src="./docs/assets/sidebar-notification-badge.png" alt="侧边栏通知徽章" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>内置浏览器</h3>
-在终端旁边分割出浏览器窗格，提供从 <a href="https://github.com/vercel-labs/agent-browser">agent-browser</a> 移植的可脚本化 API
-</td>
-<td width="60%">
-<img src="./docs/assets/built-in-browser.png" alt="内置浏览器" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>垂直 + 水平标签页</h3>
-侧边栏显示 git 分支、关联 PR 状态/编号、工作目录、监听端口和最新通知文本。支持水平和垂直分割。
-</td>
-<td width="60%">
-<img src="./docs/assets/vertical-horizontal-tabs-and-splits.png" alt="垂直标签页和分割窗格" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>SSH</h3>
-<code>cmux ssh user@remote</code> 为远程机器创建工作区。浏览器窗格通过远程网络路由，因此 localhost 直接可用。将图片拖入远程会话即可通过 scp 上传。
-</td>
-<td width="60%">
-<img src="./docs/assets/ssh.png" alt="cmux SSH" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Claude Code Teams</h3>
-<code>cmux claude-teams</code> 一条命令运行 Claude Code 的队友模式。队友以原生分割的形式生成，侧边栏显示元数据和通知。无需 tmux。
-</td>
-<td width="60%">
-<img src="./docs/assets/claude-code-teams.png" alt="Claude Code Teams" width="100%" />
-</td>
-</tr>
-</table>
+集成在任意窗格中的 Claude SDK 面板——继承 workspace 的工作目录、流式响应、按 surface 持久化对话历史。
 
-- **浏览器导入** — 从 Chrome、Firefox、Arc 及 20 多种浏览器导入 Cookie、历史记录和会话，让浏览器窗格启动即已登录
-- **自定义命令** — 在 [`cmux.json`](https://cmux.com/docs/custom-commands) 中定义项目专属操作，通过命令面板启动
-- **可脚本化** — 通过 CLI 和 socket API 创建工作区、分割窗格、发送按键和自动化浏览器操作
-- **原生 macOS 应用** — 使用 Swift 和 AppKit 构建，非 Electron。启动快速，内存占用低。
-- **兼容 Ghostty** — 读取您现有的 `~/.config/ghostty/config` 配置文件中的主题、字体和颜色设置
-- **GPU 加速** — 由 libghostty 驱动，渲染流畅
+- MCP 集成：内置 **MCP Manager** 弹出窗口用于注册/管理 MCP 服务器，并通过 health prober 在线显示服务器状态
+- Slash 命令注册表：为每个 chat 定义自己的 slash 命令
+- 状态栏 runner：长时间运行的任务在 chat 标题处渲染实时状态行
+- 会话历史：每个 chat 都会写入磁盘日志，并能跨 cmux 重启恢复
+- 权限规则引擎：配置 chat 可以自动调用哪些工具、哪些需要确认
 
-## 安装
+标签栏内置操作 `cmux.newClaudeChat` 会在聚焦的窗格中打开一个新的 Claude Chat。
 
-### DMG（推荐）
+### GitLab 集成
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-  <img src="./docs/assets/macos-badge.png" alt="下载 cmux macOS 版" width="180" />
-</a>
+仅限当前 workspace 所对应 GitLab 项目的右侧栏面板：
 
-打开 `.dmg` 文件并将 cmux 拖动到"应用程序"文件夹。cmux 通过 Sparkle 自动更新，您只需下载一次。
+- **Merge Requests** 列表，含被分配人/作者过滤器与一键打开
+- **Issues** 列表，使用相同的过滤系统，由 `GitLabIssueFiltersStore` 支撑
+- **Pipelines** 列表，含状态指示器
+- **Releases** 列表
+- **MR Discussions** 查看器，支持 three-way diff（`MRDiscussions.swift`）
+- diff refs 与 merged-tree 存储，使 diff 查看器始终知道正确的 base/target SHA
 
-### Homebrew
+使用您本地的 `glab` / `git` 配置——无需额外凭据。
+
+### Git diff 查看器
+
+针对任意 commit、分支或工作树的独立 diff 窗口（`GitDiffWindow.swift`）：
+
+- 并排 `DiffCodeTextView` 与三方 `DiffThreeWayCodeTextView`
+- 自定义 `LCSDiff` 引擎与 `SyntaxHighlighter`，支持 Swift、TypeScript、Markdown 等
+- 与 GitLab MR Discussions 查看器共用
+
+### Workspace Notes 侧栏
+
+随 workspace 移动的 markdown 笔记：
+
+- 在右侧栏内挂载于 GitLab 面板旁边的侧栏插槽
+- 关闭 workspace 时自动归档——笔记永不被静默丢弃（详见 `TabManager.closeWorkspace` 中的安全网）
+- 独立的 **Notes Manager** 窗口（`WorkspaceNotesManagerWindowController`），用于浏览和恢复所有 workspace 的归档笔记
+- 标签栏内置操作 `cmux.toggleNotes`，通过键盘或自定义命令切换侧栏
+
+### 会话预设
+
+将当前会话布局（窗格、surface、终端、浏览器 URL、侧栏状态）保存为命名预设，然后再恢复：
+
+- 保存：`File → Save Session as Preset…`（或命令面板）
+- 加载：`File → Load Preset → …`
+- 更新：`File → Update Current Preset`
+- 存储按 bundle-id 隔离，因此 cmux 与 Chatmux 各自维护独立的预设集（`SessionPresetSchema.defaultDirectoryURL`）
+
+### MCP Manager + Background Shells 弹出窗口
+
+可从标题栏访问的两个弹出窗口：
+
+- **MCP Manager** — 发现、启用、禁用并对 Claude chat 使用的 MCP 服务器进行健康检查
+- **Background Shells** — 浏览由 chat / surface API 启动的分离 shell，查看其输出，并将其恢复到可见的 surface
+
+### Open in Sourcetree
+
+新的标签栏内置操作 `cmux.openInSourcetree`，位于 `openInFinder` 和 `openInIDE` 旁边。将聚焦窗格的工作目录在 [Atlassian Sourcetree](https://www.sourcetreeapp.com/) 中打开（如果 Sourcetree 未安装在 `/Applications/Sourcetree.app`，则会发出蜂鸣声）。
+
+可在 `~/.config/cmux/cmux.json` 中自定义按钮布局，或使用默认标签栏。
+
+### 自安装脚本
+
+`scripts/install-fork.sh` 构建 Release 配置、以独立 bundle id 进行 ad-hoc 签名，并将 bundle 复制到 `/Applications/Chatmux.app`，使其与上游 cmux 并行运行：
 
 ```bash
-brew tap manaflow-ai/cmux
-brew install --cask cmux
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-稍后更新：
+默认身份：
+
+| 字段 | 值 |
+|---|---|
+| 应用名 | `Chatmux` |
+| Bundle id | `com.cmuxterm.app.fork` |
+| 安装路径 | `/Applications/Chatmux.app` |
+
+使用 `--name`、`--bundle-id` 或 `--dest` 可覆盖（例如，staging 构建）。通过 `codesign -i <bundle-id>` 固定 bundle id 对 macOS TCC 权限的稳定性至关重要——否则每次启动都会重新请求 Documents/App Management 权限。
+
+Workspace、会话快照、预设、笔记、MCP 配置和 TCC 授权都以 `CFBundleIdentifier` 作为索引键，因此只要保持相同的 bundle id，它们在重新安装后都会保留。
+
+### `/sync-upstream` slash 命令
+
+自定义的 Claude Code slash 命令（位于 `.claude/commands/`）自动化 chatmux ↔ upstream 合并流程：
+
+- 将 `main` 快进合并到 `manaflow-ai/cmux:main`
+- 将对应的 `vendor/bonsplit` 子模块指针镜像到您的 bonsplit fork
+- 创建临时分支 `chatmux-merge-<timestamp>` 并将 upstream 合并进去
+- 通过两侧合并 + 按 ID 去重自动解决 `cmux.xcodeproj/project.pbxproj` 冲突
+- 当 `Sources/`、`Packages/` 或 `Resources/` 出现冲突时停止并提示人工处理
+- 推送临时分支并等待构建确认，然后再快进 `chatmux`
+
+完整工作流参见 `.claude/commands/sync-upstream.md`，pbxproj 助手参见 `scripts/sync-upstream-resolve.py`。
+
+## 从源代码安装
+
+Chatmux 不以 DMG 发布。使用 fork 脚本构建并安装：
 
 ```bash
-brew upgrade --cask cmux
+# 带子模块克隆
+git clone --recurse-submodules https://github.com/Shyri/cmux.git
+cd cmux
+
+# 一次性设置（获取 Ghostty 子模块、GhosttyKit 等）
+./scripts/setup.sh
+
+# 构建 Release + 安装到 /Applications/Chatmux.app + 启动
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-首次启动时，macOS 可能会要求您确认打开来自已验证开发者的应用。点击**打开**即可继续。
+为什么使用 `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1` 前缀？我们本地运行 Zig 0.16，但 Ghostty 要求 0.15.2。跳过 zig 构建会强制脚本使用 `manaflow-ai/ghostty` 发布的预构建 GhosttyKit.xcframework。清理 `zig-pkg/` 让 build key 保持干净，使预构建缓存命中可用。
 
-## 为什么做 cmux？
+## 与上游同步
 
-我同时运行大量 Claude Code 和 Codex 会话。之前我用 Ghostty 开了一堆分割窗格，依靠 macOS 原生通知来了解代理何时需要我。但 Claude Code 的通知内容总是千篇一律的"Claude is waiting for your input"，没有任何上下文信息，而且标签页一多，连标题都看不清了。
+```bash
+# 在本仓库的 Claude Code 会话中：
+/sync-upstream
+```
 
-我试过几个编程协调工具，但大多数都是 Electron/Tauri 应用，性能让我不满意。我也更喜欢终端，因为 GUI 协调工具会把你锁定在它们的工作流里。所以我用 Swift/AppKit 构建了 cmux，作为一个原生 macOS 应用。它使用 libghostty 进行终端渲染，并读取您现有的 Ghostty 配置中的主题、字体和颜色设置。
+该 slash 命令处理整个合并工作流，包括冲突分流。参见 [此分支新增的功能 → /sync-upstream](#sync-upstream-slash-命令)。
 
-主要新增的是侧边栏和通知系统。侧边栏有垂直标签页，显示每个工作区的 git 分支、关联 PR 状态/编号、工作目录、监听端口和最新通知文本。通知系统能捕获终端序列（OSC 9/99/777），并提供 CLI（`cmux notify`），您可以将其接入 Claude Code、OpenCode 等代理的钩子。当代理等待时，其窗格会显示蓝色光环，标签页会在侧边栏高亮，这样我就能在多个分割窗格和标签页之间一眼看出哪个需要我。⌘⇧U 可以跳转到最新的未读通知。
-
-内置浏览器拥有从 [agent-browser](https://github.com/vercel-labs/agent-browser) 移植的可脚本化 API。代理可以抓取无障碍树快照、获取元素引用、执行点击、填写表单和执行 JS。您可以在终端旁边分割出浏览器窗格，让 Claude Code 直接与您的开发服务器交互。
-
-所有操作都可以通过 CLI 和 socket API 进行脚本化 — 创建工作区/标签页、分割窗格、发送按键、在浏览器中打开 URL。
-
-## The Zen of cmux
-
-cmux 不规定开发者应该如何使用工具。它是一个带有 CLI 的终端和浏览器，其余的由你决定。
-
-cmux 是原语，而非解决方案。它提供终端、浏览器、通知、工作区、分割、标签页，以及控制这一切的 CLI。cmux 不强迫你以特定方式使用编程代理。你用这些原语构建什么，完全取决于你自己。
-
-最优秀的开发者一直在构建自己的工具。还没有人找到与代理协作的最佳方式，那些构建封闭产品的团队也没有找到。最接近自己代码库的开发者会最先找到答案。
-
-给一百万个开发者可组合的原语，他们会比任何自上而下设计的产品团队更快地找到最高效的工作流。
-
-## 文档
-
-有关 cmux 配置的更多信息，请[查看我们的文档](https://cmux.com/docs/getting-started?utm_source=readme)。
+如需手动合并，请遵循 `.claude/commands/sync-upstream.md` 中的相同步骤。
 
 ## 键盘快捷键
 
-### 工作区
+所有上游 cmux 快捷键均无变化。完整表格请参见 [上游 README](https://github.com/manaflow-ai/cmux/blob/main/README.zh-CN.md#keyboard-shortcuts)。Chatmux 专属快捷键可在 Settings → Keyboard Shortcuts 中配置，并像其他 cmux 快捷键一样出现在 `~/.config/cmux/cmux.json` 中。
 
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ N | 新建工作区 |
-| ⌘ 1–8 | 跳转到工作区 1–8 |
-| ⌘ 9 | 跳转到最后一个工作区 |
-| ⌃ ⌘ ] | 下一个工作区 |
-| ⌃ ⌘ [ | 上一个工作区 |
-| ⌘ ⇧ W | 关闭工作区 |
-| ⌘ ⇧ R | 重命名工作区 |
-| ⌘ B | 切换侧边栏 |
+## 致谢
 
-### 界面
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ T | 新建界面 |
-| ⌘ ⇧ ] | 下一个界面 |
-| ⌘ ⇧ [ | 上一个界面 |
-| ⌃ Tab | 下一个界面 |
-| ⌃ ⇧ Tab | 上一个界面 |
-| ⌃ 1–8 | 跳转到界面 1–8 |
-| ⌃ 9 | 跳转到最后一个界面 |
-| ⌘ W | 关闭界面 |
-
-### 分割窗格
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ D | 向右分割 |
-| ⌘ ⇧ D | 向下分割 |
-| ⌥ ⌘ ← → ↑ ↓ | 按方向切换焦点窗格 |
-| ⌘ ⇧ H | 闪烁聚焦面板 |
-
-### 浏览器
-
-浏览器开发者工具快捷键遵循 Safari 默认设置，可在`设置 → 键盘快捷键`中自定义。
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ ⇧ L | 在分割中打开浏览器 |
-| ⌘ L | 聚焦地址栏 |
-| ⌘ [ | 后退 |
-| ⌘ ] | 前进 |
-| ⌘ R | 刷新页面 |
-| ⌥ ⌘ I | 切换开发者工具（Safari 默认） |
-| ⌥ ⌘ C | 显示 JavaScript 控制台（Safari 默认） |
-
-### 通知
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ I | 显示通知面板 |
-| ⌘ ⇧ U | 跳转到最新未读 |
-
-### 查找
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ F | 查找 |
-| ⌘ G / ⌘ ⇧ G | 查找下一个 / 上一个 |
-| ⌘ ⇧ F | 隐藏查找栏 |
-| ⌘ E | 使用选中内容进行查找 |
-
-### 终端
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ K | 清除回滚缓冲区 |
-| ⌘ C | 复制（有选中内容时） |
-| ⌘ V | 粘贴 |
-| ⌘ + / ⌘ - | 增大 / 减小字体 |
-| ⌘ 0 | 重置字体大小 |
-
-### 窗口
-
-| 快捷键 | 操作 |
-|----------|--------|
-| ⌘ ⇧ N | 新建窗口 |
-| ⌘ , | 设置 |
-| ⌘ ⇧ , | 重新加载配置 |
-| ⌘ Q | 退出 |
-
-## 每夜构建
-
-[下载 cmux NIGHTLY](https://github.com/manaflow-ai/cmux/releases/download/nightly/cmux-nightly-macos.dmg)
-
-cmux NIGHTLY 是一个拥有独立 Bundle ID 的单独应用，因此可以与稳定版并行运行。它从最新的 `main` 提交自动构建，并通过独立的 Sparkle 更新源自动更新。
-
-## 会话恢复
-
-退出 cmux 会保存当前会话。重新启动时，cmux 会恢复应用管理的状态：
-- 窗口/工作区/窗格布局
-- 工作目录
-- 终端回滚缓冲区（尽力恢复）
-- 浏览器 URL 和导航历史
-
-cmux 不会为任意实时进程状态做检查点。tmux、vim、shell 和不支持的终端应用会作为普通终端重新打开。
-
-当 hooks 保存了原生会话 ID 时，受支持的 agent 会话可以恢复：
-
-```bash
-cmux hooks setup
-cmux hooks setup codex
-cmux hooks setup --agent opencode
-```
-
-高级用户和集成可以把自定义恢复命令绑定到当前终端 surface。这适用于 tmux 会话或自定义 agent CLI 等拥有持久状态的工具：
-
-```bash
-cmux surface resume set --kind tmux --checkpoint work --shell "tmux attach -t work"
-cmux surface resume show --json
-cmux surface resume clear --checkpoint work
-```
-
-这个绑定会继续关联到 cmux surface。通过公开 CLI 或 socket 创建的绑定会保存用于检查和手动恢复。cmux 只会自动运行被标记为可信的恢复绑定，例如从运行中进程检测到的 tmux 绑定。 令牌、密码、密钥和 API key 等敏感环境变量键会在保存恢复绑定前被丢弃。
-
-## Star History
-
-<a href="https://star-history.com/#manaflow-ai/cmux&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" width="600" />
- </picture>
-</a>
-
-## 参与贡献
-
-参与方式：
-
-- 在 X 上关注我们：[@manaflowai](https://x.com/manaflowai)、[@lawrencecchen](https://x.com/lawrencecchen)、[@austinywang](https://x.com/austinywang)
-- 加入 [Discord](https://discord.gg/xsgFEVrWCZ) 讨论
-- 创建和参与 [GitHub Issues](https://github.com/manaflow-ai/cmux/issues) 和[讨论](https://github.com/manaflow-ai/cmux/discussions)
-- 告诉我们您在用 cmux 构建什么
-
-## 社区
-
-- [Discord](https://discord.gg/xsgFEVrWCZ)
-- [GitHub](https://github.com/manaflow-ai/cmux)
-- [X / Twitter](https://twitter.com/manaflowai)
-- [YouTube](https://www.youtube.com/channel/UCAa89_j-TWkrXfk9A3CbASw)
-- [LinkedIn](https://www.linkedin.com/company/manaflow-ai/)
-- [Reddit](https://www.reddit.com/r/cmux/)
-
-## Founder's Edition
-
-cmux 免费、开源，并将一直如此。如果您想支持开发并提前体验即将推出的功能：
-
-**[获取 Founder's Edition](https://buy.stripe.com/3cI00j2Ld0it5OU33r5EY0q)**
-
-- **功能请求/Bug 修复优先处理**
-- **抢先体验：为每个工作区、标签页和面板提供上下文的 cmux AI**
-- **抢先体验：桌面与手机间终端同步的 iOS 应用**
-- **抢先体验：云端虚拟机**
-- **抢先体验：语音模式**
-- **我的个人 iMessage/WhatsApp**
+Chatmux 是 [Manaflow](https://manaflow.com) 所开发的 [cmux](https://github.com/manaflow-ai/cmux) 的分支。上游的所有功能和终端引擎均归他们所有——请为原项目点 star 并予以支持。
 
 ## 许可证
 
-cmux 以 [GPL-3.0-or-later](LICENSE) 开源。
-
-如果您的组织无法遵守 GPL，可提供商业许可证。详情请联系 [founders@manaflow.com](mailto:founders@manaflow.com)。
+与上游相同：[GPL-3.0-or-later](LICENSE)。

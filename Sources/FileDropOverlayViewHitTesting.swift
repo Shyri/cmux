@@ -397,6 +397,16 @@ extension FileDropOverlayView {
     }
 
     func paneDropTargetUnderPoint(_ windowPoint: NSPoint) -> (any FileDropPaneTarget)? {
+        // Claude Chat panels own their own `ChatDropZoneNSView` that
+        // turns file/image drops into pending message attachments. The
+        // chat zone lives *inside* a `PaneDropTargetView`, so the
+        // recursive walk below would otherwise stop at the outer pane
+        // target and route the drop into a file-preview pane next to
+        // the chat instead. Prefer the chat zone whenever the cursor
+        // is over one.
+        if let chatZone = chatDropZoneUnderPoint(windowPoint) {
+            return chatZone
+        }
         if let paneTarget = inlinePaneDropTargetUnderPoint(windowPoint) {
             return paneTarget
         }
@@ -405,6 +415,34 @@ extension FileDropOverlayView {
             return terminalPaneTarget
         }
         return BrowserWindowPortalRegistry.browserPaneDropTargetAtWindowPoint(windowPoint, in: window)
+    }
+
+    /// Recursively searches the content view for a `ChatDropZoneNSView`
+    /// at `windowPoint`. Mirrors `inlinePaneDropTargetUnderPoint` /
+    /// `paneDropTarget(in:at:)` but descends *past* `PaneDropTargetView`
+    /// instances so chat drop zones embedded inside a pane are still
+    /// reachable.
+    func chatDropZoneUnderPoint(_ windowPoint: NSPoint) -> ChatDropZoneNSView? {
+        guard let window, let contentView = window.contentView else { return nil }
+        isHidden = true
+        defer { isHidden = false }
+        let point = contentView.convert(windowPoint, from: nil)
+        return chatDropZone(in: contentView, at: point)
+    }
+
+    private func chatDropZone(in view: NSView, at point: NSPoint) -> ChatDropZoneNSView? {
+        for subview in view.subviews.reversed() {
+            guard !subview.isHidden, subview.alphaValue > 0 else { continue }
+            let pointInSubview = subview.convert(point, from: view)
+            guard subview.bounds.contains(pointInSubview) else { continue }
+            if let chatZone = subview as? ChatDropZoneNSView {
+                return chatZone
+            }
+            if let nested = chatDropZone(in: subview, at: pointInSubview) {
+                return nested
+            }
+        }
+        return view as? ChatDropZoneNSView
     }
 
     func paneDropTargetForTextDrop(at windowPoint: NSPoint) -> (any FileDropPaneTarget)? {

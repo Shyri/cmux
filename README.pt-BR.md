@@ -1,312 +1,152 @@
-> Esta tradução foi gerada pelo Claude. Se você tiver sugestões de melhoria, abra um PR.
-
-<h1 align="center">cmux</h1>
-<p align="center">Um terminal macOS baseado em Ghostty com abas verticais e notificações para agentes de programação com IA</p>
+<h1 align="center">Chatmux</h1>
+<p align="center">Um fork pessoal do <a href="https://github.com/manaflow-ai/cmux">cmux</a> com integração nativa do Claude, ferramentas para fluxo de trabalho com GitLab e outras melhorias de qualidade de vida.</p>
 
 <p align="center">
-  <a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-    <img src="./docs/assets/macos-badge.png" alt="Baixar cmux para macOS" width="180" />
-  </a>
+  <a href="#instalação-a-partir-do-código-fonte">Instalação a partir do código-fonte</a> · <a href="#o-que-este-fork-adiciona">O que este fork adiciona</a> · <a href="#sincronizar-com-upstream">Sincronizar com upstream</a> · <a href="https://github.com/manaflow-ai/cmux">cmux upstream</a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.vi.md">Tiếng Việt</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | <a href="README.ko.md">한국어</a> | <a href="README.de.md">Deutsch</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.it.md">Italiano</a> | <a href="README.da.md">Dansk</a> | <a href="README.pl.md">Polski</a> | <a href="README.ru.md">Русский</a> | <a href="README.bs.md">Bosanski</a> | <a href="README.ar.md">العربية</a> | <a href="README.no.md">Norsk</a> | Português (Brasil) | <a href="README.th.md">ไทย</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.km.md">ភាសាខ្មែរ</a> | <a href="README.uk.md">Українська</a>
-</p>
+---
 
-<p align="center">
-  <a href="https://x.com/manaflowai"><img src="https://img.shields.io/badge/@manaflow-555?logo=x" alt="X / Twitter" /></a>
-  <a href="https://discord.gg/xsgFEVrWCZ"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-  <a href="https://github.com/manaflow-ai/cmux"><img src="https://img.shields.io/github/stars/manaflow-ai/cmux?style=flat&logo=github&label=stars&color=4c71f2" alt="GitHub stars" /></a>
-</p>
+O Chatmux é construído sobre o [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) — um terminal macOS baseado em Ghostty com abas verticais e notificações para agentes de codificação de IA. Tudo o que está documentado no [README upstream](https://github.com/manaflow-ai/cmux/blob/main/README.pt-BR.md) continua valendo: anéis de notificação, navegador integrado, abas verticais+horizontais, SSH, Claude Code Teams, restauração de sessão, CLI/socket API do cmux, etc.
 
-<p align="center">
-  <img src="./docs/assets/main-first-image.png" alt="Captura de tela do cmux" width="900" />
-</p>
+Este documento cobre apenas o que o Chatmux adiciona por cima.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=i-WxO5YUTOs">▶ Vídeo de demonstração</a> · <a href="https://cmux.com/blog/zen-of-cmux">O Zen do cmux</a>
-</p>
+## O que este fork adiciona
 
-## Recursos
+### Painel Claude Chat
 
-<table>
-<tr>
-<td width="40%" valign="middle">
-<h3>Anéis de notificação</h3>
-Os painéis recebem um anel azul e as abas acendem quando agentes de programação precisam da sua atenção
-</td>
-<td width="60%">
-<img src="./docs/assets/notification-rings.png" alt="Anéis de notificação" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Painel de notificações</h3>
-Veja todas as notificações pendentes em um só lugar, vá direto para a mais recente não lida
-</td>
-<td width="60%">
-<img src="./docs/assets/sidebar-notification-badge.png" alt="Badge de notificação na barra lateral" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Navegador integrado</h3>
-Divida um navegador ao lado do seu terminal com uma API programável portada do <a href="https://github.com/vercel-labs/agent-browser">agent-browser</a>
-</td>
-<td width="60%">
-<img src="./docs/assets/built-in-browser.png" alt="Navegador integrado" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Abas verticais + horizontais</h3>
-A barra lateral mostra o branch do git, status/número do PR vinculado, diretório de trabalho, portas em escuta e texto da última notificação. Divida horizontal e verticalmente.
-</td>
-<td width="60%">
-<img src="./docs/assets/vertical-horizontal-tabs-and-splits.png" alt="Abas verticais e painéis divididos" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>SSH</h3>
-<code>cmux ssh user@remote</code> cria um workspace para uma máquina remota. Painéis do navegador são roteados pela rede remota, então localhost simplesmente funciona. Arraste uma imagem para uma sessão remota para fazer upload via scp.
-</td>
-<td width="60%">
-<img src="./docs/assets/ssh.png" alt="cmux SSH" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Claude Code Teams</h3>
-<code>cmux claude-teams</code> executa o modo de companheiros de equipe do Claude Code com um único comando. Os companheiros aparecem como divisões nativas com metadados na barra lateral e notificações. Sem necessidade de tmux.
-</td>
-<td width="60%">
-<img src="./docs/assets/claude-code-teams.png" alt="Claude Code Teams" width="100%" />
-</td>
-</tr>
-</table>
+Painel SDK Claude integrado que vive dentro de qualquer painel — pega o diretório de trabalho do workspace, faz streaming das respostas e persiste o histórico de conversa por surface.
 
-- **Import de navegador** — Importe cookies, histórico e sessões do Chrome, Firefox, Arc e mais de 20 navegadores para que painéis do navegador iniciem autenticados
-- **Comandos personalizados** — Defina ações específicas do projeto em [`cmux.json`](https://cmux.com/docs/custom-commands) que são lançadas pela paleta de comandos
-- **Programável** — CLI e socket API para criar workspaces, dividir painéis, enviar teclas e automatizar o navegador
-- **App nativo macOS** — Construído com Swift e AppKit, não Electron. Inicialização rápida, baixo consumo de memória.
-- **Compatível com Ghostty** — Lê sua configuração existente em `~/.config/ghostty/config` para temas, fontes e cores
-- **Acelerado por GPU** — Alimentado por libghostty para renderização suave
+- Integração MCP: popover **MCP Manager** integrado para registrar/gerenciar servidores MCP e um health prober que mostra o status dos servidores inline
+- Registro de slash commands: defina seus próprios slash commands por chat
+- Status line runner: tarefas de longa duração renderizam uma linha de status ao vivo no cabeçalho do chat
+- Histórico de sessões: cada chat é gravado em disco e pode ser retomado entre reinicializações do cmux
+- Motor de regras de permissão: configure quais ferramentas o chat pode invocar automaticamente e quais exigem confirmação
 
-## Instalação
+A ação built-in da tab bar `cmux.newClaudeChat` abre um novo Claude Chat no painel focado.
 
-### DMG (recomendado)
+### Integração com GitLab
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-  <img src="./docs/assets/macos-badge.png" alt="Baixar cmux para macOS" width="180" />
-</a>
+Painel da barra lateral direita com escopo no projeto GitLab do workspace:
 
-Abra o `.dmg` e arraste o cmux para a pasta Aplicativos. O cmux se atualiza automaticamente via Sparkle, então você só precisa baixar uma vez.
+- Lista de **Merge Requests** com filtros por designado/autor e abertura em um clique
+- Lista de **Issues** com o mesmo sistema de filtros, alimentada por `GitLabIssueFiltersStore`
+- Lista de **Pipelines** com indicadores de status
+- Lista de **Releases**
+- Visualizador de **MR Discussions** com suporte a three-way diff (`MRDiscussions.swift`)
+- Stores de diff refs e merged-tree para que o visualizador de diff sempre conheça os SHAs base/target corretos
 
-### Homebrew
+Usa sua configuração local `glab` / `git` — nenhuma credencial extra necessária.
+
+### Visualizador de Git diff
+
+Janela de diff independente para qualquer commit, branch ou working tree (`GitDiffWindow.swift`):
+
+- `DiffCodeTextView` lado a lado e `DiffThreeWayCodeTextView` de três vias
+- Motor `LCSDiff` próprio e `SyntaxHighlighter` para Swift, TypeScript, Markdown, etc.
+- Compartilhado com o visualizador de discussões de MR do GitLab
+
+### Barra lateral Workspace Notes
+
+Notas markdown por workspace que viajam com o workspace:
+
+- Slot na barra lateral montado ao lado do painel do GitLab (barra lateral direita)
+- Auto-arquivamento ao fechar o workspace — as notas nunca são silenciosamente perdidas (veja a rede de segurança em `TabManager.closeWorkspace`)
+- Janela independente **Notes Manager** (`WorkspaceNotesManagerWindowController`) para navegar e restaurar notas arquivadas de todos os workspaces
+- Ação built-in `cmux.toggleNotes` para alternar a barra lateral via teclado ou comando personalizado
+
+### Presets de sessão
+
+Salve o layout atual da sessão (painéis, surfaces, terminais, URLs do navegador, estado da barra lateral) como um preset nomeado e reinstancie-o depois:
+
+- Salvar: `File → Save Session as Preset…` (ou a paleta de comandos)
+- Carregar: `File → Load Preset → …`
+- Atualizar: `File → Update Current Preset`
+- O armazenamento tem escopo por bundle-id, então cmux e Chatmux mantêm coleções de presets independentes (`SessionPresetSchema.defaultDirectoryURL`)
+
+### Popovers MCP Manager + Background Shells
+
+Dois popovers acessíveis pela barra de título:
+
+- **MCP Manager** — descubra, ative, desative e verifique o status dos servidores MCP usados pelo chat Claude
+- **Background Shells** — navegue pelos shells desacoplados iniciados pelo chat / API de surfaces, espie a saída e retome-os em uma surface visível
+
+### Open in Sourcetree
+
+Nova ação built-in da tab bar `cmux.openInSourcetree` ao lado de `openInFinder` e `openInIDE`. Abre o diretório de trabalho do painel focado no [Atlassian Sourcetree](https://www.sourcetreeapp.com/) (emite um beep se o Sourcetree não estiver instalado em `/Applications/Sourcetree.app`).
+
+Configure-o em seu próprio layout de botões em `~/.config/cmux/cmux.json` ou confie na tab bar padrão.
+
+### Script de auto-instalação
+
+`scripts/install-fork.sh` compila a configuração Release, assina ad-hoc com um bundle id distinto e copia o bundle para `/Applications/Chatmux.app` para que funcione lado a lado com o cmux upstream:
 
 ```bash
-brew tap manaflow-ai/cmux
-brew install --cask cmux
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-Para atualizar depois:
+Identidade padrão:
+
+| Campo | Valor |
+|---|---|
+| Nome do app | `Chatmux` |
+| Bundle id | `com.cmuxterm.app.fork` |
+| Caminho de instalação | `/Applications/Chatmux.app` |
+
+Substitua com `--name`, `--bundle-id` ou `--dest` se quiser uma identidade diferente (por exemplo, um build de staging). Fixar o bundle id via `codesign -i <bundle-id>` é crucial para estabilidade dos permissionamentos TCC do macOS — sem isso, permissões de Documents/App Management são solicitadas novamente a cada inicialização.
+
+Workspaces, snapshots de sessão, presets, notas, configuração MCP e autorizações TCC são todos indexados por `CFBundleIdentifier`, então persistem entre re-instalações enquanto você mantiver o mesmo bundle id.
+
+### Slash command `/sync-upstream`
+
+Um slash command Claude Code personalizado (em `.claude/commands/`) automatiza a dança de merge chatmux ↔ upstream:
+
+- Fast-forward de `main` para `manaflow-ai/cmux:main`
+- Espelha o ponteiro correspondente do submódulo `vendor/bonsplit` para seu fork bonsplit
+- Cria um branch temporário `chatmux-merge-<timestamp>` e faz merge do upstream nele
+- Auto-resolve conflitos em `cmux.xcodeproj/project.pbxproj` combinando ambos os lados + deduplicando por ID
+- Para e exibe qualquer conflito em `Sources/`, `Packages/` ou `Resources/` para resolução humana
+- Pusha o branch temporário e aguarda confirmação do build antes de fazer fast-forward do `chatmux`
+
+Veja `.claude/commands/sync-upstream.md` para o workflow completo e `scripts/sync-upstream-resolve.py` para o helper do pbxproj.
+
+## Instalação a partir do código-fonte
+
+O Chatmux não é publicado como DMG. Compile e instale com o script do fork:
 
 ```bash
-brew upgrade --cask cmux
+# Clonar com submódulos
+git clone --recurse-submodules https://github.com/Shyri/cmux.git
+cd cmux
+
+# Setup inicial (busca submódulo Ghostty, GhosttyKit, etc.)
+./scripts/setup.sh
+
+# Compilar Release + instalar em /Applications/Chatmux.app + lançar
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-Na primeira execução, o macOS pode pedir para você confirmar a abertura de um app de um desenvolvedor identificado. Clique em **Abrir** para continuar.
+Por que o prefixo `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1`? Localmente rodamos Zig 0.16, mas o Ghostty requer 0.15.2. Pular o build do Zig força o script a usar o GhosttyKit.xcframework pré-compilado dos releases `manaflow-ai/ghostty`. A limpeza do `zig-pkg/` mantém a build key limpa para que o cache hit do pré-compilado funcione.
 
-## Por que o cmux?
-
-Eu executo muitas sessões de Claude Code e Codex em paralelo. Eu estava usando o Ghostty com vários painéis divididos e contando com as notificações nativas do macOS para saber quando um agente precisava de mim. Mas o corpo da notificação do Claude Code é sempre apenas "Claude is waiting for your input" sem contexto, e com abas suficientes abertas eu não conseguia nem ler os títulos mais.
-
-Eu tentei alguns orquestradores de código, mas a maioria era apps Electron/Tauri e o desempenho me incomodava. Eu também prefiro o terminal, já que orquestradores GUI te prendem no fluxo de trabalho deles. Então eu construí o cmux como um app nativo macOS em Swift/AppKit. Ele usa o libghostty para renderização do terminal e lê sua configuração existente do Ghostty para temas, fontes e cores.
-
-As principais adições são a barra lateral e o sistema de notificações. A barra lateral tem abas verticais que mostram o branch do git, status/número do PR vinculado, diretório de trabalho, portas em escuta e o texto da última notificação para cada workspace. O sistema de notificações captura sequências do terminal (OSC 9/99/777) e tem uma CLI (`cmux notify`) que você pode conectar aos hooks de agentes para Claude Code, OpenCode, etc. Quando um agente está esperando, seu painel recebe um anel azul e a aba acende na barra lateral, para que eu possa ver qual precisa de mim entre divisões e abas. Cmd+Shift+U pula para o mais recente não lido.
-
-O navegador integrado tem uma API programável portada do [agent-browser](https://github.com/vercel-labs/agent-browser). Agentes podem capturar a árvore de acessibilidade, obter referências de elementos, clicar, preencher formulários e executar JS. Você pode dividir um painel de navegador ao lado do seu terminal e fazer o Claude Code interagir diretamente com seu servidor de desenvolvimento.
-
-Tudo é programável através da CLI e socket API — criar workspaces/abas, dividir painéis, enviar teclas, abrir URLs no navegador.
-
-## O Zen do cmux
-
-O cmux não é prescritivo sobre como os desenvolvedores usam suas ferramentas. É um terminal e navegador com uma CLI, e o resto é com você.
-
-O cmux é uma primitiva, não uma solução. Ele te dá um terminal, um navegador, notificações, workspaces, divisões, abas e uma CLI para controlar tudo isso. O cmux não te força a usar agentes de programação de uma forma específica. O que você constrói com as primitivas é seu.
-
-Os melhores desenvolvedores sempre construíram suas próprias ferramentas. Ninguém descobriu ainda a melhor forma de trabalhar com agentes, e as equipes construindo produtos fechados definitivamente também não. Os desenvolvedores mais próximos de suas próprias bases de código vão descobrir primeiro.
-
-Dê a um milhão de desenvolvedores primitivas combináveis e eles coletivamente encontrarão os fluxos de trabalho mais eficientes mais rápido do que qualquer equipe de produto poderia projetar de cima para baixo.
-
-## Documentação
-
-Para mais informações sobre como configurar o cmux, [acesse nossa documentação](https://cmux.com/docs/getting-started?utm_source=readme).
-
-## Atalhos de Teclado
-
-### Áreas de Trabalho
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ N | Novo workspace |
-| ⌘ 1–8 | Ir para workspace 1–8 |
-| ⌘ 9 | Ir para último workspace |
-| ⌃ ⌘ ] | Próximo workspace |
-| ⌃ ⌘ [ | Workspace anterior |
-| ⌘ ⇧ W | Fechar workspace |
-| ⌘ ⇧ R | Renomear workspace |
-| ⌘ B | Alternar barra lateral |
-
-### Superfícies
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ T | Nova surface |
-| ⌘ ⇧ ] | Próxima surface |
-| ⌘ ⇧ [ | Surface anterior |
-| ⌃ Tab | Próxima surface |
-| ⌃ ⇧ Tab | Surface anterior |
-| ⌃ 1–8 | Ir para surface 1–8 |
-| ⌃ 9 | Ir para última surface |
-| ⌘ W | Fechar surface |
-
-### Painéis Divididos
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ D | Dividir à direita |
-| ⌘ ⇧ D | Dividir para baixo |
-| ⌥ ⌘ ← → ↑ ↓ | Focar painel direcionalmente |
-| ⌘ ⇧ H | Piscar painel focado |
-
-### Navegador
-
-Os atalhos de ferramentas do desenvolvedor do navegador seguem os padrões do Safari e podem ser personalizados em `Configurações → Atalhos de Teclado`.
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ ⇧ L | Abrir navegador em divisão |
-| ⌘ L | Focar barra de endereço |
-| ⌘ [ | Voltar |
-| ⌘ ] | Avançar |
-| ⌘ R | Recarregar página |
-| ⌥ ⌘ I | Alternar Ferramentas do Desenvolvedor (padrão Safari) |
-| ⌥ ⌘ C | Mostrar Console JavaScript (padrão Safari) |
-
-### Notificações
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ I | Mostrar painel de notificações |
-| ⌘ ⇧ U | Ir para última não lida |
-
-### Busca
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ F | Buscar |
-| ⌘ G / ⌘ ⇧ G | Buscar próximo / anterior |
-| ⌘ ⇧ F | Ocultar barra de busca |
-| ⌘ E | Usar seleção para busca |
-
-### Terminal
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ K | Limpar histórico de rolagem |
-| ⌘ C | Copiar (com seleção) |
-| ⌘ V | Colar |
-| ⌘ + / ⌘ - | Aumentar / diminuir tamanho da fonte |
-| ⌘ 0 | Redefinir tamanho da fonte |
-
-### Janela
-
-| Atalho | Ação |
-|----------|--------|
-| ⌘ ⇧ N | Nova janela |
-| ⌘ , | Configurações |
-| ⌘ ⇧ , | Recarregar configuração |
-| ⌘ Q | Sair |
-
-## Builds Noturnos
-
-[Baixar cmux NIGHTLY](https://github.com/manaflow-ai/cmux/releases/download/nightly/cmux-nightly-macos.dmg)
-
-O cmux NIGHTLY é um app separado com seu próprio bundle ID, então roda ao lado da versão estável. Construído automaticamente a partir do último commit em `main` e se atualiza automaticamente via seu próprio feed Sparkle.
-
-## Restauração de sessão
-
-Ao sair, o cmux salva a sessão atual. Ao abrir novamente, o cmux restaura o estado pertencente ao app:
-- Layout de janelas/workspaces/painéis
-- Diretórios de trabalho
-- Histórico de rolagem do terminal (melhor esforço)
-- URL do navegador e histórico de navegação
-
-O cmux não cria checkpoints de processos ativos arbitrários. tmux, vim, shells e apps de terminal sem suporte reabrem como terminais normais.
-
-Sessões de agentes compatíveis podem ser retomadas quando os hooks salvam um ID de sessão nativo:
+## Sincronizar com upstream
 
 ```bash
-cmux hooks setup
-cmux hooks setup codex
-cmux hooks setup --agent opencode
+# Dentro de uma sessão Claude Code neste repo:
+/sync-upstream
 ```
 
-Usuários avançados e integrações podem associar um comando personalizado de retomada à surface de terminal atual. Isso é útil para ferramentas com estado durável próprio, como sessões tmux ou CLIs de agentes customizados:
+O slash command lida com todo o workflow de merge incluindo a triagem de conflitos. Veja [O que este fork adiciona → /sync-upstream](#slash-command-sync-upstream).
 
-```bash
-cmux surface resume set --kind tmux --checkpoint work --shell "tmux attach -t work"
-cmux surface resume show --json
-cmux surface resume clear --checkpoint work
-```
+Para merges manuais, siga os mesmos passos em `.claude/commands/sync-upstream.md`.
 
-A associação fica ligada à surface do cmux. Associações criadas pela CLI pública ou pelo socket são salvas para inspeção e retomada manual. O cmux só executa automaticamente associações de retomada que marca como confiáveis, como associações tmux detectadas a partir de processos ativos. Chaves de ambiente sensíveis, como tokens, senhas, segredos e chaves de API, são descartadas antes de salvar uma associação de retomada.
+## Atalhos de teclado
 
-## Histórico de Estrelas
+Todos os atalhos do cmux upstream funcionam sem alterações. Veja o [README upstream](https://github.com/manaflow-ai/cmux/blob/main/README.pt-BR.md#keyboard-shortcuts) para a tabela completa. Os atalhos exclusivos do Chatmux são configuráveis em Settings → Keyboard Shortcuts e aparecem em `~/.config/cmux/cmux.json` como qualquer outro atalho do cmux.
 
-<a href="https://star-history.com/#manaflow-ai/cmux&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" width="600" />
- </picture>
-</a>
+## Créditos
 
-## Contribuindo
-
-Formas de participar:
-
-- Siga-nos no X para atualizações [@manaflowai](https://x.com/manaflowai), [@lawrencecchen](https://x.com/lawrencecchen), e [@austinywang](https://x.com/austinywang)
-- Participe da conversa no [Discord](https://discord.gg/xsgFEVrWCZ)
-- Crie e participe de [issues no GitHub](https://github.com/manaflow-ai/cmux/issues) e [discussões](https://github.com/manaflow-ai/cmux/discussions)
-- Nos conte o que você está construindo com o cmux
-
-## Comunidade
-
-- [Discord](https://discord.gg/xsgFEVrWCZ)
-- [GitHub](https://github.com/manaflow-ai/cmux)
-- [X / Twitter](https://twitter.com/manaflowai)
-- [YouTube](https://www.youtube.com/channel/UCAa89_j-TWkrXfk9A3CbASw)
-- [LinkedIn](https://www.linkedin.com/company/manaflow-ai/)
-- [Reddit](https://www.reddit.com/r/cmux/)
-
-## Edição do Fundador
-
-O cmux é gratuito, open source, e sempre será. Se você gostaria de apoiar o desenvolvimento e ter acesso antecipado ao que está por vir:
-
-**[Obter Edição do Fundador](https://buy.stripe.com/3cI00j2Ld0it5OU33r5EY0q)**
-
-- **Solicitações de recursos/correções de bugs priorizadas**
-- **Acesso antecipado: cmux AI que te dá contexto sobre cada workspace, aba e painel**
-- **Acesso antecipado: app iOS com terminais sincronizados entre desktop e celular**
-- **Acesso antecipado: VMs na nuvem**
-- **Acesso antecipado: Modo de voz**
-- **Meu iMessage/WhatsApp pessoal**
+O Chatmux é um fork do [cmux](https://github.com/manaflow-ai/cmux) por [Manaflow](https://manaflow.com). Todas as funcionalidades upstream e o motor do terminal são deles — por favor, dê uma estrela ao projeto original e apoie-o.
 
 ## Licença
 
-cmux é open source sob [GPL-3.0-or-later](LICENSE).
-
-Se sua organização não puder cumprir a GPL, uma licença comercial está disponível. Entre em contato com [founders@manaflow.com](mailto:founders@manaflow.com) para detalhes.
+A mesma do upstream: [GPL-3.0-or-later](LICENSE).

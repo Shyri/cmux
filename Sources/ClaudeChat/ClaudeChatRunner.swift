@@ -1,5 +1,42 @@
 import Foundation
 
+/// Builds the `(executableURL, arguments)` pair for spawning `claude`
+/// inside a login + interactive zsh, so the spawned process inherits the
+/// same PATH / exports the user has in a real terminal (sourced from
+/// `.zprofile` + `.zshrc`).
+///
+/// Without this, MCP servers declared in `.mcp.json` that rely on
+/// `npx`/`uvx`/`pipx`/nvm/asdf/homebrew fail to start because the GUI
+/// app's env is stripped down. Falls back to executing `claudePath`
+/// directly when `/bin/zsh` is unavailable.
+///
+/// `exec "$0" "$@"` replaces the zsh process with `claude` so SIGINT /
+/// SIGTERM sent via `Process.interrupt()` / `Process.terminate()` reach
+/// the CLI directly instead of being trapped by the wrapper shell.
+enum ClaudeLoginShellWrapper {
+    static func wrap(claudePath: String, arguments: [String]) -> (URL, [String]) {
+        // Note: we deliberately do NOT use `-i` (interactive). `-i`
+        // forces zsh to source `.zshrc`, and `.zshrc` plugins that
+        // block on TouchID / `op` (1Password) / `keychain` /
+        // `nvm`-style heavy init can hang for several seconds — or
+        // forever, if a prompt is waiting on stdin. The launch then
+        // never reaches `exec claude` and the chat UI is stuck on
+        // "Thinking…". `-l` (login) is enough: it sources
+        // `.zprofile` / `.zlogin`, which is where most users put
+        // their `PATH`, and the runner additionally inherits the
+        // cached `cachedUserPath` extracted by `probeForClaude` so
+        // claude itself sees the full interactive PATH.
+        let loginShell = "/bin/zsh"
+        if FileManager.default.isExecutableFile(atPath: loginShell) {
+            return (
+                URL(fileURLWithPath: loginShell),
+                ["-l", "-c", "exec \"$0\" \"$@\"", claudePath] + arguments
+            )
+        }
+        return (URL(fileURLWithPath: claudePath), arguments)
+    }
+}
+
 /// Keeps a single `claude` subprocess alive per chat panel and streams its
 /// stream-json output back to the caller. Mensajes nuevos se entregan por
 /// stdin como NDJSON, así que el proceso no se relanza por turno: una sola
@@ -63,11 +100,30 @@ final class ClaudeChatRunner {
 
     private var process: Process?
     private var stdinHandle: FileHandle?
+    private var stdoutPipe: Pipe?
+    private var stderrPipe: Pipe?
     private var stdoutBuffer = Data()
     private var stderrBuffer = Data()
     /// True between an explicit `terminate()` and the `terminationHandler`
     /// firing, so we can distinguish a user-requested shutdown from a crash.
     private var isTerminatingExplicitly = false
+    /// The `--permission-mode` flag value the currently-alive process was
+    /// launched with. `claude -p` bakes this into argv at spawn time and
+    /// cannot change it mid-session, so `ensureStarted` compares against
+    /// this on every call: if the requested mode differs, the existing
+    /// process is torn down and a fresh one launched (resuming the same
+    /// session via `--resume <sessionId>`). Cleared on termination.
+    private var launchedPermissionMode: String?
+    /// Same as `launchedPermissionMode` for `--model`. `nil` here means
+    /// "the running process was launched without `--model`" (the CLI is
+    /// using its own default). Compared on every `ensureStarted` so a
+    /// model switch from the UI picker triggers a respawn just like a
+    /// permission-mode switch.
+    private var launchedModel: String?
+    /// Same as `launchedModel` for `--effort` (thinking budget level).
+    /// `nil` here means "launched without `--effort`" so the CLI uses
+    /// whatever it considers default. A mismatch triggers a respawn.
+    private var launchedEffort: String?
     private let processQueue = DispatchQueue(label: "com.cmux.claudechat.runner", qos: .userInitiated)
 
     /// Callbacks for the currently-running process. Replaced on each
@@ -93,6 +149,8 @@ final class ClaudeChatRunner {
         cwd: String,
         sessionId: String?,
         permissionMode: String,
+        model: String?,
+        effort: String?,
         mcpConfigPath: String?,
         permissionPromptTool: String?,
         appendSystemPrompt: String?,
@@ -106,7 +164,20 @@ final class ClaudeChatRunner {
             self.onEvent = onEvent
             self.onExit = onExit
             if let existing = self.process, existing.isRunning {
-                return
+                if self.launchedPermissionMode == permissionMode
+                    && self.launchedModel == model
+                    && self.launchedEffort == effort {
+                    return
+                }
+                // Permission mode, model, or thinking effort changed
+                // since launch (e.g. user clicked Approve on an
+                // ExitPlanMode card, or picked a different model /
+                // effort from the header picker). `claude -p` bakes
+                // all three into argv at spawn time, so we tear down
+                // and respawn. The new launch passes the same
+                // `sessionId` via `--resume`, so claude reattaches to
+                // the same session.
+                self.tearDownForRespawn(existing: existing)
             }
             do {
                 let claudePath = try self.resolveClaudePath()
@@ -115,6 +186,8 @@ final class ClaudeChatRunner {
                     cwd: cwd,
                     sessionId: sessionId,
                     permissionMode: permissionMode,
+                    model: model,
+                    effort: effort,
                     mcpConfigPath: mcpConfigPath,
                     permissionPromptTool: permissionPromptTool,
                     appendSystemPrompt: appendSystemPrompt
@@ -125,6 +198,29 @@ final class ClaudeChatRunner {
                 }
             }
         }
+    }
+
+    /// Synchronously (on `processQueue`) detach from the still-running
+    /// `existing` process so a fresh `launch()` can take over. We null
+    /// out the readability handlers on its pipes so any final bytes
+    /// don't leak into the next process's `stdoutBuffer`, clear the
+    /// runner-level state, then SIGTERM. The old process's
+    /// `terminationHandler` is gated on `self.process === proc`, so it
+    /// becomes a no-op for runner state once we overwrite `self.process`.
+    private func tearDownForRespawn(existing: Process) {
+        self.stdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        self.stderrPipe?.fileHandleForReading.readabilityHandler = nil
+        self.stdoutPipe = nil
+        self.stderrPipe = nil
+        try? self.stdinHandle?.close()
+        self.stdinHandle = nil
+        self.stdoutBuffer.removeAll(keepingCapacity: false)
+        self.stderrBuffer.removeAll(keepingCapacity: false)
+        self.launchedPermissionMode = nil
+        self.launchedModel = nil
+        self.launchedEffort = nil
+        self.process = nil
+        existing.terminate()
     }
 
     /// Send a user-side turn to the running `claude` process. The CLI
@@ -217,6 +313,11 @@ final class ClaudeChatRunner {
             guard let process = self.process, process.isRunning else {
                 self.process = nil
                 self.stdinHandle = nil
+                self.stdoutPipe = nil
+                self.stderrPipe = nil
+                self.launchedPermissionMode = nil
+                self.launchedModel = nil
+                self.launchedEffort = nil
                 return
             }
             self.isTerminatingExplicitly = true
@@ -240,6 +341,8 @@ final class ClaudeChatRunner {
         cwd: String,
         sessionId: String?,
         permissionMode: String,
+        model: String?,
+        effort: String?,
         mcpConfigPath: String?,
         permissionPromptTool: String?,
         appendSystemPrompt: String?
@@ -249,33 +352,43 @@ final class ClaudeChatRunner {
         let stderrPipe = Pipe()
         let stdinPipe = Pipe()
 
-        process.executableURL = URL(fileURLWithPath: claudePath)
-        var arguments: [String] = [
+        var claudeArguments: [String] = [
             "-p",
             "--input-format", "stream-json",
             "--output-format", "stream-json",
             "--verbose",
             "--permission-mode", permissionMode
         ]
+        if let model, !model.isEmpty {
+            claudeArguments += ["--model", model]
+        }
+        if let effort, !effort.isEmpty {
+            claudeArguments += ["--effort", effort]
+        }
         if let mcpConfigPath, !mcpConfigPath.isEmpty {
-            arguments += ["--mcp-config", mcpConfigPath]
+            claudeArguments += ["--mcp-config", mcpConfigPath]
             // Disable Claude Code's built-in `AskUserQuestion` whenever our
             // MCP server is up. The built-in self-denies in `-p` (headless)
             // mode, which surfaces to the user as a "cancelled" question.
             // We always want claude to reach for `mcp__cmux__ask_user_question`
             // instead — irrespective of the permission mode.
-            arguments += ["--disallowed-tools", "AskUserQuestion"]
+            claudeArguments += ["--disallowed-tools", "AskUserQuestion"]
         }
         if let permissionPromptTool, !permissionPromptTool.isEmpty {
-            arguments += ["--permission-prompt-tool", permissionPromptTool]
+            claudeArguments += ["--permission-prompt-tool", permissionPromptTool]
         }
         if let appendSystemPrompt, !appendSystemPrompt.isEmpty {
-            arguments += ["--append-system-prompt", appendSystemPrompt]
+            claudeArguments += ["--append-system-prompt", appendSystemPrompt]
         }
         if let sessionId, !sessionId.isEmpty {
-            arguments += ["--resume", sessionId]
+            claudeArguments += ["--resume", sessionId]
         }
-        process.arguments = arguments
+        let (executableURL, processArguments) = ClaudeLoginShellWrapper.wrap(
+            claudePath: claudePath,
+            arguments: claudeArguments
+        )
+        process.executableURL = executableURL
+        process.arguments = processArguments
         process.currentDirectoryURL = URL(fileURLWithPath: cwd)
         process.standardOutput = stdoutPipe
         process.standardError = stderrPipe
@@ -313,14 +426,27 @@ final class ClaudeChatRunner {
         process.terminationHandler = { [weak self] proc in
             guard let self else { return }
             self.processQueue.async {
+                // Always silence the closure-captured pipes (these are
+                // the OLD pipes; the new process — if any — has its own).
                 stdoutPipe.fileHandleForReading.readabilityHandler = nil
                 stderrPipe.fileHandleForReading.readabilityHandler = nil
+                // If we've already replaced `self.process` with a fresh
+                // one (respawn after a permission-mode change), this
+                // handler is for a process the panel no longer cares
+                // about — don't touch runner state and don't fire onExit,
+                // since that would tear down the panel mid-session.
+                guard self.process === proc else { return }
                 self.flushRemainingStdout()
 
                 let exitCode = proc.terminationStatus
                 let wasExplicit = self.isTerminatingExplicitly
                 self.process = nil
                 self.stdinHandle = nil
+                self.stdoutPipe = nil
+                self.stderrPipe = nil
+                self.launchedPermissionMode = nil
+                self.launchedModel = nil
+                self.launchedEffort = nil
                 self.isTerminatingExplicitly = false
                 self.stdoutBuffer.removeAll(keepingCapacity: false)
                 let stderrText = String(data: self.stderrBuffer, encoding: .utf8) ?? ""
@@ -344,8 +470,8 @@ final class ClaudeChatRunner {
         // routing misbehaves (e.g. claude reaches for a built-in we tried
         // to disallow).
         ChatRunnerDebugLog.shared.appendInvocation(
-            executable: claudePath,
-            arguments: arguments,
+            executable: executableURL.path,
+            arguments: processArguments,
             cwd: cwd
         )
 
@@ -356,6 +482,11 @@ final class ClaudeChatRunner {
         }
         self.process = process
         self.stdinHandle = stdinPipe.fileHandleForWriting
+        self.stdoutPipe = stdoutPipe
+        self.stderrPipe = stderrPipe
+        self.launchedPermissionMode = permissionMode
+        self.launchedModel = model
+        self.launchedEffort = effort
     }
 
     /// Append a chunk to the line buffer and emit one event per complete
@@ -431,27 +562,30 @@ final class ClaudeChatRunner {
             return cached
         }
 
-        // Probe a few shells in turn to handle the typical install
-        // scenarios:
-        //   1. Login zsh — the conventional PATH; works for `npm
-        //      install -g`, brew, system installs.
-        //   2. Interactive zsh — needed when the user keeps `claude`
-        //      under `~/.local/bin` or similar via .zshrc, which a
-        //      login shell doesn't always source.
-        //   3. Login bash — fallback for users who haven't migrated
-        //      to zsh yet.
+        // Probe order — fast and predictable paths first, slow/hangy
+        // ones only as a last resort:
+        //   1. Login zsh / bash — non-interactive, won't source `.zshrc`,
+        //      so they finish in <100ms even with a heavy shell init.
+        //   2. Conventional install directories — direct disk lookups,
+        //      no shell involved.
+        //   3. Interactive zsh — only here as a final fallback. `zsh
+        //      -i` sources `.zshrc`, and any `.zshrc` that blocks
+        //      (TouchID-prompting keychain plugins, stray `read`,
+        //      slow network mounts, etc.) would freeze this probe.
+        //      `probeForClaude` enforces a hard `probeTimeout` so even
+        //      that worst case can't block `processQueue` forever.
         // We accept the first probe that returns an executable path
         // OUTSIDE another `cmux.app` bundle (a sibling install often
         // ships its own `claude` in Resources/bin which is not what the
         // user means when they say "I have claude installed").
-        let attempts: [(shell: String, args: [String])] = [
-            ("/bin/zsh", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
-            ("/bin/zsh", ["-i", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
-            ("/bin/bash", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
-        ]
 
         var lastUserPath = ""
-        for attempt in attempts {
+
+        let fastAttempts: [(shell: String, args: [String])] = [
+            ("/bin/zsh", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
+            ("/bin/bash", ["-l", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]),
+        ]
+        for attempt in fastAttempts {
             let (foundPath, userPath) = try probeForClaude(shell: attempt.shell, arguments: attempt.args)
             if !userPath.isEmpty { lastUserPath = userPath }
             if !foundPath.isEmpty,
@@ -465,10 +599,10 @@ final class ClaudeChatRunner {
             }
         }
 
-        // Last resort: check the conventional install directories
-        // directly. Covers users who keep claude on disk but whose
-        // shells don't include the dir in PATH (asdf shims, custom
-        // shell init files, …).
+        // Conventional install directories — direct disk check, no
+        // shell hop. Covers users who keep claude on disk but whose
+        // login shells don't include the dir in PATH (asdf shims,
+        // custom shell init files, …).
         let home = FileManager.default.homeDirectoryForCurrentUser.path
         let candidates = [
             "\(home)/.local/bin/claude",
@@ -490,6 +624,24 @@ final class ClaudeChatRunner {
             }
         }
 
+        // Last resort: interactive zsh. Only used when both the cheap
+        // login-shell probes and the disk lookups failed. Guarded by
+        // `probeTimeout` inside `probeForClaude`.
+        let (foundPath, userPath) = try probeForClaude(
+            shell: "/bin/zsh",
+            arguments: ["-i", "-c", "printf '%s\\n' \"${PATH}\"; command -v claude || true"]
+        )
+        if !userPath.isEmpty { lastUserPath = userPath }
+        if !foundPath.isEmpty,
+           !pathLivesInsideAnotherCmuxBundle(foundPath),
+           FileManager.default.isExecutableFile(atPath: foundPath) {
+            Self.cacheLock.lock()
+            if !lastUserPath.isEmpty { Self.cachedUserPath = lastUserPath }
+            Self.cachedClaudePath = foundPath
+            Self.cacheLock.unlock()
+            return foundPath
+        }
+
         Self.cacheLock.lock()
         if !lastUserPath.isEmpty { Self.cachedUserPath = lastUserPath }
         Self.cacheLock.unlock()
@@ -499,6 +651,18 @@ final class ClaudeChatRunner {
     /// Spawn `shell` with `arguments` and parse the two-line stdout
     /// (PATH on the first line, the `command -v claude` result on the
     /// second). Returns `(foundPath, userPath)`; either may be empty.
+    /// Hard ceiling on how long a single shell probe is allowed to run
+    /// before we SIGTERM it and move on. The reason this matters: an
+    /// interactive `zsh -i` sources `.zshrc`, and if `.zshrc` does
+    /// anything that blocks waiting for user input — TouchID-prompting
+    /// keychain plugins, a stray `read`, `osascript` prompts, slow
+    /// network mounts — the probe never exits and `waitUntilExit()`
+    /// would hang `processQueue` forever, freezing the entire chat
+    /// runner. The chat UI then shows a permanent "thinking" spinner
+    /// because `launch()` is queued behind a `resolveClaudePath()` that
+    /// will never return.
+    private static let probeTimeout: TimeInterval = 4.0
+
     private func probeForClaude(shell: String, arguments: [String]) throws -> (String, String) {
         guard FileManager.default.isExecutableFile(atPath: shell) else {
             return ("", "")
@@ -516,7 +680,28 @@ final class ClaudeChatRunner {
         } catch {
             return ("", "")
         }
+
+        // Schedule a hard kill if the probe hasn't exited within
+        // `probeTimeout`. We use a DispatchWorkItem so we can cancel
+        // it on clean exit and avoid a stray SIGTERM landing on an
+        // unrelated process whose pid got recycled.
+        let timeoutItem = DispatchWorkItem { [weak probe] in
+            guard let probe, probe.isRunning else { return }
+            probe.terminate()
+        }
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(
+            deadline: .now() + Self.probeTimeout,
+            execute: timeoutItem
+        )
         probe.waitUntilExit()
+        timeoutItem.cancel()
+
+        // If the timeout fired, treat the probe as "no result" — the
+        // stdout buffer is probably empty or partial.
+        guard probe.terminationStatus == 0 else {
+            return ("", "")
+        }
+
         let stdout = String(
             data: stdoutPipe.fileHandleForReading.readDataToEndOfFile(),
             encoding: .utf8

@@ -1,312 +1,152 @@
-> 이 문서는 Claude가 번역했어요. 개선할 부분이 있다면 PR을 보내주세요.
-
-<h1 align="center">cmux</h1>
-<p align="center">세로 탭과 알림을 지원하는 AI 코딩 에이전트용 Ghostty 기반 macOS 터미널</p>
+<h1 align="center">Chatmux</h1>
+<p align="center">네이티브 Claude 통합, GitLab 워크플로 도구, 기타 편의 기능을 추가한 <a href="https://github.com/manaflow-ai/cmux">cmux</a>의 개인 포크입니다.</p>
 
 <p align="center">
-  <a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-    <img src="./docs/assets/macos-badge.png" alt="macOS용 cmux 다운로드" width="180" />
-  </a>
+  <a href="#소스에서-설치">소스에서 설치</a> · <a href="#이-포크가-추가하는-기능">이 포크가 추가하는 기능</a> · <a href="#upstream과-동기화">upstream과 동기화</a> · <a href="https://github.com/manaflow-ai/cmux">cmux upstream</a>
 </p>
 
-<p align="center">
-  <a href="README.md">English</a> | <a href="README.ja.md">日本語</a> | <a href="README.vi.md">Tiếng Việt</a> | <a href="README.zh-CN.md">简体中文</a> | <a href="README.zh-TW.md">繁體中文</a> | 한국어 | <a href="README.de.md">Deutsch</a> | <a href="README.es.md">Español</a> | <a href="README.fr.md">Français</a> | <a href="README.it.md">Italiano</a> | <a href="README.da.md">Dansk</a> | <a href="README.pl.md">Polski</a> | <a href="README.ru.md">Русский</a> | <a href="README.bs.md">Bosanski</a> | <a href="README.ar.md">العربية</a> | <a href="README.no.md">Norsk</a> | <a href="README.pt-BR.md">Português (Brasil)</a> | <a href="README.th.md">ไทย</a> | <a href="README.tr.md">Türkçe</a> | <a href="README.km.md">ភាសាខ្មែរ</a> | <a href="README.uk.md">Українська</a>
-</p>
+---
 
-<p align="center">
-  <a href="https://x.com/manaflowai"><img src="https://img.shields.io/badge/@manaflow-555?logo=x" alt="X / Twitter" /></a>
-  <a href="https://discord.gg/xsgFEVrWCZ"><img src="https://img.shields.io/badge/Discord-555?logo=discord" alt="Discord" /></a>
-  <a href="https://github.com/manaflow-ai/cmux"><img src="https://img.shields.io/github/stars/manaflow-ai/cmux?style=flat&logo=github&label=stars&color=4c71f2" alt="GitHub stars" /></a>
-</p>
+Chatmux는 [manaflow-ai/cmux](https://github.com/manaflow-ai/cmux) 위에 만들어졌습니다 — Ghostty 기반 macOS 터미널로 세로 탭과 AI 코딩 에이전트용 알림을 제공합니다. upstream [README](https://github.com/manaflow-ai/cmux/blob/main/README.ko.md)에 문서화된 모든 기능(알림 링, 인앱 브라우저, 세로+가로 탭, SSH, Claude Code Teams, 세션 복원, cmux CLI/socket API 등)은 그대로 적용됩니다.
 
-<p align="center">
-  <img src="./docs/assets/main-first-image.png" alt="cmux 스크린샷" width="900" />
-</p>
+이 문서는 Chatmux가 추가로 제공하는 내용만 다룹니다.
 
-<p align="center">
-  <a href="https://www.youtube.com/watch?v=i-WxO5YUTOs">▶ 데모 영상</a> · <a href="https://cmux.com/blog/zen-of-cmux">The Zen of cmux</a>
-</p>
+## 이 포크가 추가하는 기능
 
-## 기능
+### Claude Chat 패널
 
-<table>
-<tr>
-<td width="40%" valign="middle">
-<h3>알림 링</h3>
-코딩 에이전트가 입력을 기다리면 패널에 파란색 링이 뜨고 탭이 강조돼요
-</td>
-<td width="60%">
-<img src="./docs/assets/ko/notification-rings.png" alt="알림 링" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>알림 패널</h3>
-대기 중인 알림을 한곳에서 확인하고, 가장 최근 읽지 않은 알림으로 바로 이동할 수 있어요
-</td>
-<td width="60%">
-<img src="./docs/assets/ko/sidebar-notification-badge.png" alt="사이드바 알림 배지" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>내장 브라우저</h3>
-<a href="https://github.com/vercel-labs/agent-browser">agent-browser</a>에서 포팅된 스크립팅 API를 갖춘 브라우저를 터미널 옆에 띄울 수 있어요
-</td>
-<td width="60%">
-<img src="./docs/assets/ko/built-in-browser.png" alt="내장 브라우저" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>세로 + 가로 탭</h3>
-사이드바에서 git 브랜치, 연결된 PR 상태/번호, 작업 디렉토리, 수신 포트, 최근 알림 텍스트를 한눈에 볼 수 있어요. 수평·수직 분할을 지원해요.
-</td>
-<td width="60%">
-<img src="./docs/assets/vertical-horizontal-tabs-and-splits.png" alt="세로 탭과 분할 패널" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>SSH</h3>
-<code>cmux ssh user@remote</code>로 원격 머신용 워크스페이스를 생성해요. 브라우저 패널은 원격 네트워크를 통해 라우팅되어 localhost가 그대로 작동해요. 원격 세션에 이미지를 드래그하면 scp로 업로드돼요.
-</td>
-<td width="60%">
-<img src="./docs/assets/ssh.png" alt="cmux SSH" width="100%" />
-</td>
-</tr>
-<tr>
-<td width="40%" valign="middle">
-<h3>Claude Code Teams</h3>
-<code>cmux claude-teams</code>로 Claude Code의 팀원 모드를 한 명령어로 실행해요. 팀원은 네이티브 분할로 생성되며 사이드바에 메타데이터와 알림이 표시돼요. tmux가 필요 없어요.
-</td>
-<td width="60%">
-<img src="./docs/assets/claude-code-teams.png" alt="Claude Code Teams" width="100%" />
-</td>
-</tr>
-</table>
+모든 페인 내에서 동작하는 인앱 Claude SDK 패널 — 워크스페이스의 작업 디렉터리를 이어받고, 응답을 스트리밍하며, 대화 기록을 surface 단위로 영속화합니다.
 
-- **브라우저 가져오기** — Chrome, Firefox, Arc 및 20개 이상의 브라우저에서 쿠키, 방문 기록, 세션을 가져와서 브라우저 패널이 로그인된 상태로 시작돼요
-- **커스텀 명령어** — [`cmux.json`](https://cmux.com/docs/custom-commands)에서 프로젝트별 액션을 정의하고 명령 팔레트에서 실행할 수 있어요
-- **스크립팅** — CLI와 socket API로 워크스페이스 생성, 패널 분할, 키 입력 전송, 브라우저 자동화가 가능해요
-- **네이티브 macOS 앱** — Electron이 아닌 Swift와 AppKit으로 만들었어요. 빠르게 실행되고 메모리도 적게 써요.
-- **Ghostty 호환** — 기존 `~/.config/ghostty/config`에서 테마, 글꼴, 색상 설정을 그대로 읽어와요
-- **GPU 가속** — libghostty 기반이라 렌더링이 부드러워요
+- MCP 통합: MCP 서버를 등록/관리하는 빌트인 **MCP Manager** 팝오버와 서버 상태를 인라인으로 표시하는 health prober
+- 슬래시 명령 레지스트리: 챗별로 사용자 정의 슬래시 명령을 정의
+- Status line runner: 장기 실행 작업이 챗 헤더에 라이브 상태 라인을 렌더링
+- 세션 기록: 모든 챗은 디스크에 저널링되어 cmux 재시작에도 이어집니다
+- 권한 규칙 엔진: 챗이 자동으로 호출할 수 있는 도구와 확인이 필요한 도구를 설정
 
-## 설치하기
+탭 바 빌트인 액션 `cmux.newClaudeChat`은 포커스된 페인에 새 Claude Chat을 엽니다.
 
-### DMG (권장)
+### GitLab 통합
 
-<a href="https://github.com/manaflow-ai/cmux/releases/latest/download/cmux-macos.dmg">
-  <img src="./docs/assets/macos-badge.png" alt="macOS용 cmux 다운로드" width="180" />
-</a>
+워크스페이스의 GitLab 프로젝트로 범위가 지정된 오른쪽 사이드바 패널:
 
-`.dmg` 파일을 열고 cmux를 응용 프로그램 폴더로 드래그하면 돼요. Sparkle을 통해 자동 업데이트되니 한 번만 다운로드하면 돼요.
+- 담당자/작성자 필터와 원클릭 열기 기능이 있는 **Merge Requests** 목록
+- `GitLabIssueFiltersStore`가 지원하는 동일한 필터 시스템을 가진 **Issues** 목록
+- 상태 표시기가 있는 **Pipelines** 목록
+- **Releases** 목록
+- three-way diff를 지원하는 **MR Discussions** 뷰어 (`MRDiscussions.swift`)
+- diff refs와 merged-tree 저장소로 diff 뷰어가 항상 올바른 base/target SHA를 알 수 있습니다
 
-### Homebrew
+로컬 `glab` / `git` 설정을 사용 — 추가 자격 증명이 필요 없습니다.
+
+### Git diff 뷰어
+
+모든 커밋, 브랜치 또는 작업 트리를 위한 독립 실행형 diff 창 (`GitDiffWindow.swift`):
+
+- 나란히 보는 `DiffCodeTextView`와 three-way `DiffThreeWayCodeTextView`
+- Swift, TypeScript, Markdown 등을 지원하는 사용자 정의 `LCSDiff` 엔진과 `SyntaxHighlighter`
+- GitLab MR Discussions 뷰어와 공유
+
+### Workspace Notes 사이드바
+
+워크스페이스와 함께 이동하는 워크스페이스별 markdown 메모:
+
+- GitLab 패널 옆에 마운트된 사이드바 슬롯 (오른쪽 사이드바)
+- 워크스페이스 종료 시 자동 아카이브 — 메모는 절대 조용히 사라지지 않습니다 (`TabManager.closeWorkspace`의 안전망 참조)
+- 모든 워크스페이스의 아카이브된 메모를 탐색하고 복원하는 독립 **Notes Manager** 창 (`WorkspaceNotesManagerWindowController`)
+- 키보드 또는 사용자 정의 명령으로 사이드바를 전환하는 탭 바 빌트인 액션 `cmux.toggleNotes`
+
+### 세션 프리셋
+
+현재 세션 레이아웃(페인, surface, 터미널, 브라우저 URL, 사이드바 상태)을 이름이 있는 프리셋으로 저장하고 나중에 다시 인스턴스화하세요:
+
+- 저장: `File → Save Session as Preset…` (또는 명령 팔레트)
+- 로드: `File → Load Preset → …`
+- 업데이트: `File → Update Current Preset`
+- 저장소는 bundle-id별로 분리되어 cmux와 Chatmux가 독립된 프리셋 컬렉션을 유지합니다 (`SessionPresetSchema.defaultDirectoryURL`)
+
+### MCP Manager + Background Shells 팝오버
+
+타이틀 바에서 접근할 수 있는 두 개의 팝오버:
+
+- **MCP Manager** — Claude 챗이 사용하는 MCP 서버를 검색, 활성화, 비활성화하고 헬스 체크합니다
+- **Background Shells** — 챗 / surface API에 의해 시작된 분리된 셸을 탐색하고, 출력을 엿보고, 보이는 surface로 재개합니다
+
+### Open in Sourcetree
+
+`openInFinder`와 `openInIDE` 옆에 있는 새 탭 바 빌트인 액션 `cmux.openInSourcetree`. 포커스된 페인의 작업 디렉터리를 [Atlassian Sourcetree](https://www.sourcetreeapp.com/)에서 엽니다 (`/Applications/Sourcetree.app`에 Sourcetree가 설치되어 있지 않으면 비프음).
+
+`~/.config/cmux/cmux.json`에서 자체 버튼 레이아웃에 연결하거나 기본 탭 바에 맡길 수 있습니다.
+
+### 자체 설치 스크립트
+
+`scripts/install-fork.sh`는 Release 구성을 빌드하고, 별도의 bundle id로 ad-hoc 서명한 후, upstream cmux와 나란히 실행되도록 번들을 `/Applications/Chatmux.app`에 복사합니다:
 
 ```bash
-brew tap manaflow-ai/cmux
-brew install --cask cmux
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-나중에 업데이트하려면 아래 명령어를 실행해주세요:
+기본 ID:
+
+| 필드 | 값 |
+|---|---|
+| 앱 이름 | `Chatmux` |
+| Bundle id | `com.cmuxterm.app.fork` |
+| 설치 경로 | `/Applications/Chatmux.app` |
+
+`--name`, `--bundle-id` 또는 `--dest`로 재정의하여 다른 ID(예: 스테이징 빌드)를 사용할 수 있습니다. `codesign -i <bundle-id>`를 통한 bundle id 고정은 macOS TCC 권한 안정성에 결정적입니다 — 그렇지 않으면 Documents/App Management 권한이 매 실행마다 다시 요청됩니다.
+
+워크스페이스, 세션 스냅샷, 프리셋, 메모, MCP 구성, TCC 권한 부여는 모두 `CFBundleIdentifier`로 인덱싱되므로, 동일한 bundle id를 유지하는 한 재설치 시에도 유지됩니다.
+
+### `/sync-upstream` 슬래시 명령
+
+사용자 정의 Claude Code 슬래시 명령(`.claude/commands/`에 위치)이 chatmux ↔ upstream 병합 절차를 자동화합니다:
+
+- `main`을 `manaflow-ai/cmux:main`으로 fast-forward
+- 일치하는 `vendor/bonsplit` 서브모듈 포인터를 bonsplit 포크로 미러링
+- 임시 `chatmux-merge-<timestamp>` 브랜치를 생성하고 upstream을 병합
+- 양쪽 결합 + ID 기반 중복 제거로 `cmux.xcodeproj/project.pbxproj` 충돌을 자동 해결
+- `Sources/`, `Packages/` 또는 `Resources/`의 충돌을 멈추고 사람의 해결을 위해 표시
+- 임시 브랜치를 푸시하고 빌드 확인을 기다린 후 `chatmux`를 fast-forward
+
+전체 워크플로는 `.claude/commands/sync-upstream.md`를, pbxproj 헬퍼는 `scripts/sync-upstream-resolve.py`를 참조하세요.
+
+## 소스에서 설치
+
+Chatmux는 DMG로 게시되지 않습니다. 포크 스크립트로 빌드하고 설치하세요:
 
 ```bash
-brew upgrade --cask cmux
+# 서브모듈과 함께 클론
+git clone --recurse-submodules https://github.com/Shyri/cmux.git
+cd cmux
+
+# 일회성 설정 (Ghostty 서브모듈, GhosttyKit 등 가져오기)
+./scripts/setup.sh
+
+# Release 빌드 + /Applications/Chatmux.app에 설치 + 실행
+rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/install-fork.sh --launch
 ```
 
-처음 실행할 때 macOS에서 개발자 확인 팝업이 뜰 수 있어요. **열기**를 클릭하면 돼요.
+왜 `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1` 접두사인가요? 로컬에서는 Zig 0.16을 사용하지만 Ghostty는 0.15.2가 필요합니다. Zig 빌드를 건너뛰면 스크립트가 `manaflow-ai/ghostty` 릴리스의 미리 빌드된 GhosttyKit.xcframework를 사용하도록 강제됩니다. `zig-pkg/` 정리는 빌드 키를 깨끗하게 유지하여 미리 빌드된 캐시 히트가 작동하게 합니다.
 
-## 왜 cmux를 만들었나요?
+## upstream과 동기화
 
-저는 Claude Code와 Codex 세션을 여러 개 동시에 돌려요. 예전에는 Ghostty에서 분할 패널을 여러 개 열어놓고, 에이전트가 입력을 기다릴 때 macOS 기본 알림에 의존했어요. 그런데 Claude Code 알림은 항상 "Claude is waiting for your input"이라는 아무 맥락 없이 똑같은 메시지뿐이었고, 탭이 많아지면 제목조차 읽을 수가 없었어요.
+```bash
+# 이 리포의 Claude Code 세션 내에서:
+/sync-upstream
+```
 
-여러 코딩 오케스트레이터를 써봤는데, 대부분 Electron/Tauri 앱이라 성능이 별로였어요. GUI 오케스트레이터는 특정 워크플로우에 갇히게 돼서 터미널이 더 낫다고 생각했고요. 그래서 Swift/AppKit으로 네이티브 macOS 앱인 cmux를 직접 만들었어요. 터미널 렌더링에는 libghostty를 쓰고, 기존 Ghostty 설정에서 테마, 글꼴, 색상을 그대로 가져와요.
+이 슬래시 명령은 충돌 분류를 포함한 전체 병합 워크플로를 처리합니다. [이 포크가 추가하는 기능 → /sync-upstream](#sync-upstream-슬래시-명령)을 참조하세요.
 
-핵심은 사이드바와 알림 시스템이에요. 사이드바에는 각 워크스페이스의 git 브랜치, 연결된 PR 상태/번호, 작업 디렉토리, 수신 포트, 최근 알림 텍스트를 보여주는 세로 탭이 있어요. 알림 시스템은 터미널 시퀀스(OSC 9/99/777)를 감지하고, Claude Code나 OpenCode 같은 에이전트 훅에 연결할 수 있는 CLI(`cmux notify`)를 제공해요. 에이전트가 대기 중이면 해당 패널에 파란색 링이 뜨고 사이드바 탭이 강조되니까, 여러 패널과 탭 중에서 어디서 입력을 기다리는지 바로 알 수 있어요. ⌘⇧U를 누르면 가장 최근 읽지 않은 알림으로 이동해요.
-
-내장 브라우저는 [agent-browser](https://github.com/vercel-labs/agent-browser)에서 포팅한 스크립팅 API를 제공해요. 에이전트가 접근성 트리 스냅샷을 가져오고, 요소를 참조·클릭하고, 양식을 채우고, JS를 실행할 수 있어요. 터미널 옆에 브라우저 패널을 띄워서 Claude Code가 개발 서버와 직접 상호작용하게 할 수 있어요.
-
-CLI와 socket API로 모든 걸 자동화할 수 있어요 — 워크스페이스/탭 생성, 패널 분할, 키 입력 전송, 브라우저에서 URL 열기까지요.
-
-## The Zen of cmux
-
-cmux는 개발자가 도구를 어떻게 사용해야 하는지 규정하지 않아요. 터미널과 브라우저에 CLI가 있고, 나머지는 여러분의 몫이에요.
-
-cmux는 솔루션이 아니라 프리미티브예요. 터미널, 브라우저, 알림, 워크스페이스, 분할, 탭, 그리고 이 모든 것을 제어하는 CLI를 제공해요. cmux는 코딩 에이전트를 특정 방식으로 사용하도록 강요하지 않아요. 프리미티브로 무엇을 만들지는 여러분에게 달려 있어요.
-
-최고의 개발자들은 항상 자신만의 도구를 만들어왔어요. 에이전트와 함께 일하는 최적의 방법은 아직 아무도 찾지 못했고, 폐쇄적인 제품을 만드는 팀들도 마찬가지예요. 자신의 코드베이스에 가장 가까운 개발자가 먼저 답을 찾을 거예요.
-
-100만 명의 개발자에게 조합 가능한 프리미티브를 주면, 어떤 프로덕트 팀이 위에서 설계하는 것보다 빠르게 가장 효율적인 워크플로우를 함께 찾아낼 거예요.
-
-## 문서
-
-cmux 설정 방법에 대한 자세한 내용은 [문서를 확인해주세요](https://cmux.com/docs/getting-started?utm_source=readme).
+수동 병합의 경우 `.claude/commands/sync-upstream.md`의 동일한 단계를 따르세요.
 
 ## 키보드 단축키
 
-### 워크스페이스
+모든 upstream cmux 단축키는 변경 없이 작동합니다. 전체 표는 [upstream README](https://github.com/manaflow-ai/cmux/blob/main/README.ko.md#keyboard-shortcuts)를 참조하세요. Chatmux 전용 단축키는 Settings → Keyboard Shortcuts에서 설정할 수 있으며 다른 cmux 단축키처럼 `~/.config/cmux/cmux.json`에 표시됩니다.
 
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ N | 새 워크스페이스 |
-| ⌘ 1–8 | 워크스페이스 1–8로 이동 |
-| ⌘ 9 | 마지막 워크스페이스로 이동 |
-| ⌃ ⌘ ] | 다음 워크스페이스 |
-| ⌃ ⌘ [ | 이전 워크스페이스 |
-| ⌘ ⇧ W | 워크스페이스 닫기 |
-| ⌘ ⇧ R | 워크스페이스 이름 변경 |
-| ⌘ B | 사이드바 토글 |
+## 크레딧
 
-### 서피스
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ T | 새 서피스 |
-| ⌘ ⇧ ] | 다음 서피스 |
-| ⌘ ⇧ [ | 이전 서피스 |
-| ⌃ Tab | 다음 서피스 |
-| ⌃ ⇧ Tab | 이전 서피스 |
-| ⌃ 1–8 | 서피스 1–8로 이동 |
-| ⌃ 9 | 마지막 서피스로 이동 |
-| ⌘ W | 서피스 닫기 |
-
-### 분할 패널
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ D | 오른쪽으로 분할 |
-| ⌘ ⇧ D | 아래로 분할 |
-| ⌥ ⌘ ← → ↑ ↓ | 방향키로 패널 포커스 이동 |
-| ⌘ ⇧ H | 현재 패널 깜빡임 |
-
-### 브라우저
-
-브라우저 개발자 도구 단축키는 Safari 기본값을 따르며, `설정 → 키보드 단축키`에서 변경할 수 있어요.
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ ⇧ L | 분할 패널로 브라우저 열기 |
-| ⌘ L | 주소창 포커스 |
-| ⌘ [ | 뒤로 |
-| ⌘ ] | 앞으로 |
-| ⌘ R | 페이지 새로고침 |
-| ⌥ ⌘ I | 개발자 도구 열기 (Safari 기본값) |
-| ⌥ ⌘ C | JavaScript 콘솔 표시 (Safari 기본값) |
-
-### 알림
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ I | 알림 패널 표시 |
-| ⌘ ⇧ U | 최근 읽지 않은 알림으로 이동 |
-
-### 찾기
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ F | 찾기 |
-| ⌘ G / ⌘ ⇧ G | 다음 찾기 / 이전 찾기 |
-| ⌘ ⇧ F | 찾기 바 숨기기 |
-| ⌘ E | 선택한 텍스트로 찾기 |
-
-### 터미널
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ K | 스크롤백 지우기 |
-| ⌘ C | 복사 (선택 시) |
-| ⌘ V | 붙여넣기 |
-| ⌘ + / ⌘ - | 글꼴 크기 확대 / 축소 |
-| ⌘ 0 | 글꼴 크기 초기화 |
-
-### 창
-
-| 단축키 | 동작 |
-|----------|--------|
-| ⌘ ⇧ N | 새 창 |
-| ⌘ , | 설정 |
-| ⌘ ⇧ , | 설정 다시 불러오기 |
-| ⌘ Q | 종료 |
-
-## 나이틀리 빌드
-
-[cmux NIGHTLY 다운로드](https://github.com/manaflow-ai/cmux/releases/download/nightly/cmux-nightly-macos.dmg)
-
-cmux NIGHTLY는 자체 번들 ID를 가진 별도의 앱이라 안정 버전과 함께 실행할 수 있어요. 최신 `main` 커밋에서 자동으로 빌드되고, 자체 Sparkle 피드를 통해 자동 업데이트돼요.
-
-## 세션 복원
-
-cmux를 종료하면 현재 세션을 저장합니다. 다시 실행하면 cmux가 앱이 관리하는 상태를 복원합니다:
-- 창/워크스페이스/패널 레이아웃
-- 작업 디렉토리
-- 터미널 스크롤백 (최선 노력)
-- 브라우저 URL 및 탐색 기록
-
-cmux는 임의의 라이브 프로세스 상태를 체크포인트하지 않습니다. tmux, vim, shell, 지원되지 않는 터미널 앱은 일반 터미널로 다시 열립니다.
-
-지원되는 agent 세션은 hooks가 네이티브 세션 ID를 저장한 경우 다시 시작할 수 있습니다:
-
-```bash
-cmux hooks setup
-cmux hooks setup codex
-cmux hooks setup --agent opencode
-```
-
-고급 사용자와 통합은 현재 터미널 surface에 사용자 지정 resume 명령을 연결할 수 있습니다. tmux 세션이나 사용자 지정 agent CLI처럼 자체 영구 상태가 있는 도구에 유용합니다:
-
-```bash
-cmux surface resume set --kind tmux --checkpoint work --shell "tmux attach -t work"
-cmux surface resume show --json
-cmux surface resume clear --checkpoint work
-```
-
-이 binding은 cmux surface에 계속 연결됩니다. 공개 CLI나 socket으로 만든 binding은 확인과 수동 resume용으로 저장됩니다. cmux는 실행 중인 프로세스에서 감지한 tmux binding처럼 신뢰됨으로 표시한 resume binding만 자동 실행합니다. 토큰, 비밀번호, 시크릿, API 키 같은 민감한 환경 변수 키는 resume binding을 저장하기 전에 제거됩니다.
-
-## Star History
-
-<a href="https://star-history.com/#manaflow-ai/cmux&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=manaflow-ai/cmux&type=Date" width="600" />
- </picture>
-</a>
-
-## 기여하기
-
-참여 방법:
-
-- X에서 팔로우해주세요: [@manaflowai](https://x.com/manaflowai), [@lawrencecchen](https://x.com/lawrencecchen), [@austinywang](https://x.com/austinywang)
-- [Discord](https://discord.gg/xsgFEVrWCZ)에서 대화에 참여해주세요
-- [GitHub Issues](https://github.com/manaflow-ai/cmux/issues)와 [토론](https://github.com/manaflow-ai/cmux/discussions)에 참여해주세요
-- cmux로 무엇을 만들고 있는지 알려주세요
-
-## 커뮤니티
-
-- [Discord](https://discord.gg/xsgFEVrWCZ)
-- [GitHub](https://github.com/manaflow-ai/cmux)
-- [X / Twitter](https://twitter.com/manaflowai)
-- [YouTube](https://www.youtube.com/channel/UCAa89_j-TWkrXfk9A3CbASw)
-- [LinkedIn](https://www.linkedin.com/company/manaflow-ai/)
-- [Reddit](https://www.reddit.com/r/cmux/)
-
-## Founder's Edition
-
-cmux는 무료이고 오픈 소스이며, 앞으로도 그럴 거예요. 개발을 지원하고 다음에 나올 기능에 먼저 접근하고 싶다면:
-
-**[Founder's Edition 구매하기](https://buy.stripe.com/3cI00j2Ld0it5OU33r5EY0q)**
-
-- **기능 요청/버그 수정 우선 처리**
-- **얼리 액세스: 모든 워크스페이스, 탭, 패널의 컨텍스트를 제공하는 cmux AI**
-- **얼리 액세스: 데스크톱과 휴대폰 간 터미널을 동기화하는 iOS 앱**
-- **얼리 액세스: 클라우드 VM**
-- **얼리 액세스: 음성 모드**
-- **저의 개인 iMessage/WhatsApp**
+Chatmux는 [Manaflow](https://manaflow.com)가 만든 [cmux](https://github.com/manaflow-ai/cmux)의 포크입니다. 모든 upstream 기능과 터미널 엔진은 그들의 것입니다 — 원본 프로젝트에 별을 달고 응원해 주세요.
 
 ## 라이선스
 
-cmux는 [GPL-3.0-or-later](LICENSE) 하에 오픈 소스예요.
-
-GPL을 준수할 수 없는 조직을 위해 상용 라이선스도 제공돼요. 자세한 내용은 [founders@manaflow.com](mailto:founders@manaflow.com)으로 문의해주세요.
+upstream과 동일: [GPL-3.0-or-later](LICENSE).

@@ -117,17 +117,52 @@ private func gitDiffDebugLog(_ message: String) {
 
 /// Resolve the `spec`'s refs, throwing `missingRefs` if any side can't be
 /// resolved. Returns the actual ref names usable by git commands.
+///
+/// For MR specs, the *base* side stays live (`origin/<target>`) and only the
+/// *compare* side is anchored to GitLab's `diff_refs.head_sha`. This mirrors
+/// what the panel web view does: commits already merged into the target (via
+/// other MRs landing in the meantime) are excluded from the diff because the
+/// merge-base — recomputed by `git diff base...compare` (three dots) — moves
+/// forward with target. Anchoring only the compare side also keeps the diff
+/// stable against force-pushes or deletions on the source branch.
+///
+/// Also forces a one-shot `git fetch` of the target branch so the local
+/// `origin/<target>` reflects what GitLab sees. Without this, a local repo
+/// that hasn't pulled recently would compute a stale merge-base and show
+/// chunks that are no longer in the panel because they've since landed in
+/// target via other MRs.
 private func resolveSpecRefs(_ spec: GitDiffSpec) async throws -> (base: String, compare: String?) {
     let remote = gitDiffDefaultRemote
+
+    if spec.mergeRequestIID != nil {
+        await TargetBranchFetchCache.shared.ensureFetched(
+            branch: spec.base,
+            remote: remote,
+            directory: spec.directory
+        )
+    }
+
     let resolvedBase = await resolveRef(spec.base, directory: spec.directory, remote: remote)
+
     var resolvedCompare: String? = nil
-    if let compare = spec.compare {
+    if let iid = spec.mergeRequestIID {
+        let refs = try await fetchMRDiffRefsAsGitDiffError(iid: iid, directory: spec.directory)
+        try await ensureGitCommitsPresent(
+            [refs.headSHA],
+            remote: remote,
+            directory: spec.directory,
+            mrIID: iid
+        )
+        resolvedCompare = refs.headSHA
+    } else if let compare = spec.compare {
         resolvedCompare = await resolveRef(compare, directory: spec.directory, remote: remote)
     }
 
     var missing: [String] = []
     if resolvedBase == nil { missing.append(spec.base) }
-    if let compare = spec.compare, resolvedCompare == nil { missing.append(compare) }
+    if spec.mergeRequestIID == nil, let compare = spec.compare, resolvedCompare == nil {
+        missing.append(compare)
+    }
     if !missing.isEmpty {
         gitDiffDebugLog("missing refs base=\(spec.base) compare=\(spec.compare ?? "-") missing=\(missing) remote=\(remote) dir=\(spec.directory)")
         throw GitDiffError.missingRefs(branches: missing, remote: remote)
@@ -136,11 +171,69 @@ private func resolveSpecRefs(_ spec: GitDiffSpec) async throws -> (base: String,
     return (resolvedBase!, resolvedCompare)
 }
 
+/// Coalesces target-branch `git fetch` calls per (directory, branch). A diff
+/// window opens once but calls `resolveSpecRefs` N times (one per file); we
+/// must not refetch every time. The cache is invalidated by `reload()` on the
+/// view model when the user explicitly refreshes.
+actor TargetBranchFetchCache {
+    static let shared = TargetBranchFetchCache()
+    private var fetched: Set<String> = []
+
+    private func key(branch: String, directory: String) -> String {
+        "\(directory)|\(branch)"
+    }
+
+    func ensureFetched(branch: String, remote: String, directory: String) async {
+        let k = key(branch: branch, directory: directory)
+        guard !fetched.contains(k) else { return }
+        // Mark optimistically: even if the fetch fails (offline, transient
+        // network error), we don't want to spam retries on every file click.
+        // The user's manual reload() invalidates this cache.
+        fetched.insert(k)
+        do {
+            try await fetchGitBranches([branch], remote: remote, directory: directory)
+            gitDiffDebugLog("target-fetch branch=\(branch) remote=\(remote) dir=\(directory)")
+        } catch {
+            gitDiffDebugLog("target-fetch failed branch=\(branch) error=\(error)")
+        }
+    }
+
+    func invalidate(branch: String, directory: String) {
+        fetched.remove(key(branch: branch, directory: directory))
+    }
+}
+
 /// Resolve the `spec`'s refs to ones that exist locally, preferring the
 /// remote-tracking branch. Throws `missingRefs` if any side can't be resolved
 /// so the UI can surface a fetch-and-retry action.
+///
+/// For MR specs uses GitLab's panel semantics: `git merge-tree --write-tree`
+/// simulates merging the MR into the current target, then `git diff
+/// <target_HEAD> <merged_tree>`. That filters out cherry-picked duplicates
+/// (commits with identical patch-id that landed in target via another MR)
+/// because the merge recognizes them as already applied. If `merge-tree`
+/// fails for any reason, falls back to two-dot (`<target> <head>`) which is
+/// what GitLab's "Compare HEAD and latest version" view degrades to.
+///
+/// Non-MR ranges keep three-dot (`base...compare`) merge-base semantics so
+/// working-tree and branch-vs-branch diffs aren't polluted by unrelated
+/// target commits.
 private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
     let resolved = try await resolveSpecRefs(spec)
+    if spec.mergeRequestIID != nil, let compare = resolved.compare {
+        do {
+            let mergedTreeOID = try await MRMergedTreeStore.shared.mergedTreeOID(
+                target: resolved.base,
+                head: compare,
+                directory: spec.directory
+            )
+            gitDiffDebugLog("range mr base=\(resolved.base) merged-tree=\(mergedTreeOID) (panel-semantics) dir=\(spec.directory)")
+            return [resolved.base, mergedTreeOID]
+        } catch {
+            gitDiffDebugLog("merge-tree failed, falling back to two-dot: \(error)")
+            return [resolved.base, compare]
+        }
+    }
     if let compare = resolved.compare {
         let range = "\(resolved.base)...\(compare)"
         gitDiffDebugLog("range base=\(spec.base) -> \(resolved.base) compare=\(spec.compare ?? "-") -> \(compare) args=\(range) dir=\(spec.directory)")
@@ -148,6 +241,132 @@ private func resolvedRangeArgs(for spec: GitDiffSpec) async throws -> [String] {
     }
     gitDiffDebugLog("range single base=\(spec.base) -> \(resolved.base) dir=\(spec.directory)")
     return [resolved.base]
+}
+
+/// Runs `git merge-tree --write-tree <target> <head>` and returns the
+/// resulting tree OID. Exit status 0 = clean merge, 1 = conflicts present
+/// (the tree is still written, with `<<<<<<<` markers inline on the
+/// conflicting files). Anything else is an error.
+///
+/// Lives here (alongside the other git helpers) so the actor in
+/// `MRMergedTreeStore.swift` can call it without exposing `runGitAllowingNonZero`
+/// across module boundaries.
+func computeMergeTreeOID(target: String, head: String, directory: String) async throws -> String {
+    let result = try await runGitAllowingNonZero(
+        args: ["merge-tree", "--write-tree", "--no-messages", target, head],
+        directory: directory
+    )
+    guard result.status == 0 || result.status == 1 else {
+        let err = String(data: result.stderr, encoding: .utf8) ?? ""
+        throw GitDiffError.processError(
+            "merge-tree failed (exit \(result.status)): \(err.prefix(300))"
+        )
+    }
+    guard let raw = String(data: result.stdout, encoding: .utf8),
+          let firstNewline = raw.firstIndex(of: "\n") else {
+        throw GitDiffError.processError("merge-tree produced no output")
+    }
+    let oid = String(raw[..<firstNewline]).trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !oid.isEmpty else {
+        throw GitDiffError.processError("merge-tree produced empty tree OID")
+    }
+    return oid
+}
+
+/// Bridge `MRDiffRefsStore` errors into `GitDiffError` so the diff window's
+/// error rendering shows a consistent message regardless of whether the
+/// failure came from git or glab. The underlying message is preserved.
+private func fetchMRDiffRefsAsGitDiffError(iid: Int, directory: String) async throws -> MRDiffRefs {
+    do {
+        return try await MRDiffRefsStore.shared.refs(iid: iid, directory: directory)
+    } catch let e as MRDiscussionsFetchError {
+        switch e {
+        case .glabNotFound:
+            throw GitDiffError.processError(
+                "glab not found — install glab to view this MR's diff with GitLab parity"
+            )
+        case .processError(let msg):
+            throw GitDiffError.processError(
+                msg.isEmpty ? "Failed to fetch MR diff_refs from GitLab" : msg
+            )
+        case .parseError:
+            throw GitDiffError.processError("Failed to parse GitLab MR response")
+        }
+    } catch {
+        throw GitDiffError.processError(error.localizedDescription)
+    }
+}
+
+// MARK: - Commit presence
+
+/// Ensures each SHA exists locally so subsequent `git diff`/`merge-tree` calls
+/// can resolve them. Mirrors `fetchGitBranches`'s role but for SHA-pinned MR
+/// flows: SHAs may not match any local ref name, especially after force-pushes
+/// or when the source branch has been deleted from the remote.
+///
+/// Strategy: verify with `rev-parse`, then attempt a single `git fetch` for
+/// missing SHAs (works on GitLab ≥ 14 with `uploadpack.allowReachableSHA1InWant`).
+/// On failure, fall back to fetching `refs/merge-requests/<iid>/head` — GitLab's
+/// MR ref namespace, which keeps the MR's head commit reachable even when the
+/// source branch is gone.
+func ensureGitCommitsPresent(
+    _ shas: [String],
+    remote: String,
+    directory: String,
+    mrIID: Int?
+) async throws {
+    var missing = await commitsMissingLocally(shas, directory: directory)
+    if missing.isEmpty { return }
+
+    // Try fetching the missing SHAs directly. Requires the server to allow
+    // fetching by SHA (GitLab does by default; some self-hosted setups don't).
+    _ = try? await runGitAllowingNonZero(
+        args: ["fetch", "--no-tags", remote] + missing,
+        directory: directory
+    )
+    missing = await commitsMissingLocally(missing, directory: directory)
+    if missing.isEmpty { return }
+
+    // Fallback: GitLab exposes the MR head at refs/merge-requests/<iid>/head.
+    // Fetching that ref ensures at least the head SHA is present; the base SHA
+    // is typically reachable from the target branch so it gets brought in by
+    // the same fetch when traversing history.
+    if let iid = mrIID {
+        let refspec = "+refs/merge-requests/\(iid)/head:refs/remotes/\(remote)/merge-requests/\(iid)/head"
+        _ = try? await runGitAllowingNonZero(
+            args: ["fetch", "--no-tags", remote, refspec],
+            directory: directory
+        )
+        missing = await commitsMissingLocally(missing, directory: directory)
+        if missing.isEmpty { return }
+    }
+
+    gitDiffDebugLog("missing commits after fetch attempts: \(missing) remote=\(remote) dir=\(directory)")
+    throw GitDiffError.missingRefs(branches: missing, remote: remote)
+}
+
+private func commitsMissingLocally(_ shas: [String], directory: String) async -> [String] {
+    var missing: [String] = []
+    for sha in shas {
+        let result = try? await runGitAllowingNonZero(
+            args: ["rev-parse", "--verify", "--quiet", "\(sha)^{commit}"],
+            directory: directory
+        )
+        if (result?.status ?? 1) != 0 {
+            missing.append(sha)
+        }
+    }
+    return missing
+}
+
+/// Returns true when the given string looks like a git SHA (7-40 hex chars),
+/// used by the diff window to route retries through `ensureGitCommitsPresent`
+/// instead of `fetchGitBranches`.
+func looksLikeGitSHA(_ s: String) -> Bool {
+    guard s.count >= 7, s.count <= 40 else { return false }
+    return s.allSatisfy { c in
+        ("0"..."9").contains(c) || ("a"..."f").contains(c) || ("A"..."F").contains(c)
+    }
 }
 
 func fetchGitBranches(_ branches: [String], remote: String, directory: String) async throws {
@@ -392,6 +611,10 @@ func fetchUnifiedDiff(spec: GitDiffSpec, file: String) async throws -> String {
 ///
 /// Falls back to the regular diff if the merged tree can't be produced (no
 /// compare side, missing `merge-tree --write-tree` support, etc.).
+///
+/// For MR specs, base = live `origin/<target>` and compare = GitLab's
+/// `head_sha`. That keeps conflict prediction honest (against the current
+/// target HEAD) and stable against source-branch force-pushes.
 func fetchUnifiedDiffWithConflictMarkers(spec: GitDiffSpec, file: String) async throws -> String {
     guard spec.compare != nil else {
         return try await fetchUnifiedDiff(spec: spec, file: file)

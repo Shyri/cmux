@@ -18,6 +18,9 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
     /// Android Studio depending on whether a Gradle build script is
     /// present (mirrors the legacy fork's auto-detection behaviour).
     case openInIDE = "cmux.openInIDE"
+    /// Open the focused pane's working directory in Sourcetree (Atlassian
+    /// git client). Mirrors the openInFinder/openInIDE pattern.
+    case openInSourcetree = "cmux.openInSourcetree"
     /// Toggle the workspace's per-window notes sidebar (which also
     /// embeds the GitLab side panel). Same intent as the old bonsplit
     /// `showNotesButton` flag.
@@ -50,6 +53,9 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
              "cmux.openInIntelliJ", "openInIntelliJ", "cmux.openInIntellij", "openInIntellij",
              "cmux.openInAndroidStudio", "openInAndroidStudio":
             self = .openInIDE
+        case "cmux.openInSourcetree", "openInSourcetree", "cmux.openInSourceTree", "openInSourceTree",
+             "cmux.sourcetree", "sourcetree":
+            self = .openInSourcetree
         case "cmux.toggleNotes", "toggleNotes", "cmux.notes", "notes":
             self = .toggleNotes
         case "cmux.newClaudeChat", "newClaudeChat", "cmux.claudeChat", "claudeChat":
@@ -84,6 +90,8 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
             // app (IntelliJ vs Android Studio) at click time based on
             // the resolved cwd's Gradle markers.
             return "hammer"
+        case .openInSourcetree:
+            return "arrow.triangle.branch"
         case .toggleNotes:
             return "note.text"
         case .newClaudeChat:
@@ -94,7 +102,7 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
     var bonsplitAction: BonsplitConfiguration.SplitActionButton.Action? {
         switch self {
         case .newWorkspace, .cloudVM, .openInFinder, .openInIDE,
-             .toggleNotes, .newClaudeChat:
+             .openInSourcetree, .toggleNotes, .newClaudeChat:
             return nil
         case .newTerminal:
             return .newTerminal
