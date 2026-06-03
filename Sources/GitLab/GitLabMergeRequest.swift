@@ -23,6 +23,7 @@ struct GitLabMergeRequest: Identifiable, Equatable, Sendable {
     let createdAt: Date?
     let updatedAt: Date?
     let reviewers: [GitLabReviewer]
+    let assignees: [GitLabReviewer]
     let userNotesCount: Int
     /// Raw GitLab `merge_status` (`can_be_merged`, `cannot_be_merged`, …).
     let mergeStatus: String
@@ -62,6 +63,7 @@ private struct GLMRResponse: Decodable {
     let created_at: String?
     let updated_at: String?
     let reviewers: [GLMRAuthor]?
+    let assignees: [GLMRAuthor]?
     let user_notes_count: Int?
     let merge_status: String?
     let has_conflicts: Bool?
@@ -83,6 +85,9 @@ private struct GLMRResponse: Decodable {
             createdAt: Self.parseDate(created_at),
             updatedAt: Self.parseDate(updated_at),
             reviewers: (reviewers ?? []).map {
+                GitLabReviewer(name: $0.name ?? "", username: $0.username ?? "")
+            },
+            assignees: (assignees ?? []).map {
                 GitLabReviewer(name: $0.name ?? "", username: $0.username ?? "")
             },
             userNotesCount: user_notes_count ?? 0,

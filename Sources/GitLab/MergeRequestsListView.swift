@@ -134,13 +134,14 @@ struct MergeRequestsListView: View {
     @ObservedObject var workspace: Workspace
     @StateObject private var state = MergeRequestsState()
     @State private var reviewerFilter: String = ""  // empty = all
+    @State private var assigneeFilter: String = ""  // empty = all
 
     var body: some View {
         VStack(spacing: 0) {
             mrHeader
             Divider()
-            if !availableReviewers.isEmpty {
-                reviewerFilterBar
+            if !availableReviewers.isEmpty || !availableAssignees.isEmpty {
+                filtersBar
                 Divider()
             }
             if state.isLoading && state.mergeRequests.isEmpty {
@@ -157,21 +158,33 @@ struct MergeRequestsListView: View {
         .onChange(of: workspace.id) { _ in
             state.clear()
             reviewerFilter = ""
+            assigneeFilter = ""
             refreshIfNeeded()
         }
         .onChange(of: workspace.currentDirectory) { _ in
             reviewerFilter = ""
+            assigneeFilter = ""
             refreshIfNeeded()
         }
     }
 
     private var availableReviewers: [GitLabReviewer] {
+        uniqueUsers(\.reviewers)
+    }
+
+    private var availableAssignees: [GitLabReviewer] {
+        uniqueUsers(\.assignees)
+    }
+
+    private func uniqueUsers(
+        _ keyPath: KeyPath<GitLabMergeRequest, [GitLabReviewer]>
+    ) -> [GitLabReviewer] {
         var seen = Set<String>()
         var result: [GitLabReviewer] = []
         for mr in state.mergeRequests {
-            for r in mr.reviewers where !r.username.isEmpty {
-                if seen.insert(r.username).inserted {
-                    result.append(r)
+            for u in mr[keyPath: keyPath] where !u.username.isEmpty {
+                if seen.insert(u.username).inserted {
+                    result.append(u)
                 }
             }
         }
@@ -179,9 +192,16 @@ struct MergeRequestsListView: View {
     }
 
     private var filteredMergeRequests: [GitLabMergeRequest] {
-        guard !reviewerFilter.isEmpty else { return state.mergeRequests }
-        return state.mergeRequests.filter { mr in
-            mr.reviewers.contains { $0.username == reviewerFilter }
+        state.mergeRequests.filter { mr in
+            if !reviewerFilter.isEmpty,
+               !mr.reviewers.contains(where: { $0.username == reviewerFilter }) {
+                return false
+            }
+            if !assigneeFilter.isEmpty,
+               !mr.assignees.contains(where: { $0.username == assigneeFilter }) {
+                return false
+            }
+            return true
         }
     }
 
@@ -231,31 +251,84 @@ struct MergeRequestsListView: View {
         .padding(.vertical, 6)
     }
 
-    private var reviewerFilterBar: some View {
+    private var filtersBar: some View {
+        HStack(spacing: 8) {
+            if !availableReviewers.isEmpty {
+                filterDropdown(
+                    icon: "person.crop.circle.badge.checkmark",
+                    selection: $reviewerFilter,
+                    available: availableReviewers,
+                    allLabel: String(
+                        localized: "mr.filter.allReviewers",
+                        defaultValue: "All reviewers"
+                    ),
+                    placeholder: { selection in
+                        labelFor(username: selection, in: availableReviewers)
+                            ?? String(
+                                localized: "mr.filter.allReviewers",
+                                defaultValue: "All reviewers"
+                            )
+                    }
+                )
+            }
+            if !availableAssignees.isEmpty {
+                filterDropdown(
+                    icon: "person.fill",
+                    selection: $assigneeFilter,
+                    available: availableAssignees,
+                    allLabel: String(
+                        localized: "mr.filter.allAssignees",
+                        defaultValue: "All assignees"
+                    ),
+                    placeholder: { selection in
+                        labelFor(username: selection, in: availableAssignees)
+                            ?? String(
+                                localized: "mr.filter.allAssignees",
+                                defaultValue: "All assignees"
+                            )
+                    }
+                )
+            }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 6)
+    }
+
+    private func filterDropdown(
+        icon: String,
+        selection: Binding<String>,
+        available: [GitLabReviewer],
+        allLabel: String,
+        placeholder: @escaping (String) -> String
+    ) -> some View {
         HStack(spacing: 6) {
-            Image(systemName: "person.crop.circle.badge.checkmark")
+            Image(systemName: icon)
                 .font(.caption)
                 .foregroundStyle(.tertiary)
             Menu {
                 Button {
-                    reviewerFilter = ""
+                    selection.wrappedValue = ""
                 } label: {
                     HStack {
-                        Text(String(localized: "mr.filter.allReviewers", defaultValue: "All reviewers"))
-                        if reviewerFilter.isEmpty {
+                        Text(allLabel)
+                        if selection.wrappedValue.isEmpty {
                             Spacer()
                             Image(systemName: "checkmark")
                         }
                     }
                 }
                 Divider()
-                ForEach(availableReviewers, id: \.username) { reviewer in
+                ForEach(available, id: \.username) { user in
                     Button {
-                        reviewerFilter = reviewer.username
+                        selection.wrappedValue = user.username
                     } label: {
                         HStack {
-                            Text(reviewer.name.isEmpty ? reviewer.username : "\(reviewer.name) (@\(reviewer.username))")
-                            if reviewerFilter == reviewer.username {
+                            Text(
+                                user.name.isEmpty
+                                    ? user.username
+                                    : "\(user.name) (@\(user.username))"
+                            )
+                            if selection.wrappedValue == user.username {
                                 Spacer()
                                 Image(systemName: "checkmark")
                             }
@@ -264,7 +337,7 @@ struct MergeRequestsListView: View {
                 }
             } label: {
                 HStack(spacing: 4) {
-                    Text(currentFilterLabel)
+                    Text(placeholder(selection.wrappedValue))
                         .font(.caption)
                         .foregroundStyle(.primary)
                         .lineLimit(1)
@@ -288,9 +361,9 @@ struct MergeRequestsListView: View {
             .menuIndicator(.hidden)
             .fixedSize(horizontal: false, vertical: true)
 
-            if !reviewerFilter.isEmpty {
+            if !selection.wrappedValue.isEmpty {
                 Button {
-                    reviewerFilter = ""
+                    selection.wrappedValue = ""
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: 11))
@@ -300,18 +373,14 @@ struct MergeRequestsListView: View {
                 .help(String(localized: "mr.filter.clear", defaultValue: "Clear filter"))
             }
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 6)
     }
 
-    private var currentFilterLabel: String {
-        if reviewerFilter.isEmpty {
-            return String(localized: "mr.filter.allReviewers", defaultValue: "All reviewers")
-        }
-        if let match = availableReviewers.first(where: { $0.username == reviewerFilter }) {
+    private func labelFor(username: String, in pool: [GitLabReviewer]) -> String? {
+        guard !username.isEmpty else { return nil }
+        if let match = pool.first(where: { $0.username == username }) {
             return match.name.isEmpty ? "@\(match.username)" : match.name
         }
-        return "@\(reviewerFilter)"
+        return "@\(username)"
     }
 
     private var loadingState: some View {
@@ -355,7 +424,7 @@ struct MergeRequestsListView: View {
                 .font(.system(size: 32))
                 .foregroundStyle(.quaternary)
             Text(
-                reviewerFilter.isEmpty
+                (reviewerFilter.isEmpty && assigneeFilter.isEmpty)
                     ? String(localized: "mr.sidebar.empty", defaultValue: "No merge requests")
                     : String(localized: "mr.sidebar.emptyFiltered", defaultValue: "No merge requests match this filter")
             )
@@ -582,11 +651,25 @@ private struct MRCardView: View {
                 )
             }
 
+            if !mr.assignees.isEmpty {
+                metaRow(
+                    icon: "person.crop.circle.badge.checkmark",
+                    label: String(localized: "mr.card.assignees", defaultValue: "Assignees"),
+                    content: AnyView(usersList(mr.assignees, moreSuffix: String(
+                        localized: "mr.card.moreAssignees",
+                        defaultValue: "more"
+                    )))
+                )
+            }
+
             if !mr.reviewers.isEmpty {
                 metaRow(
                     icon: "person.2.fill",
                     label: String(localized: "mr.card.reviewers", defaultValue: "Reviewers"),
-                    content: AnyView(reviewersView)
+                    content: AnyView(usersList(mr.reviewers, moreSuffix: String(
+                        localized: "mr.card.moreReviewers",
+                        defaultValue: "more"
+                    )))
                 )
             }
         }
@@ -603,28 +686,31 @@ private struct MRCardView: View {
         }
     }
 
-    private var reviewersView: some View {
+    private func usersList(
+        _ users: [GitLabReviewer],
+        moreSuffix: String
+    ) -> some View {
         VStack(alignment: .leading, spacing: 3) {
-            ForEach(mr.reviewers.prefix(4), id: \.username) { reviewer in
+            ForEach(users.prefix(4), id: \.username) { user in
                 HStack(spacing: 5) {
-                    AvatarBadge(name: reviewer.name.isEmpty ? reviewer.username : reviewer.name)
-                    Text(reviewer.name.isEmpty ? reviewer.username : reviewer.name)
+                    AvatarBadge(name: user.name.isEmpty ? user.username : user.name)
+                    Text(user.name.isEmpty ? user.username : user.name)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    if !reviewer.username.isEmpty && reviewer.username != reviewer.name {
-                        Text("@\(reviewer.username)")
+                    if !user.username.isEmpty && user.username != user.name {
+                        Text("@\(user.username)")
                             .font(.system(size: 10))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
                             .truncationMode(.tail)
                     }
                 }
-                .help(reviewer.name.isEmpty ? "@\(reviewer.username)" : "\(reviewer.name) (@\(reviewer.username))")
+                .help(user.name.isEmpty ? "@\(user.username)" : "\(user.name) (@\(user.username))")
             }
-            if mr.reviewers.count > 4 {
-                Text("+\(mr.reviewers.count - 4) \(String(localized: "mr.card.moreReviewers", defaultValue: "more"))")
+            if users.count > 4 {
+                Text("+\(users.count - 4) \(moreSuffix)")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.tertiary)
                     .padding(.leading, 23)
