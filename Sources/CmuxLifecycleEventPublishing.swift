@@ -216,6 +216,10 @@ extension Workspace {
             return "right_sidebar_tool"
         case .claudeChat:
             return "claude_chat"
+        case .project:
+            return "project"
+        case .extensionBrowser:
+            return "extension_browser"
         }
     }
 }

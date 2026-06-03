@@ -145,6 +145,22 @@ struct PanelContentView: View, Equatable {
                     onRequestPanelFocus: onRequestPanelFocus
                 )
             }
+        case .project:
+            if let projectPanel = panel as? ProjectPanel {
+                ProjectPanelView(
+                    panel: projectPanel,
+                    isFocused: isFocused,
+                    onRequestPanelFocus: onRequestPanelFocus
+                )
+            }
+        case .extensionBrowser:
+            if let extensionBrowserPanel = panel as? CMUXSidebarExtensionBrowserPanel {
+                CMUXSidebarExtensionBrowserPanelView(
+                    panel: extensionBrowserPanel,
+                    onRequestPanelFocus: onRequestPanelFocus
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
         }
     }
 
@@ -162,7 +178,7 @@ struct PanelContentView: View, Equatable {
     private var shouldInstallPaneDropTarget: Bool {
         guard isVisibleInUI else { return false }
         switch panel.panelType {
-        case .markdown, .filePreview, .rightSidebarTool:
+        case .markdown, .filePreview, .rightSidebarTool, .project, .extensionBrowser:
             return true
         case .terminal, .browser, .claudeChat:
             return false

@@ -137,6 +137,7 @@ struct SessionIndexView: View {
             .reportRightSidebarChromeNamedGeometryForBonsplitUITest(keyPrefix: "rightSidebarSecondaryControl_scope", isVisible: true)
             .disabled(store.currentDirectory == nil)
             .accessibilityIdentifier("SessionScopeToggle.thisFolder")
+            .titlebarInteractiveControl()
 
             Button {
                 store.reload()
@@ -147,6 +148,7 @@ struct SessionIndexView: View {
             .buttonStyle(.borderless)
             .help(String(localized: "sessionIndex.reload.tooltip", defaultValue: "Reload Vault"))
             .disabled(store.isLoading)
+            .titlebarInteractiveControl()
         }
         .rightSidebarChromeBar()
         .rightSidebarChromeBottomBorder()
@@ -315,6 +317,7 @@ private struct GroupingButton: View {
             .rightSidebarChromePill(isSelected: isSelected, isHovered: isHovered, geometryKeyPrefix: "rightSidebarSecondaryControl_\(mode.rawValue)")
         }
         .buttonStyle(.plain)
+        .titlebarInteractiveControl()
         .onHover { isHovered = $0 }
         .help(mode.label)
         .accessibilityIdentifier("SessionGroupingButton.\(mode.rawValue)")
@@ -2565,6 +2568,7 @@ private struct MirrorTabItem: Codable {
     let isDirty: Bool
     let showsNotificationBadge: Bool
     let isLoading: Bool
+    let isAudioMuted: Bool
     let isPinned: Bool
 }
 
@@ -2588,6 +2592,7 @@ private func sessionTabTransferData(for entry: SessionEntry, dragId: UUID) -> Da
             isDirty: false,
             showsNotificationBadge: false,
             isLoading: false,
+            isAudioMuted: false,
             isPinned: false
         ),
         sourcePaneId: UUID(),
