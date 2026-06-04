@@ -5532,3 +5532,145 @@ func openCmuxSettingsFileInEditor() {
     let url = KeyboardShortcutSettings.settingsFileStore.settingsFileURLForEditing()
     PreferredEditorSettings.open(url)
 }
+private final class DiffConnectorsDebugWindowController: NSWindowController, NSWindowDelegate {
+    static let shared = DiffConnectorsDebugWindowController()
+
+    private init() {
+        let window = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 360, height: 320),
+            styleMask: [.titled, .closable, .utilityWindow],
+            backing: .buffered,
+            defer: false
+        )
+        window.title = String(
+            localized: "debug.windows.diffConnectors.title",
+            defaultValue: "Diff Connectors Debug"
+        )
+        window.titleVisibility = .visible
+        window.titlebarAppearsTransparent = false
+        window.isMovableByWindowBackground = true
+        window.isReleasedWhenClosed = false
+        window.identifier = NSUserInterfaceItemIdentifier("cmux.diffConnectorsDebug")
+        window.center()
+        window.contentView = NSHostingView(rootView: DiffConnectorsDebugView())
+        AppDelegate.shared?.applyWindowDecorations(to: window)
+        super.init(window: window)
+        window.delegate = self
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func show() {
+        window?.center()
+        window?.makeKeyAndOrderFront(nil)
+    }
+}
+
+private struct DiffConnectorsDebugView: View {
+    @AppStorage("diff.connector.enabled") private var enabled: Bool = true
+    @AppStorage("diff.connector.width") private var widthRaw: Double = 36
+    @AppStorage("diff.connector.detectMoves") private var detectMoves: Bool = true
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(
+                    String(
+                        localized: "debug.diffConnectors.heading",
+                        defaultValue: "Diff Connectors"
+                    )
+                )
+                .font(.headline)
+
+                Text(
+                    String(
+                        localized: "debug.diffConnectors.note",
+                        defaultValue: "IntelliJ-style ribbon connectors between the two diff panes."
+                    )
+                )
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
+                GroupBox(
+                    String(
+                        localized: "debug.diffConnectors.group.appearance",
+                        defaultValue: "Appearance"
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(
+                            String(
+                                localized: "debug.diffConnectors.toggle.enabled",
+                                defaultValue: "Show diff connectors"
+                            ),
+                            isOn: $enabled
+                        )
+
+                        HStack(spacing: 8) {
+                            Text(
+                                String(
+                                    localized: "debug.diffConnectors.label.width",
+                                    defaultValue: "Connector width"
+                                )
+                            )
+                            Slider(value: $widthRaw, in: 16...80)
+                                .disabled(!enabled)
+                            Text(String(format: "%.0fpt", widthRaw))
+                                .font(.caption)
+                                .frame(width: 56, alignment: .trailing)
+                        }
+                    }
+                    .padding(.top, 2)
+                }
+
+                GroupBox(
+                    String(
+                        localized: "debug.diffConnectors.group.moves",
+                        defaultValue: "Moved Blocks"
+                    )
+                ) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        Toggle(
+                            String(
+                                localized: "debug.diffConnectors.toggle.detectMoves",
+                                defaultValue: "Detect moved blocks"
+                            ),
+                            isOn: $detectMoves
+                        )
+                        Text(
+                            String(
+                                localized: "debug.diffConnectors.detectMoves.note",
+                                defaultValue: "Reopens the file diff to take effect."
+                            )
+                        )
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    }
+                    .padding(.top, 2)
+                }
+
+                HStack(spacing: 12) {
+                    Button(
+                        String(
+                            localized: "debug.diffConnectors.reset",
+                            defaultValue: "Reset"
+                        )
+                    ) {
+                        enabled = true
+                        widthRaw = 36
+                        detectMoves = true
+                    }
+                }
+
+                Spacer(minLength: 0)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
+        }
+    }
+}
+
+

@@ -104,7 +104,7 @@ final class PaneDropTargetView: NSView {
         switch panel.panelType {
         case .claudeChat:
             return true
-        case .terminal, .browser, .filePreview, .markdown, .rightSidebarTool:
+        case .terminal, .browser, .filePreview, .markdown, .rightSidebarTool, .project, .extensionBrowser:
             return false
         }
     }

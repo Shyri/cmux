@@ -11240,6 +11240,8 @@ struct VerticalTabsSidebar: View {
             return .project
         case .extensionBrowser:
             return .unknown
+        case .claudeChat:
+            return .unknown
         }
     }
 
