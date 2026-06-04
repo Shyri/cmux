@@ -1256,6 +1256,21 @@ struct ClaudeChatPanelView: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
+            if let branchState = panel.gitBranchState {
+                HStack(spacing: 4) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 10))
+                    Text(branchState.branch + (branchState.isDirty ? "*" : ""))
+                        .font(.system(size: 10, design: .monospaced))
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+                .foregroundColor(.secondary)
+                .help(String(
+                    localized: "claudeChat.gitBranch.tooltip",
+                    defaultValue: "Current git branch (asterisk means uncommitted changes)"
+                ))
+            }
             if let sessionId = panel.sessionId {
                 Text(String(sessionId.prefix(8)))
                     .font(.system(size: 10, design: .monospaced))

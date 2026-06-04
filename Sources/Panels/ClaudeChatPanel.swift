@@ -284,9 +284,25 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// The workspace this panel belongs to.
     private(set) var workspaceId: UUID
 
-    /// Working directory passed to `claude` when a turn is sent. Inherited
-    /// from the workspace's focused terminal panel at creation time.
+    /// Working directory the UI shows in the header and that drives the
+    /// git probe + permission-rules lookup. Mutates with `EnterWorktree`
+    /// or `mcp__cmux__set_cwd` so the chip and path reflect where Claude
+    /// is logically working right now.
     @Published private(set) var workingDirectory: String
+
+    /// Immutable `cwd` the `claude` process was launched in. Claude Code
+    /// stores resumable sessions under `~/.claude/projects/<encoded-cwd>/`
+    /// keyed by the cwd at creation, so respawn/--resume must always use
+    /// this path — even after `EnterWorktree` moved the effective cwd
+    /// elsewhere. Persisted across app restarts via `SessionPersistence`
+    /// so resume keeps finding the session.
+    let sessionCwd: String
+
+    /// Current git branch of `workingDirectory`, mirrored from
+    /// `Workspace.panelGitBranches[id]` so the chat header can render it
+    /// without depending on `Workspace` directly. `nil` when the working
+    /// directory is not inside a git repo or the probe has not run yet.
+    @Published private(set) var gitBranchState: SidebarGitBranchState?
 
     /// Chat transcript. Fase 1 ships with a small mock transcript; fase 2
     /// will replace this with live events from `ClaudeChatRunner`.
@@ -475,6 +491,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let activeForm: String?
     }
 
+    /// Pending `EnterWorktree` calls whose target path we extracted from
+    /// the tool_use. When the matching tool_result lands without error
+    /// we mirror the new cwd into `workingDirectory` so the header and
+    /// git-branch chip follow Claude into the new worktree. Keyed by
+    /// `tool_use.id`.
+    private var pendingEnterWorktreeByToolUseId: [String: String] = [:]
+
     struct RewindCheckpoint: Identifiable, Equatable {
         let id: UUID
         let userMessageId: UUID
@@ -560,6 +583,21 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             subject: subject,
             activeForm: (activeForm?.isEmpty == false) ? activeForm : nil
         )
+    }
+
+    /// Extract the absolute `path` argument out of an `EnterWorktree`
+    /// tool_use payload. The CLI ships paths as a plain string in the
+    /// compact JSON we get from the stream (`{"path":"/abs/path"}`).
+    /// Returns nil for any other shape or when the path is empty/blank.
+    private static func parseEnterWorktreePath(
+        fromInputJSON inputJSON: String
+    ) -> String? {
+        guard let data = inputJSON.data(using: .utf8),
+              let dict = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let path = dict["path"] as? String
+        else { return nil }
+        let trimmed = path.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed.isEmpty ? nil : trimmed
     }
 
     /// Extract the task id the harness assigned out of the standard
@@ -907,6 +945,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         self.id = UUID()
         self.workspaceId = workspaceId
         self.workingDirectory = workingDirectory
+        self.sessionCwd = workingDirectory
         self.sessionId = sessionId
         self.messages = initialMessages
         self.modelSelection = ClaudeChatPanel.loadInitialModelSelection()
@@ -1045,6 +1084,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         refreshStatusLine()
     }
 
+    func updateGitBranchState(_ newState: SidebarGitBranchState?) {
+        guard gitBranchState != newState else { return }
+        gitBranchState = newState
+    }
+
     func setCustomTitle(_ title: String?) {
         customTitleOverride = title?.trimmingCharacters(in: .whitespacesAndNewlines)
     }
@@ -1081,7 +1125,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingTurnStaging = (userMessageId: localMessage.id, userMessageIndex: messages.count)
         status = .sending
 
-        let cwd = workingDirectory
+        let cwd = sessionCwd
         let resumeId = sessionId
         let mode = permissionMode
         let model = modelSelection.claudeFlag
@@ -1177,7 +1221,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingTurnStaging = (userMessageId: messageId, userMessageIndex: messageIndex)
         status = .sending
 
-        let cwd = workingDirectory
+        let cwd = sessionCwd
         let resumeId = sessionId
         let mode = permissionMode
         let model = modelSelection.claudeFlag
@@ -1358,7 +1402,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         mcpServer = server
 
         let mergedServers = McpServerCatalog.mergedForRuntime(
-            cwd: workingDirectory,
+            cwd: sessionCwd,
             builtinEndpoint: server.endpointURL
         )
 
@@ -1390,7 +1434,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// not just the snapshot from the long-running process' initial
     /// `system/init`. Does NOT touch the chat's `claude` process.
     func refreshMcpStatus() {
-        let cwd = workingDirectory
+        let cwd = sessionCwd
         Task.detached { [weak self] in
             guard let self else { return }
             let path: String
@@ -1420,7 +1464,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// effort outside cmux (auth, network) succeeded.
     func reconnectMcpServer(name: String) {
         guard !name.isEmpty else { return }
-        let cwd = workingDirectory
+        let cwd = sessionCwd
         // Show "Connecting…" in the meantime so the click feels
         // responsive.
         mcpRuntimeStatus[name] = McpServerInitStatus(
@@ -1979,6 +2023,17 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             for case .toolUse(let toolUse) in blocks where toolUse.name == "KillShell" {
                 noteKillShellToolUse(toolUse)
             }
+            // `EnterWorktree` is a Claude Code built-in that swaps the
+            // model's effective cwd to another git worktree but does NOT
+            // affect the host `Process.currentDirectoryURL` cmux launched
+            // it with. Stash the target path now and apply it once the
+            // matching tool_result confirms success — so a failed
+            // EnterWorktree never moves the header chip.
+            for case .toolUse(let toolUse) in blocks where toolUse.name == "EnterWorktree" {
+                if let path = Self.parseEnterWorktreePath(fromInputJSON: toolUse.inputJSON) {
+                    pendingEnterWorktreeByToolUseId[toolUse.id] = path
+                }
+            }
             // Pull every edit-shaped tool_use into the side-pane feed.
             for case .toolUse(let toolUse) in blocks
                 where Self.editToolNames.contains(toolUse.name) {
@@ -2080,6 +2135,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                         )
                         rebuildTodosFromRegistry()
                     }
+                    // EnterWorktree confirmation: only apply the cwd
+                    // change when the tool actually succeeded. If the
+                    // tool_use never made it (failed path, denied, etc.)
+                    // the entry is silently dropped.
+                    if let pendingPath = pendingEnterWorktreeByToolUseId.removeValue(forKey: result.toolUseId),
+                       !result.isError {
+                        updateWorkingDirectory(pendingPath)
+                    }
                     // Background-shell bookkeeping: a Bash tool_result
                     // carries the shell_id (and sometimes an exit
                     // status); a KillShell tool_result confirms the
@@ -2109,7 +2172,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             if let staging = pendingTurnStaging, let activeSid = sessionId {
                 let backups = ClaudeSessionHistory.latestTurnBackups(
                     sessionId: activeSid,
-                    cwd: workingDirectory
+                    cwd: sessionCwd
                 )
                 undoCheckpoints.append(RewindCheckpoint(
                     userMessageId: staging.userMessageId,
@@ -2411,6 +2474,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         pendingQuestions.append(request)
     }
 
+    func server(
+        _ server: ChatMcpHttpServer,
+        didReceiveSetCwd path: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    ) {
+        var isDir: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDir), isDir.boolValue else {
+            completion(.failure(NSError(
+                domain: "ChatMcpHttpServer.setCwd",
+                code: 1,
+                userInfo: [NSLocalizedDescriptionKey: "Path does not exist or is not a directory: \(path)"]
+            )))
+            return
+        }
+        updateWorkingDirectory(path)
+        completion(.success(path))
+    }
+
     /// Two question requests are considered "duplicates" when their
     /// sub-question payload (header + question text + options) matches
     /// exactly. Ids and the wrapping request id are ignored — claude
@@ -2472,6 +2553,22 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     - Group related sub-questions into one call when it's natural; otherwise \
     one question is fine.
     - Skip the tool for trivial yes/no when a yes/no answer is obvious.
+
+    `mcp__cmux__set_cwd` — notify cmux that your effective working \
+    directory changed. Arguments: `{ "path": "<absolute path>" }`. The \
+    response is `{"ok": true, "path": "..."}` on success or `{"ok": false, \
+    "error": "..."}` if cmux rejected it (e.g. path does not exist).
+
+    CWD GUIDELINES:
+    - Call `mcp__cmux__set_cwd` with an absolute path whenever your \
+    effective working directory changes — after `EnterWorktree`, \
+    `ExitWorktree`, or any other tool that swaps your cwd. The chat \
+    header path and the git branch chip are driven by what you report \
+    here; if you skip the call they stay stale.
+    - The call is idempotent: cmux ignores duplicates of the current \
+    cwd, so it is safe to call defensively after any tool that might \
+    have changed your cwd.
+    - Always pass an absolute path. Relative paths are rejected.
     """
 
     nonisolated static func welcomeMessages() -> [ChatMessage] {

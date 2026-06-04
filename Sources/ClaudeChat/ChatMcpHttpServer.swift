@@ -14,6 +14,11 @@ protocol ChatMcpHttpServerDelegate: AnyObject {
         didReceiveQuestion request: ChatUserQuestionRequest,
         completion: @escaping (ChatUserQuestionResponse) -> Void
     )
+    func server(
+        _ server: ChatMcpHttpServer,
+        didReceiveSetCwd path: String,
+        completion: @escaping (Result<String, Error>) -> Void
+    )
 }
 
 /// Minimal HTTP server speaking enough of MCP's "Streamable HTTP" transport
@@ -232,7 +237,18 @@ final class ChatMcpHttpServer {
                 "required": ["questions"]
             ]
         ]
-        return ["tools": [approvalPrompt, askUser]]
+        let setCwd: [String: Any] = [
+            "name": "set_cwd",
+            "description": "Notify cmux that your effective working directory has changed. Call this with an absolute path after using EnterWorktree, ExitWorktree, or any other tool that changes your cwd, so the chat header (path + git branch chip) stays in sync. Idempotent — safe to call even if cmux already detected the change.",
+            "inputSchema": [
+                "type": "object",
+                "properties": [
+                    "path": ["type": "string", "description": "Absolute filesystem path of the new working directory."]
+                ],
+                "required": ["path"]
+            ]
+        ]
+        return ["tools": [approvalPrompt, askUser, setCwd]]
     }
 
     private func handleToolsCall(requestId: Any?, params: [String: Any]?, connection: NWConnection, acceptsSSE: Bool) {
@@ -248,6 +264,13 @@ final class ChatMcpHttpServer {
             )
         case "ask_user_question":
             handleAskUserQuestion(
+                requestId: requestId,
+                args: args,
+                connection: connection,
+                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+            )
+        case "set_cwd":
+            handleSetCwd(
                 requestId: requestId,
                 args: args,
                 connection: connection,
@@ -414,6 +437,73 @@ final class ChatMcpHttpServer {
             stream.finish(with: makeJsonRpcResult(requestId, result: result))
         } else {
             sendJsonRpcResult(requestId, result: result, on: connection)
+        }
+    }
+
+    private func handleSetCwd(requestId: Any?, args: [String: Any], connection: NWConnection, stream: SseStream?) {
+        let rawPath = (args["path"] as? String) ?? ""
+        let path = rawPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !path.isEmpty else {
+            sendJsonRpcError(requestId, code: -32602, message: "set_cwd: missing or empty `path`", on: connection)
+            return
+        }
+        ChatRunnerDebugLog.shared.appendStdoutLine("MCP set_cwd request path=\(path)")
+
+        DispatchQueue.main.async { [weak self] in
+            guard let self, let delegate = self.delegate else {
+                self?.queue.async {
+                    self?.replySetCwd(.failure(SetCwdError.unavailable), requestId: requestId, on: connection, stream: stream)
+                }
+                return
+            }
+            delegate.server(self, didReceiveSetCwd: path) { result in
+                self.queue.async {
+                    self.replySetCwd(result, requestId: requestId, on: connection, stream: stream)
+                }
+            }
+        }
+    }
+
+    private enum SetCwdError: Error {
+        case unavailable
+    }
+
+    private func replySetCwd(
+        _ result: Result<String, Error>,
+        requestId: Any?,
+        on connection: NWConnection,
+        stream: SseStream?
+    ) {
+        let payloadText: String
+        let isError: Bool
+        switch result {
+        case .success(let acceptedPath):
+            payloadText = ChatMcpHttpServer.encodeJSONCompact([
+                "ok": true,
+                "path": acceptedPath
+            ])
+            isError = false
+        case .failure(let error):
+            let message: String
+            if case SetCwdError.unavailable = error {
+                message = "cmux chat panel is not available"
+            } else {
+                message = (error as NSError).localizedDescription
+            }
+            payloadText = ChatMcpHttpServer.encodeJSONCompact([
+                "ok": false,
+                "error": message
+            ])
+            isError = true
+        }
+        let mcpResult: [String: Any] = [
+            "content": [["type": "text", "text": payloadText]],
+            "isError": isError
+        ]
+        if let stream {
+            stream.finish(with: makeJsonRpcResult(requestId, result: mcpResult))
+        } else {
+            sendJsonRpcResult(requestId, result: mcpResult, on: connection)
         }
     }
 

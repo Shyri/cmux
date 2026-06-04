@@ -712,15 +712,23 @@ extension Workspace {
             markdownSnapshot = nil
             filePreviewSnapshot = nil
             rightSidebarToolSnapshot = nil
-            // Persist sessionId + workingDirectory so relaunch can hand
-            // them back to `newClaudeChatSurface(resumingSessionId:)`,
-            // which re-hydrates from the Claude Code JSONL transcript.
-            // `transcriptPath` is left nil because the path is fully
-            // derived from sessionId + cwd at restore time
+            // Persist sessionId + sessionCwd so relaunch can hand them
+            // back to `newClaudeChatSurface(resumingSessionId:)`, which
+            // re-hydrates from the Claude Code JSONL transcript. We
+            // persist `sessionCwd` (the immutable cwd the claude process
+            // launched in), NOT `workingDirectory`, because Claude Code
+            // indexes its session JSONL under
+            // `~/.claude/projects/<encoded-launch-cwd>/<sessionId>.jsonl`
+            // — if the user moved the chat into a worktree via
+            // `EnterWorktree` or `mcp__cmux__set_cwd`, restoring with
+            // the worktree path makes `claude --resume <sessionId>`
+            // fail with "No conversation found". `transcriptPath` is
+            // left nil because the path is fully derived from
+            // sessionId + cwd at restore time
             // (`ClaudeSessionHistory.transcriptURL`).
             claudeChatSnapshot = SessionClaudeChatPanelSnapshot(
                 sessionId: chatPanel.sessionId,
-                workingDirectory: chatPanel.workingDirectory,
+                workingDirectory: chatPanel.sessionCwd,
                 transcriptPath: nil
             )
             projectSnapshot = nil
@@ -11824,6 +11832,15 @@ final class Workspace: Identifiable, ObservableObject {
             .sink { [weak self, weak claudeChatPanel] newCwd in
                 guard let self, let panel = claudeChatPanel else { return }
                 self.updatePanelDirectory(panelId: panel.id, directory: newCwd)
+                // Re-run the git probe so the header chip follows the
+                // chat into the new worktree. EnterWorktree and the MCP
+                // `set_cwd` tool both terminate here through the chat
+                // panel's @Published.
+                self.owningTabManager?.scheduleInitialWorkspaceGitMetadataRefreshIfPossible(
+                    workspaceId: self.id,
+                    panelId: panel.id,
+                    reason: "claudeChatCwdChanged"
+                )
             }
 
         panelSubscriptions[claudeChatPanel.id] = AnyCancellable {
@@ -12859,6 +12876,7 @@ final class Workspace: Identifiable, ObservableObject {
         if panelId == focusedPanelId, gitBranch != state {
             gitBranch = state
         }
+        (panels[panelId] as? ClaudeChatPanel)?.updateGitBranchState(state)
     }
 
     func clearPanelGitBranch(panelId: UUID) {
@@ -12876,6 +12894,7 @@ final class Workspace: Identifiable, ObservableObject {
                 pullRequest = nil
             }
         }
+        (panels[panelId] as? ClaudeChatPanel)?.updateGitBranchState(nil)
     }
 
     func updatePanelPullRequest(
@@ -15670,6 +15689,12 @@ final class Workspace: Identifiable, ObservableObject {
         }
 
         installClaudeChatPanelSubscription(claudeChatPanel)
+
+        owningTabManager?.scheduleInitialWorkspaceGitMetadataRefreshIfPossible(
+            workspaceId: id,
+            panelId: claudeChatPanel.id,
+            reason: "claudeChatCreate"
+        )
 
         if let resumingSessionId, !resumingSessionId.isEmpty {
             Task { [weak claudeChatPanel] in

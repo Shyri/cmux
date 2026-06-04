@@ -1605,7 +1605,8 @@ class TabManager: ObservableObject {
     private func restartWorkspaceGitMetadataWatching(reason: String) {
         for workspace in tabs where !workspace.isRemoteWorkspace {
             for panelId in workspace.panels.keys {
-                guard workspace.terminalPanel(for: panelId) != nil else {
+                guard workspace.terminalPanel(for: panelId) != nil
+                    || workspace.claudeChatPanel(for: panelId) != nil else {
                     continue
                 }
                 if let directory = gitProbeDirectory(for: workspace, panelId: panelId) {
@@ -11494,11 +11495,16 @@ extension TabManager {
             releaseRestoredAwayWorkspace(workspace)
         }
         for workspace in newTabs {
-            let terminalPanels = workspace.panels.values.compactMap { $0 as? TerminalPanel }
-            for terminalPanel in terminalPanels {
+            let gitProbeEligiblePanelIds: [UUID] = workspace.panels.values.compactMap { panel in
+                if panel is TerminalPanel || panel is ClaudeChatPanel {
+                    return panel.id
+                }
+                return nil
+            }
+            for panelId in gitProbeEligiblePanelIds {
                 scheduleInitialWorkspaceGitMetadataRefreshIfPossible(
                     workspaceId: workspace.id,
-                    panelId: terminalPanel.id
+                    panelId: panelId
                 )
             }
         }
