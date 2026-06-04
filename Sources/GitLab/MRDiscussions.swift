@@ -119,7 +119,7 @@ func fetchMROverview(mrIID: Int, directory: String) async throws -> MROverview {
 }
 
 private func runGlabMROverview(mrIID: Int, directory: String) throws -> MROverview {
-    guard let glabPath = findGlabBinary() else {
+    guard let glabPath = findGlabPath() else {
         throw MRDiscussionsFetchError.glabNotFound
     }
     let process = Process()
@@ -210,7 +210,7 @@ func fetchMRDiscussions(mrIID: Int, directory: String) async throws -> [MRDiscus
 }
 
 private func runGlabDiscussions(mrIID: Int, directory: String) throws -> [MRDiscussion] {
-    guard let glabPath = findGlabBinary() else {
+    guard let glabPath = findGlabPath() else {
         throw MRDiscussionsFetchError.glabNotFound
     }
 
@@ -298,38 +298,6 @@ private func parseISO(_ raw: String?) -> Date? {
     if let d = fmt.date(from: raw) { return d }
     fmt.formatOptions = [.withInternetDateTime]
     return fmt.date(from: raw)
-}
-
-/// `glab api --paginate` concatenates page JSON arrays: `[...][...]`. This
-/// splits them by tracking bracket depth and returns each top-level array
-/// as its own `Data`.
-private func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
-    var results: [Data] = []
-    var depth = 0
-    var start: Int? = nil
-    var inString = false
-    var escape = false
-    let bytes = [UInt8](data)
-    for (i, b) in bytes.enumerated() {
-        if inString {
-            if escape { escape = false; continue }
-            if b == 0x5C /* \ */ { escape = true; continue }
-            if b == 0x22 /* " */ { inString = false }
-            continue
-        }
-        if b == 0x22 { inString = true; continue }
-        if b == 0x5B /* [ */ {
-            if depth == 0 { start = i }
-            depth += 1
-        } else if b == 0x5D /* ] */ {
-            depth -= 1
-            if depth == 0, let s = start {
-                results.append(Data(bytes[s...i]))
-                start = nil
-            }
-        }
-    }
-    return results
 }
 
 // MARK: - Card style
@@ -636,23 +604,3 @@ struct InlineCommentCard: View {
     }
 }
 
-// MARK: - Binary lookup
-
-private func findGlabBinary() -> String? {
-    let candidates = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ]
-    if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in pathEnv.split(separator: ":") {
-            let full = "\(dir)/glab"
-            if FileManager.default.isExecutableFile(atPath: full) { return full }
-        }
-    }
-    for dir in candidates {
-        let full = "\(dir)/glab"
-        if FileManager.default.isExecutableFile(atPath: full) { return full }
-    }
-    return nil
-}

@@ -38,7 +38,9 @@ struct GitLabIssue: Identifiable, Equatable, Sendable {
     let webURL: String
     let labels: [String]
     let milestone: GitLabMilestone?
-    let assignees: [GitLabAssignee]
+    /// Mutated optimistically by `IssuesState.setAssignee` while a
+    /// `glab issue update` round-trip is in flight; reconciled on refresh.
+    var assignees: [GitLabAssignee]
     let userNotesCount: Int
     let createdAt: Date?
     let updatedAt: Date?
@@ -222,11 +224,59 @@ private func fetchGitLabIssuesPage(
     }
 }
 
-private func trimmingNonJSONPrefix(_ data: Data) -> Data {
-    guard let firstBracket = data.firstIndex(where: { $0 == 0x5B /* [ */ || $0 == 0x7B /* { */ }) else {
-        return data
+// MARK: - Assignee mutation
+
+/// Replaces the issue's sole assignee with `username`. Passing `nil` clears
+/// the assignee list. Uses `glab issue update` so users can be addressed by
+/// handle even when their numeric id hasn't been fetched yet.
+func updateGitLabIssueAssignee(
+    iid: Int,
+    assigneeUsername: String?,
+    in directory: String
+) async throws {
+    guard let glabPath = findGlabPath() else {
+        throw GitLabIssueFetchError.glabNotFound
     }
-    return data.subdata(in: firstBracket..<data.endIndex)
+
+    var arguments: [String] = ["issue", "update", "\(iid)"]
+    if let username = assigneeUsername, !username.isEmpty {
+        // `glab issue update --assignee` wants the bare GitLab handle —
+        // passing `@<username>` makes glab look for a literal user named
+        // "@…" and fail with "Failed to find user by name".
+        arguments.append(contentsOf: ["--assignee", username])
+    } else {
+        arguments.append("--unassign")
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = arguments
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let outStr = String(data: outData, encoding: .utf8) ?? ""
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        let combined = [errStr, outStr]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        throw GitLabIssueFetchError.processError(
+            combined.isEmpty ? "glab issue update failed" : combined
+        )
+    }
 }
 
 // MARK: - Related Merge Requests
@@ -351,58 +401,3 @@ func fetchGitLabProjectLabels(
     }
 }
 
-/// `glab api --paginate` concatenates JSON arrays from successive pages
-/// (`[...][...]`). This splits them by tracking bracket depth so each
-/// page can be decoded independently. Copied from `MRDiscussions.swift`
-/// to keep this module self-contained.
-private func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
-    var results: [Data] = []
-    var depth = 0
-    var start: Int? = nil
-    var inString = false
-    var escape = false
-    let bytes = [UInt8](data)
-    for (i, b) in bytes.enumerated() {
-        if inString {
-            if escape { escape = false; continue }
-            if b == 0x5C /* \ */ { escape = true; continue }
-            if b == 0x22 /* " */ { inString = false }
-            continue
-        }
-        if b == 0x22 /* " */ { inString = true; continue }
-        if b == 0x5B /* [ */ {
-            if depth == 0 { start = i }
-            depth += 1
-        } else if b == 0x5D /* ] */ {
-            depth -= 1
-            if depth == 0, let s = start {
-                results.append(data.subdata(in: s ..< (i + 1)))
-                start = nil
-            }
-        }
-    }
-    return results
-}
-
-private func findGlabPath() -> String? {
-    let searchPaths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ]
-    if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in pathEnv.split(separator: ":") {
-            let full = "\(dir)/glab"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
-            }
-        }
-    }
-    for dir in searchPaths {
-        let full = "\(dir)/glab"
-        if FileManager.default.isExecutableFile(atPath: full) {
-            return full
-        }
-    }
-    return nil
-}

@@ -114,7 +114,7 @@ func fetchGitLabReleases(
     in directory: String,
     perPage: Int = 20
 ) async throws -> [GitLabRelease] {
-    let glabPath = findGlabReleaseExecutable()
+    let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabReleaseFetchError.glabNotFound }
 
     let process = Process()
@@ -155,25 +155,3 @@ func fetchGitLabReleases(
     }
 }
 
-private func findGlabReleaseExecutable() -> String? {
-    let searchPaths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ]
-    if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in pathEnv.split(separator: ":") {
-            let full = "\(dir)/glab"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
-            }
-        }
-    }
-    for dir in searchPaths {
-        let full = "\(dir)/glab"
-        if FileManager.default.isExecutableFile(atPath: full) {
-            return full
-        }
-    }
-    return nil
-}

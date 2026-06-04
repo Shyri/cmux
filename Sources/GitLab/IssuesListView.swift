@@ -15,11 +15,19 @@ final class IssuesState: ObservableObject {
     /// GitLab colour. Empty until labels finish loading or when the project
     /// has no labels; chips fall back to the neutral style in that case.
     @Published private(set) var labelsByName: [String: GitLabLabel] = [:]
+    /// Project members fetched lazily for the assignee context menu. See
+    /// `MergeRequestsState.projectMembers` for the matching MR-side store.
+    @Published private(set) var projectMembers: [GitLabProjectMember] = []
+    /// Currently authenticated user. Powers "Assign to me" in the context
+    /// menu; `nil` until `glab api user` succeeds.
+    @Published private(set) var currentUser: GitLabProjectMember?
 
     private var fetchTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
     private var relatedMRsTask: Task<Void, Never>?
     private var labelsTask: Task<Void, Never>?
+    private var membersTask: Task<Void, Never>?
+    private var currentUserTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
@@ -27,6 +35,8 @@ final class IssuesState: ObservableObject {
         remoteTask?.cancel()
         relatedMRsTask?.cancel()
         labelsTask?.cancel()
+        membersTask?.cancel()
+        currentUserTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
@@ -34,6 +44,8 @@ final class IssuesState: ObservableObject {
             issues = []
             projectWebURL = nil
             labelsByName = [:]
+            projectMembers = []
+            currentUser = nil
         }
         lastDirectory = directory
         isLoading = true
@@ -45,6 +57,14 @@ final class IssuesState: ObservableObject {
             guard !Task.isCancelled, token == self.requestCounter,
                   directory == self.lastDirectory else { return }
             self.projectWebURL = url
+        }
+
+        currentUserTask = Task { [weak self] in
+            let user = try? await fetchGitLabCurrentUser(in: directory)
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.currentUser = user
         }
 
         fetchTask = Task { [weak self] in
@@ -65,6 +85,7 @@ final class IssuesState: ObservableObject {
                 self.errorMessage = nil
                 self.loadRelatedMRs(for: items, directory: directory, token: token)
                 self.loadProjectLabels(for: items, directory: directory, token: token)
+                self.loadProjectMembers(for: items, directory: directory, token: token)
             case .failure(let error):
                 self.issues = []
                 self.errorMessage = self.messageFor(error: error)
@@ -78,6 +99,8 @@ final class IssuesState: ObservableObject {
         remoteTask?.cancel()
         relatedMRsTask?.cancel()
         labelsTask?.cancel()
+        membersTask?.cancel()
+        currentUserTask?.cancel()
         requestCounter &+= 1
         issues = []
         errorMessage = nil
@@ -85,6 +108,79 @@ final class IssuesState: ObservableObject {
         lastDirectory = nil
         projectWebURL = nil
         labelsByName = [:]
+        projectMembers = []
+        currentUser = nil
+    }
+
+    private func loadProjectMembers(
+        for items: [GitLabIssue],
+        directory: String,
+        token: UInt64
+    ) {
+        guard let projectId = items.first(where: { $0.projectId > 0 })?.projectId else {
+            self.projectMembers = []
+            return
+        }
+        membersTask = Task { [weak self] in
+            let members = (try? await fetchGitLabProjectMembers(
+                projectId: projectId,
+                in: directory
+            )) ?? []
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.projectMembers = members
+        }
+    }
+
+    /// Optimistically replaces a single issue's assignees with `assignee` (or
+    /// clears them when `nil`), then issues `glab issue update`. Rolls back +
+    /// shows an `NSAlert` on failure; refreshes the panel on success.
+    func setAssignee(
+        issueIID: Int,
+        to assignee: GitLabAssignee?,
+        directory: String
+    ) {
+        guard let idx = issues.firstIndex(where: { $0.iid == issueIID }) else { return }
+        let previous = issues[idx].assignees
+        issues[idx].assignees = assignee.map { [$0] } ?? []
+
+        Task { [weak self] in
+            do {
+                try await updateGitLabIssueAssignee(
+                    iid: issueIID,
+                    assigneeUsername: assignee?.username,
+                    in: directory
+                )
+                guard let self else { return }
+                self.refresh(directory: directory)
+            } catch {
+                guard let self else { return }
+                if let i = self.issues.firstIndex(where: { $0.iid == issueIID }) {
+                    self.issues[i].assignees = previous
+                }
+                IssuesState.presentAssigneeError(error)
+            }
+        }
+    }
+
+    @MainActor
+    private static func presentAssigneeError(_ error: Error) {
+        let message: String
+        if let issueErr = error as? GitLabIssueFetchError,
+           case let .processError(msg) = issueErr {
+            message = msg
+        } else {
+            message = error.localizedDescription
+        }
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "issue.card.assigneeError",
+            defaultValue: "Failed to update assignee"
+        )
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     /// Pulls the project's label catalogue (name + colour + text colour)
@@ -628,17 +724,49 @@ struct IssuesListView: View {
     }
 
     private var list: some View {
-        ScrollView {
+        let directory = workspace.currentDirectory
+        let menuContext = IssueAssigneeMenuContext(
+            currentUser: state.currentUser,
+            projectMembers: state.projectMembers,
+            visibleCandidates: visibleCandidates
+        )
+        return ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(filteredIssues) { issue in
-                    IssueCardView(issue: issue)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                    IssueCardView(
+                        issue: issue,
+                        assigneeMenu: menuContext,
+                        onSelectAssignee: { assignee in
+                            state.setAssignee(
+                                issueIID: issue.iid,
+                                to: assignee,
+                                directory: directory
+                            )
+                        }
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
             }
             .padding(.vertical, 6)
         }
         .environment(\.gitlabLabelsByName, state.labelsByName)
+    }
+
+    /// Snapshot of every distinct user already visible in the panel's issues
+    /// (deduped by username), used as the instant fallback for the assignee
+    /// submenu while the project members fetch is pending.
+    private var visibleCandidates: [GitLabAssignee] {
+        var seen = Set<String>()
+        var result: [GitLabAssignee] = []
+        for issue in state.issues {
+            for a in issue.assignees where !a.username.isEmpty {
+                if seen.insert(a.username).inserted {
+                    result.append(a)
+                }
+            }
+        }
+        return result.sorted { $0.username.lowercased() < $1.username.lowercased() }
     }
 
     private func refreshIfNeeded() {
@@ -663,10 +791,49 @@ struct IssuesListView: View {
     }
 }
 
+// MARK: - Assignee menu context
+
+/// Snapshot of everything the assignee submenu needs for an issue card,
+/// passed by value so the row never reaches back into `IssuesState` (the
+/// LazyVStack snapshot-boundary rule from `CLAUDE.md`).
+struct IssueAssigneeMenuContext: Equatable {
+    let currentUser: GitLabProjectMember?
+    let projectMembers: [GitLabProjectMember]
+    let visibleCandidates: [GitLabAssignee]
+
+    /// Merges project members and visible candidates into a deduped,
+    /// alphabetically sorted list. The "Assign to me" row already covers the
+    /// current user, so callers normally exclude them.
+    func candidates(excludingCurrentUser: Bool) -> [GitLabAssignee] {
+        var byUsername: [String: GitLabAssignee] = [:]
+        for member in projectMembers where !member.username.isEmpty {
+            byUsername[member.username] = GitLabAssignee(
+                name: member.name,
+                username: member.username
+            )
+        }
+        for assignee in visibleCandidates where !assignee.username.isEmpty {
+            if byUsername[assignee.username] == nil {
+                byUsername[assignee.username] = assignee
+            }
+        }
+        if excludingCurrentUser, let me = currentUser {
+            byUsername.removeValue(forKey: me.username)
+        }
+        return byUsername.values.sorted { lhs, rhs in
+            let l = (lhs.name.isEmpty ? lhs.username : lhs.name).lowercased()
+            let r = (rhs.name.isEmpty ? rhs.username : rhs.name).lowercased()
+            return l < r
+        }
+    }
+}
+
 // MARK: - Issue Card
 
 private struct IssueCardView: View {
     let issue: GitLabIssue
+    let assigneeMenu: IssueAssigneeMenuContext
+    let onSelectAssignee: (GitLabAssignee?) -> Void
     @State private var isHovered = false
     @Environment(\.gitlabLabelsByName) private var labelsByName
 
@@ -707,7 +874,102 @@ private struct IssueCardView: View {
             guard let url = URL(string: issue.webURL) else { return }
             NSWorkspace.shared.open(url)
         }
+        .contextMenu {
+            Button {
+                guard let url = URL(string: issue.webURL) else { return }
+                NSWorkspace.shared.open(url)
+            } label: {
+                Label(
+                    String(localized: "issue.card.openBrowser", defaultValue: "Open in Browser"),
+                    systemImage: "safari"
+                )
+            }
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(issue.webURL, forType: .string)
+            } label: {
+                Label(
+                    String(localized: "issue.card.copyLink", defaultValue: "Copy Link"),
+                    systemImage: "link"
+                )
+            }
+            assigneeSubmenu
+        }
         .help(issue.webURL)
+    }
+
+    @ViewBuilder
+    private var assigneeSubmenu: some View {
+        let currentUsernames = Set(issue.assignees.map(\.username))
+        let candidates = assigneeMenu.candidates(excludingCurrentUser: true)
+        let myUsername = assigneeMenu.currentUser?.username ?? ""
+
+        Menu {
+            if let me = assigneeMenu.currentUser {
+                Button {
+                    onSelectAssignee(
+                        GitLabAssignee(name: me.name, username: me.username)
+                    )
+                } label: {
+                    assigneeMenuRow(
+                        title: String(
+                            localized: "issue.card.assignToMe",
+                            defaultValue: "Assign to me"
+                        ),
+                        isCurrent: currentUsernames.count == 1
+                            && currentUsernames.contains(me.username)
+                    )
+                }
+            }
+            Button {
+                onSelectAssignee(nil)
+            } label: {
+                assigneeMenuRow(
+                    title: String(
+                        localized: "issue.card.unassign",
+                        defaultValue: "Unassign"
+                    ),
+                    isCurrent: issue.assignees.isEmpty
+                )
+            }
+            if !candidates.isEmpty {
+                Divider()
+                ForEach(candidates, id: \.username) { assignee in
+                    if assignee.username != myUsername {
+                        Button {
+                            onSelectAssignee(assignee)
+                        } label: {
+                            assigneeMenuRow(
+                                title: assigneeDisplayLabel(for: assignee),
+                                isCurrent: currentUsernames.contains(assignee.username)
+                            )
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                String(localized: "issue.card.assignee", defaultValue: "Assignee"),
+                systemImage: "person.crop.circle"
+            )
+        }
+        .disabled(issue.projectId <= 0)
+    }
+
+    private func assigneeMenuRow(title: String, isCurrent: Bool) -> some View {
+        HStack {
+            Text(title)
+            if isCurrent {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func assigneeDisplayLabel(for assignee: GitLabAssignee) -> String {
+        if assignee.name.isEmpty { return "@\(assignee.username)" }
+        if assignee.username.isEmpty { return assignee.name }
+        return "\(assignee.name) (@\(assignee.username))"
     }
 
     private var topRow: some View {

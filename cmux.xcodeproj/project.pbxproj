@@ -306,6 +306,7 @@
 		F61411B1101F4CE4DC8AD1E9 /* GitLabMergeRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89EF014EC9EAC281BDD5F1A7 /* GitLabMergeRequest.swift */; };
 		7A111870F4BE55784F0AFD5C /* GitLabPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3D52AC64E37B83BF875D65 /* GitLabPipeline.swift */; };
 		5DE99405E66649D07FE0EF9F /* GitLabProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */; };
+		1A2B3C4D5E6F708192A3B4C5 /* GitLabProjectMembers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F30414253647586978A9 /* GitLabProjectMembers.swift */; };
 		E2CF404F98BA80475AB04073 /* GitLabRelease.swift in Sources */ = {isa = PBXBuildFile; fileRef = 00F9C4E5EC8BF79D91CFBFDA /* GitLabRelease.swift */; };
 		A4C377C1700FE3A13862DD78 /* GitLabSidebarView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 2A3C28DA8BF779695813F2B3 /* GitLabSidebarView.swift */; };
 		3865A0023865A0023865A002 /* GlobalSearchCoordinator.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3865B0023865B0023865B002 /* GlobalSearchCoordinator.swift */; };
@@ -984,6 +985,7 @@
 		89EF014EC9EAC281BDD5F1A7 /* GitLabMergeRequest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabMergeRequest.swift; sourceTree = "<group>"; };
 		EE3D52AC64E37B83BF875D65 /* GitLabPipeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabPipeline.swift; sourceTree = "<group>"; };
 		29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabProcessUtils.swift; sourceTree = "<group>"; };
+		D1E2F30414253647586978A9 /* GitLabProjectMembers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabProjectMembers.swift; sourceTree = "<group>"; };
 		00F9C4E5EC8BF79D91CFBFDA /* GitLabRelease.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabRelease.swift; sourceTree = "<group>"; };
 		2A3C28DA8BF779695813F2B3 /* GitLabSidebarView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabSidebarView.swift; sourceTree = "<group>"; };
 		3865B0023865B0023865B002 /* GlobalSearchCoordinator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Search/GlobalSearchCoordinator.swift; sourceTree = "<group>"; };
@@ -1886,6 +1888,7 @@
 				89EF014EC9EAC281BDD5F1A7 /* GitLabMergeRequest.swift */,
 				EE3D52AC64E37B83BF875D65 /* GitLabPipeline.swift */,
 				29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */,
+				D1E2F30414253647586978A9 /* GitLabProjectMembers.swift */,
 				00F9C4E5EC8BF79D91CFBFDA /* GitLabRelease.swift */,
 				2A3C28DA8BF779695813F2B3 /* GitLabSidebarView.swift */,
 				526BBEF12E0B1E54472F7D3C /* IssuesListView.swift */,
@@ -2588,6 +2591,7 @@
 				F61411B1101F4CE4DC8AD1E9 /* GitLabMergeRequest.swift in Sources */,
 				7A111870F4BE55784F0AFD5C /* GitLabPipeline.swift in Sources */,
 				5DE99405E66649D07FE0EF9F /* GitLabProcessUtils.swift in Sources */,
+				1A2B3C4D5E6F708192A3B4C5 /* GitLabProjectMembers.swift in Sources */,
 				E2CF404F98BA80475AB04073 /* GitLabRelease.swift in Sources */,
 				A4C377C1700FE3A13862DD78 /* GitLabSidebarView.swift in Sources */,
 				3865A0023865A0023865A002 /* GlobalSearchCoordinator.swift in Sources */,

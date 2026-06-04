@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 
 // MARK: - MR List State
 
@@ -9,22 +10,36 @@ final class MergeRequestsState: ObservableObject {
     @Published var errorMessage: String?
     @Published private(set) var lastDirectory: String?
     @Published private(set) var projectWebURL: String?
+    /// Project members fetched lazily via `glab api projects/:id/members/all`,
+    /// surfaced in the "Assignee" submenu on each MR card. Empty until the
+    /// first refresh comes back; the submenu falls back to the visible
+    /// candidates while it's pending.
+    @Published private(set) var projectMembers: [GitLabProjectMember] = []
+    /// The currently authenticated GitLab user; powers "Assign to me" in the
+    /// context menu. `nil` until `glab api user` succeeds.
+    @Published private(set) var currentUser: GitLabProjectMember?
 
     private var fetchTask: Task<Void, Never>?
     private var approvalsTask: Task<Void, Never>?
     private var remoteTask: Task<Void, Never>?
+    private var membersTask: Task<Void, Never>?
+    private var currentUserTask: Task<Void, Never>?
     private var requestCounter: UInt64 = 0
 
     func refresh(directory: String) {
         fetchTask?.cancel()
         approvalsTask?.cancel()
         remoteTask?.cancel()
+        membersTask?.cancel()
+        currentUserTask?.cancel()
         requestCounter &+= 1
         let token = requestCounter
 
         if lastDirectory != directory {
             mergeRequests = []
             projectWebURL = nil
+            projectMembers = []
+            currentUser = nil
         }
         lastDirectory = directory
         isLoading = true
@@ -36,6 +51,14 @@ final class MergeRequestsState: ObservableObject {
             guard !Task.isCancelled, token == self.requestCounter,
                   directory == self.lastDirectory else { return }
             self.projectWebURL = url
+        }
+
+        currentUserTask = Task { [weak self] in
+            let user = try? await fetchGitLabCurrentUser(in: directory)
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.currentUser = user
         }
 
         fetchTask = Task { [weak self] in
@@ -55,6 +78,7 @@ final class MergeRequestsState: ObservableObject {
                 self.mergeRequests = mrs
                 self.errorMessage = nil
                 self.loadApprovals(for: mrs, directory: directory, token: token)
+                self.loadProjectMembers(for: mrs, directory: directory, token: token)
             case .failure(let error):
                 self.mergeRequests = []
                 self.errorMessage = self.messageFor(error: error)
@@ -67,12 +91,93 @@ final class MergeRequestsState: ObservableObject {
         fetchTask?.cancel()
         approvalsTask?.cancel()
         remoteTask?.cancel()
+        membersTask?.cancel()
+        currentUserTask?.cancel()
         requestCounter &+= 1
         mergeRequests = []
         errorMessage = nil
         isLoading = false
         lastDirectory = nil
         projectWebURL = nil
+        projectMembers = []
+        currentUser = nil
+    }
+
+    /// Loads the project's member list once per refresh so the assignee
+    /// submenu can offer any member, not just the ones already visible on
+    /// the open MRs. Picks the first MR with a real `projectId` — every MR
+    /// in the panel belongs to the same project.
+    private func loadProjectMembers(
+        for mrs: [GitLabMergeRequest],
+        directory: String,
+        token: UInt64
+    ) {
+        guard let projectId = mrs.first(where: { $0.projectId > 0 })?.projectId else {
+            self.projectMembers = []
+            return
+        }
+        membersTask = Task { [weak self] in
+            let members = (try? await fetchGitLabProjectMembers(
+                projectId: projectId,
+                in: directory
+            )) ?? []
+            guard let self else { return }
+            guard !Task.isCancelled, token == self.requestCounter,
+                  directory == self.lastDirectory else { return }
+            self.projectMembers = members
+        }
+    }
+
+    /// Optimistically replaces a single MR's assignees with `assignee` (or
+    /// clears them when `assignee` is `nil`), then issues the `glab mr update`
+    /// subcommand. On failure the assignee list is rolled back and an
+    /// `NSAlert` is presented; on success the panel is refreshed to reconcile
+    /// with the server.
+    func setAssignee(
+        mrIID: Int,
+        to assignee: GitLabReviewer?,
+        directory: String
+    ) {
+        guard let idx = mergeRequests.firstIndex(where: { $0.iid == mrIID }) else { return }
+        let previous = mergeRequests[idx].assignees
+        mergeRequests[idx].assignees = assignee.map { [$0] } ?? []
+
+        Task { [weak self] in
+            do {
+                try await updateGitLabMRAssignee(
+                    iid: mrIID,
+                    assigneeUsername: assignee?.username,
+                    in: directory
+                )
+                guard let self else { return }
+                self.refresh(directory: directory)
+            } catch {
+                guard let self else { return }
+                if let i = self.mergeRequests.firstIndex(where: { $0.iid == mrIID }) {
+                    self.mergeRequests[i].assignees = previous
+                }
+                MergeRequestsState.presentAssigneeError(error)
+            }
+        }
+    }
+
+    @MainActor
+    private static func presentAssigneeError(_ error: Error) {
+        let message: String
+        if let mrErr = error as? GitLabMRFetchError,
+           case let .processError(msg) = mrErr {
+            message = msg
+        } else {
+            message = error.localizedDescription
+        }
+        let alert = NSAlert()
+        alert.messageText = String(
+            localized: "mr.card.assigneeError",
+            defaultValue: "Failed to update assignee"
+        )
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.runModal()
     }
 
     private func loadApprovals(
@@ -438,16 +543,50 @@ struct MergeRequestsListView: View {
     }
 
     private var mrList: some View {
-        ScrollView {
+        let directory = workspace.currentDirectory
+        let menuContext = MRAssigneeMenuContext(
+            currentUser: state.currentUser,
+            projectMembers: state.projectMembers,
+            visibleCandidates: visibleCandidates
+        )
+        return ScrollView {
             LazyVStack(spacing: 0) {
                 ForEach(filteredMergeRequests) { mr in
-                    MRCardView(mr: mr, directory: workspace.currentDirectory)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 4)
+                    MRCardView(
+                        mr: mr,
+                        directory: directory,
+                        assigneeMenu: menuContext,
+                        onSelectAssignee: { assignee in
+                            state.setAssignee(
+                                mrIID: mr.iid,
+                                to: assignee,
+                                directory: directory
+                            )
+                        }
+                    )
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 4)
                 }
             }
             .padding(.vertical, 6)
         }
+    }
+
+    /// Snapshot of every distinct user already visible in the panel's MRs
+    /// (assignees + reviewers, deduped by username). Powers the
+    /// instant fallback in the "Assignee" submenu while the project members
+    /// fetch is still in flight.
+    private var visibleCandidates: [GitLabReviewer] {
+        var seen = Set<String>()
+        var result: [GitLabReviewer] = []
+        for mr in state.mergeRequests {
+            for u in (mr.assignees + mr.reviewers) where !u.username.isEmpty {
+                if seen.insert(u.username).inserted {
+                    result.append(u)
+                }
+            }
+        }
+        return result.sorted { $0.username.lowercased() < $1.username.lowercased() }
     }
 
     private func refreshIfNeeded() {
@@ -462,11 +601,51 @@ struct MergeRequestsListView: View {
     }
 }
 
+// MARK: - Assignee menu context
+
+/// Snapshot of everything the assignee submenu needs, passed by value into
+/// each `MRCardView` so the row never reaches back into `MergeRequestsState`
+/// (the LazyVStack snapshot-boundary rule from `CLAUDE.md`).
+struct MRAssigneeMenuContext: Equatable {
+    let currentUser: GitLabProjectMember?
+    let projectMembers: [GitLabProjectMember]
+    let visibleCandidates: [GitLabReviewer]
+
+    /// Merges project members and visible candidates into one deduped,
+    /// alphabetically sorted list. The "Assign to me" row already covers the
+    /// current user, so callers normally exclude them from this list to avoid
+    /// repeating the entry.
+    func candidates(excludingCurrentUser: Bool) -> [GitLabReviewer] {
+        var byUsername: [String: GitLabReviewer] = [:]
+        for member in projectMembers where !member.username.isEmpty {
+            byUsername[member.username] = GitLabReviewer(
+                name: member.name,
+                username: member.username
+            )
+        }
+        for reviewer in visibleCandidates where !reviewer.username.isEmpty {
+            if byUsername[reviewer.username] == nil {
+                byUsername[reviewer.username] = reviewer
+            }
+        }
+        if excludingCurrentUser, let me = currentUser {
+            byUsername.removeValue(forKey: me.username)
+        }
+        return byUsername.values.sorted { lhs, rhs in
+            let l = (lhs.name.isEmpty ? lhs.username : lhs.name).lowercased()
+            let r = (rhs.name.isEmpty ? rhs.username : rhs.name).lowercased()
+            return l < r
+        }
+    }
+}
+
 // MARK: - MR Card
 
 private struct MRCardView: View {
     let mr: GitLabMergeRequest
     let directory: String
+    let assigneeMenu: MRAssigneeMenuContext
+    let onSelectAssignee: (GitLabReviewer?) -> Void
     @State private var isHovered = false
 
     var body: some View {
@@ -529,8 +708,83 @@ private struct MRCardView: View {
                     systemImage: "link"
                 )
             }
+            assigneeSubmenu
         }
         .help(mr.webURL)
+    }
+
+    @ViewBuilder
+    private var assigneeSubmenu: some View {
+        let currentAssigneeUsernames = Set(mr.assignees.map(\.username))
+        let candidates = assigneeMenu.candidates(excludingCurrentUser: true)
+        let myUsername = assigneeMenu.currentUser?.username ?? ""
+
+        Menu {
+            if let me = assigneeMenu.currentUser {
+                Button {
+                    onSelectAssignee(
+                        GitLabReviewer(name: me.name, username: me.username)
+                    )
+                } label: {
+                    assigneeMenuRow(
+                        title: String(
+                            localized: "mr.card.assignToMe",
+                            defaultValue: "Assign to me"
+                        ),
+                        isCurrent: currentAssigneeUsernames.count == 1
+                            && currentAssigneeUsernames.contains(me.username)
+                    )
+                }
+            }
+            Button {
+                onSelectAssignee(nil)
+            } label: {
+                assigneeMenuRow(
+                    title: String(
+                        localized: "mr.card.unassign",
+                        defaultValue: "Unassign"
+                    ),
+                    isCurrent: mr.assignees.isEmpty
+                )
+            }
+            if !candidates.isEmpty {
+                Divider()
+                ForEach(candidates, id: \.username) { reviewer in
+                    if reviewer.username != myUsername {
+                        Button {
+                            onSelectAssignee(reviewer)
+                        } label: {
+                            assigneeMenuRow(
+                                title: assigneeDisplayLabel(for: reviewer),
+                                isCurrent: currentAssigneeUsernames.contains(reviewer.username)
+                            )
+                        }
+                    }
+                }
+            }
+        } label: {
+            Label(
+                String(localized: "mr.card.assignee", defaultValue: "Assignee"),
+                systemImage: "person.crop.circle"
+            )
+        }
+        .disabled(mr.projectId <= 0)
+    }
+
+    private func assigneeMenuRow(title: String, isCurrent: Bool) -> some View {
+        HStack {
+            Text(title)
+            if isCurrent {
+                Spacer()
+                Image(systemName: "checkmark")
+            }
+        }
+    }
+
+    private func assigneeDisplayLabel(for reviewer: GitLabReviewer) -> String {
+        if reviewer.name.isEmpty { return "@\(reviewer.username)" }
+        if reviewer.username.isEmpty { return reviewer.name }
+        return "\(reviewer.name) (@\(reviewer.username))"
     }
 
     private func showDiff() {

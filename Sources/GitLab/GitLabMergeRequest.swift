@@ -23,7 +23,9 @@ struct GitLabMergeRequest: Identifiable, Equatable, Sendable {
     let createdAt: Date?
     let updatedAt: Date?
     let reviewers: [GitLabReviewer]
-    let assignees: [GitLabReviewer]
+    /// Mutated optimistically by `MergeRequestsState.setAssignee` while a
+    /// `glab mr update` round-trip is in flight; reconciled on refresh.
+    var assignees: [GitLabReviewer]
     let userNotesCount: Int
     /// Raw GitLab `merge_status` (`can_be_merged`, `cannot_be_merged`, …).
     let mergeStatus: String
@@ -122,7 +124,7 @@ func fetchGitLabMergeRequests(
     perPage: Int = 20
 ) async throws -> [GitLabMergeRequest] {
     // Find glab binary
-    let glabPath = findExecutable("glab")
+    let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabMRFetchError.glabNotFound }
 
     let process = Process()
@@ -176,7 +178,7 @@ func approveGitLabMergeRequest(iid: Int, directory: String) async throws -> Stri
 }
 
 private func runGlabApprove(iid: Int, directory: String) throws -> String {
-    guard let glabPath = findExecutable("glab") else {
+    guard let glabPath = findGlabPath() else {
         throw GitLabMRFetchError.glabNotFound
     }
     let process = Process()
@@ -213,6 +215,63 @@ private func runGlabApprove(iid: Int, directory: String) throws -> String {
         .joined(separator: "\n")
 }
 
+// MARK: - Assignee mutation
+
+/// Replaces the MR's sole assignee with `username`. Passing `nil` clears the
+/// assignee list. Uses `glab mr update` so we can address users by handle —
+/// the panel doesn't always know a user's numeric id (e.g. when they only
+/// appeared as a reviewer on a sibling MR) and `glab` does the username →
+/// user lookup for us.
+func updateGitLabMRAssignee(
+    iid: Int,
+    assigneeUsername: String?,
+    in directory: String
+) async throws {
+    guard let glabPath = findGlabPath() else {
+        throw GitLabMRFetchError.glabNotFound
+    }
+
+    var arguments: [String] = ["mr", "update", "\(iid)"]
+    if let username = assigneeUsername, !username.isEmpty {
+        // `glab mr update --assignee` wants the bare GitLab handle — passing
+        // `@<username>` makes glab search for a literal user named "@…" and
+        // fail with "Failed to find user by name".
+        arguments.append(contentsOf: ["--assignee", username])
+    } else {
+        arguments.append("--unassign")
+    }
+
+    let process = Process()
+    process.executableURL = URL(fileURLWithPath: glabPath)
+    process.arguments = arguments
+    process.currentDirectoryURL = URL(fileURLWithPath: directory)
+
+    var env = ProcessInfo.processInfo.environment
+    env["NO_COLOR"] = "1"
+    process.environment = env
+
+    let stdout = Pipe()
+    let stderr = Pipe()
+    process.standardOutput = stdout
+    process.standardError = stderr
+
+    try process.run()
+    let (outData, errData) = drainPipesInParallel(stdout: stdout, stderr: stderr)
+    process.waitUntilExit()
+
+    guard process.terminationStatus == 0 else {
+        let outStr = String(data: outData, encoding: .utf8) ?? ""
+        let errStr = String(data: errData, encoding: .utf8) ?? ""
+        let combined = [errStr, outStr]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+            .joined(separator: "\n")
+        throw GitLabMRFetchError.processError(
+            combined.isEmpty ? "glab mr update failed" : combined
+        )
+    }
+}
+
 // MARK: - Approvals
 
 private struct GLMRApprovalResponse: Decodable {
@@ -232,7 +291,7 @@ func fetchGitLabMRApproval(
     iid: Int,
     in directory: String
 ) async throws -> GitLabMRApproval {
-    guard let glabPath = findExecutable("glab") else {
+    guard let glabPath = findGlabPath() else {
         throw GitLabMRFetchError.glabNotFound
     }
 
@@ -274,28 +333,3 @@ func fetchGitLabMRApproval(
     )
 }
 
-/// Search common paths for an executable.
-private func findExecutable(_ name: String) -> String? {
-    let searchPaths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ]
-    // Check PATH first
-    if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in pathEnv.split(separator: ":") {
-            let full = "\(dir)/\(name)"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
-            }
-        }
-    }
-    // Fallback to known paths
-    for dir in searchPaths {
-        let full = "\(dir)/\(name)"
-        if FileManager.default.isExecutableFile(atPath: full) {
-            return full
-        }
-    }
-    return nil
-}

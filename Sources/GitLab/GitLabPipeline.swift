@@ -78,7 +78,7 @@ func fetchGitLabPipelines(
     in directory: String,
     perPage: Int = 20
 ) async throws -> [GitLabPipeline] {
-    let glabPath = findGlabExecutable()
+    let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabPipelineFetchError.glabNotFound }
 
     let process = Process()
@@ -139,7 +139,7 @@ func fetchJobsForPipeline(
     pipelineID: Int,
     in directory: String
 ) async throws -> [GitLabJob] {
-    let glabPath = findGlabExecutable()
+    let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabPipelineFetchError.glabNotFound }
 
     let process = Process()
@@ -195,7 +195,7 @@ func downloadArtifacts(
     jobName: String,
     in directory: String
 ) async throws -> URL {
-    let glabPath = findGlabExecutable()
+    let glabPath = findGlabPath()
     guard let glabPath else { throw GitLabPipelineFetchError.glabNotFound }
 
     let downloadsBase = FileManager.default.urls(for: .downloadsDirectory, in: .userDomainMask).first
@@ -245,25 +245,3 @@ func downloadArtifacts(
     return target
 }
 
-private func findGlabExecutable() -> String? {
-    let searchPaths = [
-        "/opt/homebrew/bin",
-        "/usr/local/bin",
-        "/usr/bin",
-    ]
-    if let pathEnv = ProcessInfo.processInfo.environment["PATH"] {
-        for dir in pathEnv.split(separator: ":") {
-            let full = "\(dir)/glab"
-            if FileManager.default.isExecutableFile(atPath: full) {
-                return full
-            }
-        }
-    }
-    for dir in searchPaths {
-        let full = "\(dir)/glab"
-        if FileManager.default.isExecutableFile(atPath: full) {
-            return full
-        }
-    }
-    return nil
-}
