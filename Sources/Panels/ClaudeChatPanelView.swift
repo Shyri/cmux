@@ -1662,7 +1662,10 @@ struct ClaudeChatPanelView: View {
                 },
                 isCollapsedByDefault: payload.isCollapsedByDefault,
                 slashCommandName: payload.slashCommandName,
-                isPending: panel.pendingDrafts.contains(where: { $0.id == payload.messageId })
+                isPending: panel.pendingDrafts.contains(where: { $0.id == payload.messageId }),
+                onCancelPending: { messageId in
+                    panel.cancelPendingDraft(id: messageId)
+                }
             )
             .equatable()
         case .toolBatch(let batch):
@@ -4894,6 +4897,11 @@ private struct TextBlockRow: View, Equatable {
     /// running. Renders dimmed with a small ⏳ glyph so the user can tell
     /// it has not been dispatched to claude yet.
     var isPending: Bool = false
+    /// Called when the user clicks the cancel (✕) button on a queued
+    /// bubble. Wired only for pending rows; absent on already-sent
+    /// messages, so the button only appears when the panel actually
+    /// supports cancellation.
+    var onCancelPending: ((UUID) -> Void)? = nil
 
     @Environment(\.chatPalette) private var palette
     @State private var isExpanded: Bool = false
@@ -4954,6 +4962,21 @@ private struct TextBlockRow: View, Equatable {
                             .help(String(
                                 localized: "claudeChat.rewindToHere.tooltip",
                                 defaultValue: "Rewind the conversation and the files claude edited back to just after this message"
+                            ))
+                        }
+                        if isPending, let id = messageId, let onCancelPending {
+                            Button {
+                                onCancelPending(id)
+                            } label: {
+                                Image(systemName: "xmark.circle")
+                                    .font(.system(size: 14))
+                                    .foregroundColor(.secondary)
+                                    .padding(.top, 6)
+                            }
+                            .buttonStyle(.plain)
+                            .help(String(
+                                localized: "claudeChat.cancelQueued.tooltip",
+                                defaultValue: "Remove this queued message before it is sent to claude"
                             ))
                         }
                         if !isPending, !text.isEmpty {

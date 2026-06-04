@@ -2339,6 +2339,17 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         dispatchTurn(messageId: next.id, userText: next.userText)
     }
 
+    /// Drop a queued follow-up message that has not been dispatched yet.
+    /// Removes both the `PendingDraft` and the placeholder `ChatMessage`
+    /// the transcript was rendering as the dimmed "queued" bubble, so the
+    /// user sees the prompt disappear in one step. No-op if `id` is not
+    /// in the queue (already drained, or never matched a draft).
+    func cancelPendingDraft(id: UUID) {
+        guard pendingDrafts.contains(where: { $0.id == id }) else { return }
+        pendingDrafts.removeAll { $0.id == id }
+        messages.removeAll { $0.id == id }
+    }
+
     /// Resolve `statusLine.command` from settings.json (project +
     /// user) and update `statusLineText` with its stdout. Runs the
     /// shell command off the main actor so a slow script does not
