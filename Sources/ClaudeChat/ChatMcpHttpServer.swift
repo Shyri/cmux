@@ -254,27 +254,66 @@ final class ChatMcpHttpServer {
     private func handleToolsCall(requestId: Any?, params: [String: Any]?, connection: NWConnection, acceptsSSE: Bool) {
         let name = (params?["name"] as? String) ?? ""
         let args = (params?["arguments"] as? [String: Any]) ?? [:]
+        // MCP spec: clients opt into long-running progress reporting by
+        // including `params._meta.progressToken` (string or number). Each
+        // `notifications/progress` we emit must echo it back so the client
+        // can correlate the tick with this call. Token absence means the
+        // client doesn't want progress; we keep the legacy SSE comment ping.
+        let progressToken = (params?["_meta"] as? [String: Any])?["progressToken"]
         switch name {
         case "approval_prompt":
+            guard acceptsSSE else {
+                sendJsonRpcError(
+                    requestId,
+                    code: -32603,
+                    message: "approval_prompt requires Accept: text/event-stream (long-running tool — the connection must stay open until the user answers).",
+                    on: connection
+                )
+                return
+            }
             handleApprovalPrompt(
                 requestId: requestId,
                 args: args,
                 connection: connection,
-                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+                stream: SseStream.openIfNeeded(
+                    acceptsSSE: acceptsSSE,
+                    progressToken: progressToken,
+                    on: connection,
+                    queue: queue
+                )
             )
         case "ask_user_question":
+            guard acceptsSSE else {
+                sendJsonRpcError(
+                    requestId,
+                    code: -32603,
+                    message: "ask_user_question requires Accept: text/event-stream (long-running tool — the connection must stay open until the user answers).",
+                    on: connection
+                )
+                return
+            }
             handleAskUserQuestion(
                 requestId: requestId,
                 args: args,
                 connection: connection,
-                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+                stream: SseStream.openIfNeeded(
+                    acceptsSSE: acceptsSSE,
+                    progressToken: progressToken,
+                    on: connection,
+                    queue: queue
+                )
             )
         case "set_cwd":
             handleSetCwd(
                 requestId: requestId,
                 args: args,
                 connection: connection,
-                stream: SseStream.openIfNeeded(acceptsSSE: acceptsSSE, on: connection, queue: queue)
+                stream: SseStream.openIfNeeded(
+                    acceptsSSE: acceptsSSE,
+                    progressToken: progressToken,
+                    on: connection,
+                    queue: queue
+                )
             )
         default:
             sendJsonRpcError(requestId, code: -32602, message: "Unknown tool: \(name)", on: connection)
@@ -647,21 +686,31 @@ final class ChatMcpHttpServer {
 final class SseStream {
     private let connection: NWConnection
     private let queue: DispatchQueue
+    /// Echoed back in every `notifications/progress` we emit. `nil` means
+    /// the client did not opt into progress reporting; we fall back to a
+    /// raw SSE `: ping` comment so the read-timeout still resets.
+    private let progressToken: Any?
     private var timer: DispatchSourceTimer?
     private var finished = false
+    /// Monotonic counter used as the `progress` field on each tick. The MCP
+    /// spec asks for a value that increases with each notification; we have
+    /// no real progress to report so a tick count is the honest signal.
+    private var progressTicks: UInt64 = 0
 
-    private init(connection: NWConnection, queue: DispatchQueue) {
+    private init(connection: NWConnection, queue: DispatchQueue, progressToken: Any?) {
         self.connection = connection
         self.queue = queue
+        self.progressToken = progressToken
     }
 
     static func openIfNeeded(
         acceptsSSE: Bool,
+        progressToken: Any?,
         on connection: NWConnection,
         queue: DispatchQueue
     ) -> SseStream? {
         guard acceptsSSE else { return nil }
-        let stream = SseStream(connection: connection, queue: queue)
+        let stream = SseStream(connection: connection, queue: queue, progressToken: progressToken)
         stream.writeHead()
         stream.startKeepalive()
         return stream
@@ -685,11 +734,41 @@ final class SseStream {
         timer.schedule(deadline: .now() + 25, repeating: 25)
         timer.setEventHandler { [weak self] in
             guard let self, !self.finished else { return }
-            let comment = ": ping\n\n"
-            self.connection.send(content: Data(comment.utf8), completion: .contentProcessed { _ in })
+            self.progressTicks &+= 1
+            let payload = self.makeKeepalivePayload(tick: self.progressTicks)
+            self.connection.send(content: payload, completion: .contentProcessed { _ in })
         }
         timer.resume()
         self.timer = timer
+    }
+
+    /// Build the bytes for one keepalive tick. Prefers a JSON-RPC
+    /// `notifications/progress` event (MCP spec) when the client opted in;
+    /// falls back to a `: ping` SSE comment otherwise — both reset the
+    /// read-timeout, but only the former is visible to the MCP layer.
+    private func makeKeepalivePayload(tick: UInt64) -> Data {
+        guard let progressToken else {
+            return Data(": ping\n\n".utf8)
+        }
+        // Some clients reject the notification if `progressToken` is not a
+        // JSON scalar. Be defensive: if the value is not JSON-encodable on
+        // its own, drop back to the ping comment.
+        let envelope: [String: Any] = [
+            "jsonrpc": "2.0",
+            "method": "notifications/progress",
+            "params": [
+                "progressToken": progressToken,
+                "progress": tick
+            ]
+        ]
+        guard JSONSerialization.isValidJSONObject(envelope),
+              let json = try? JSONSerialization.data(withJSONObject: envelope, options: []),
+              let jsonString = String(data: json, encoding: .utf8) else {
+            return Data(": ping\n\n".utf8)
+        }
+        var event = "event: message\n"
+        event += "data: \(jsonString)\n\n"
+        return Data(event.utf8)
     }
 
     /// Send the JSON-RPC response body as a single SSE `message` event
