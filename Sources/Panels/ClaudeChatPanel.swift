@@ -1003,6 +1003,36 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             ClaudeChatPanel.defaultVisibleMessageWindow,
             messages.count
         )
+        // Replay the transcript's `Bash` tool_use/tool_result blocks
+        // through the same bookkeeping the live stream uses, so the
+        // background-shells popover shows real commands instead of
+        // "(background shell)" placeholders after a resume.
+        rebuildBackgroundShellsFromTranscript()
+    }
+
+    /// After `applyResumedTranscript` swaps in a historic transcript,
+    /// re-run the same `noteBashToolUseIfBackground` / `noteBackgroundShellResult`
+    /// path the live stream uses so any shell that was launched in a
+    /// prior session ends up in `backgroundShells` with its real
+    /// command preview and resolved status. Without this, a later
+    /// `task_started` for a still-alive shell would fall into the
+    /// orphan branch in `applyBackgroundTaskEvent` and synthesise a
+    /// row with the anonymous "(background shell)" preview.
+    private func rebuildBackgroundShellsFromTranscript() {
+        for message in messages {
+            for block in message.blocks {
+                if case .toolUse(let toolUse) = block, toolUse.name == "Bash" {
+                    noteBashToolUseIfBackground(toolUse)
+                }
+            }
+        }
+        for message in messages {
+            for block in message.blocks {
+                if case .toolResult(let result) = block {
+                    noteBackgroundShellResult(result)
+                }
+            }
+        }
     }
 
     /// Hydrate `alwaysAllowedTools` from `<cwd>/.claude/settings.local.json`
@@ -2262,8 +2292,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     toolUseId: toolUseId ?? "task:\(taskId)",
                     shellId: taskId,
                     commandPreview: String(
-                        localized: "claudeChat.bashes.unknownCommand",
-                        defaultValue: "(background shell)"
+                        format: String(
+                            localized: "claudeChat.bashes.unknownCommand",
+                            defaultValue: "(background shell %@)"
+                        ),
+                        taskId
                     ),
                     startedAt: Date(),
                     status: .running
