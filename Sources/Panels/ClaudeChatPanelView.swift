@@ -1073,6 +1073,9 @@ struct ClaudeChatPanelView: View {
             if let line = panel.statusLineText, !line.isEmpty {
                 statusLineRow(line)
             }
+            if let branchState = panel.gitBranchState {
+                branchSummaryRow(branchState: branchState, summary: panel.gitPendingSummary)
+            }
             if !panel.pendingAttachments.isEmpty {
                 attachmentsRow
             }
@@ -1234,6 +1237,236 @@ struct ClaudeChatPanelView: View {
         .background(palette.headerBg(colorScheme == .dark))
     }
 
+    /// Fila inferior con el branch actual + resumen de cambios git
+    /// pendientes (ahead/behind/staged/modified/untracked/stashed).
+    /// Vive bajo `statusLineRow` para que el header quede limpio y el
+    /// usuario tenga un descriptor concreto de qué le queda por subir/
+    /// bajar/commitear, en lugar del antiguo asterisco binario.
+    private func branchSummaryRow(
+        branchState: SidebarGitBranchState,
+        summary: ClaudeChatPanel.GitPendingSummary?
+    ) -> some View {
+        HStack(spacing: 6) {
+            Image(systemName: "arrow.triangle.branch")
+                .font(.system(size: 10))
+                .foregroundColor(.secondary)
+            Text(branchState.branch)
+                .font(.system(size: 10, weight: .medium, design: .monospaced))
+                .foregroundColor(.primary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .layoutPriority(1)
+            branchSummaryChips(branchState: branchState, summary: summary)
+            Spacer(minLength: 0)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 4)
+        .frame(maxWidth: Self.maxContentWidth, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .center)
+        .background(palette.headerBg(colorScheme == .dark))
+        .help(branchSummaryTooltip(branchState: branchState, summary: summary))
+    }
+
+    @ViewBuilder
+    private func branchSummaryChips(
+        branchState: SidebarGitBranchState,
+        summary: ClaudeChatPanel.GitPendingSummary?
+    ) -> some View {
+        if let summary {
+            if summary.isEmpty {
+                Text(String(
+                    localized: "claudeChat.gitSummary.clean",
+                    defaultValue: "clean"
+                ))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+            } else {
+                HStack(spacing: 8) {
+                    if let ahead = summary.ahead, ahead > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.push",
+                                defaultValue: "push"
+                            ),
+                            value: ahead,
+                            color: ChatPalette.green
+                        )
+                    }
+                    if let behind = summary.behind, behind > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.pull",
+                                defaultValue: "pull"
+                            ),
+                            value: behind,
+                            color: ChatPalette.cyan
+                        )
+                    }
+                    if summary.staged > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.staged",
+                                defaultValue: "staged"
+                            ),
+                            value: summary.staged,
+                            color: ChatPalette.green
+                        )
+                    }
+                    if summary.modified > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.modified",
+                                defaultValue: "modified"
+                            ),
+                            value: summary.modified,
+                            color: ChatPalette.yellow
+                        )
+                    }
+                    if summary.conflicted > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.conflicts",
+                                defaultValue: "conflicts"
+                            ),
+                            value: summary.conflicted,
+                            color: ChatPalette.red
+                        )
+                    }
+                    if summary.untracked > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.untracked",
+                                defaultValue: "untracked"
+                            ),
+                            value: summary.untracked,
+                            color: .secondary
+                        )
+                    }
+                    if summary.stashed > 0 {
+                        summaryChip(
+                            label: String(
+                                localized: "claudeChat.gitSummary.label.stash",
+                                defaultValue: "stash"
+                            ),
+                            value: summary.stashed,
+                            color: ChatPalette.cyan
+                        )
+                    }
+                }
+            }
+        } else if branchState.isDirty {
+            // Fallback mientras el resumen detallado se está calculando:
+            // mantenemos la señal binaria original para que el usuario
+            // no vea una fila "limpia" cuando sabemos que hay cambios.
+            Text("…")
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary)
+        }
+    }
+
+    private func summaryChip(label: String, value: Int, color: Color) -> some View {
+        HStack(spacing: 3) {
+            Text(label)
+                .font(.system(size: 10, weight: .medium))
+            Text("\(value)")
+                .font(.system(size: 10, weight: .semibold, design: .monospaced))
+        }
+        .foregroundColor(color)
+    }
+
+    private func branchSummaryTooltip(
+        branchState: SidebarGitBranchState,
+        summary: ClaudeChatPanel.GitPendingSummary?
+    ) -> String {
+        guard let summary else {
+            return branchState.isDirty
+                ? String(
+                    localized: "claudeChat.gitSummary.tooltip.computing",
+                    defaultValue: "Checking pending git changes…"
+                )
+                : String(
+                    localized: "claudeChat.gitSummary.tooltip.fallback",
+                    defaultValue: "Current git branch"
+                )
+        }
+        if summary.isEmpty {
+            return String(
+                localized: "claudeChat.gitSummary.tooltip.clean",
+                defaultValue: "Working tree clean and in sync with upstream"
+            )
+        }
+        var lines: [String] = []
+        if let ahead = summary.ahead, ahead > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.ahead",
+                defaultValue: "\(ahead) commit(s) to push"
+            ))
+        }
+        if let behind = summary.behind, behind > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.behind",
+                defaultValue: "\(behind) commit(s) to pull"
+            ))
+        }
+        if summary.staged > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.staged",
+                defaultValue: "\(summary.staged) staged change(s)"
+            ))
+        }
+        if summary.modified > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.modified",
+                defaultValue: "\(summary.modified) modified file(s)"
+            ))
+        }
+        if summary.conflicted > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.conflicted",
+                defaultValue: "\(summary.conflicted) file(s) with conflicts"
+            ))
+        }
+        if summary.untracked > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.untracked",
+                defaultValue: "\(summary.untracked) untracked file(s)"
+            ))
+        }
+        if summary.stashed > 0 {
+            lines.append(String(
+                localized: "claudeChat.gitSummary.tooltip.stashed",
+                defaultValue: "\(summary.stashed) stash entry(ies)"
+            ))
+        }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Chip del session id: clicarlo copia el id completo al clipboard y
+    /// muestra una confirmación efímera. El tooltip explica qué es y qué
+    /// pasa al clicar.
+    @ViewBuilder
+    private func sessionIdChip(sessionId: String) -> some View {
+        Button {
+            let pb = NSPasteboard.general
+            pb.clearContents()
+            pb.setString(sessionId, forType: .string)
+            panel.appendSystemNotice(String(
+                localized: "claudeChat.sessionId.copied",
+                defaultValue: "Copied session id to the clipboard."
+            ))
+        } label: {
+            Text(String(sessionId.prefix(8)))
+                .font(.system(size: 10, design: .monospaced))
+                .foregroundColor(.secondary.opacity(0.7))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(String(
+            localized: "claudeChat.sessionId.tooltip",
+            defaultValue: "Claude session id (resumed across turns). Click to copy."
+        ))
+    }
+
     // MARK: - Header
 
     private var workingDirectoryHeader: some View {
@@ -1256,26 +1489,8 @@ struct ClaudeChatPanelView: View {
                 .truncationMode(.middle)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .layoutPriority(-1)
-            if let branchState = panel.gitBranchState {
-                HStack(spacing: 4) {
-                    Image(systemName: "arrow.triangle.branch")
-                        .font(.system(size: 10))
-                    Text(branchState.branch + (branchState.isDirty ? "*" : ""))
-                        .font(.system(size: 10, design: .monospaced))
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .foregroundColor(.secondary)
-                .help(String(
-                    localized: "claudeChat.gitBranch.tooltip",
-                    defaultValue: "Current git branch (asterisk means uncommitted changes)"
-                ))
-            }
             if let sessionId = panel.sessionId {
-                Text(String(sessionId.prefix(8)))
-                    .font(.system(size: 10, design: .monospaced))
-                    .foregroundColor(.secondary.opacity(0.7))
-                    .help(String(localized: "claudeChat.sessionId.tooltip", defaultValue: "Claude session id (resumed across turns)"))
+                sessionIdChip(sessionId: sessionId)
             }
             undoButton
             diffPaneButton
@@ -4310,17 +4525,11 @@ private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette) -
             BackgroundColor(palette.codeBg(isDark))
         }
         .codeBlock { configuration in
-            ScrollView(.horizontal, showsIndicators: true) {
-                configuration.label
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(12)
-                    }
-                    .padding(10)
-            }
-            .background(palette.codeBg(isDark))
-            .clipShape(RoundedRectangle(cornerRadius: 6))
-            .markdownMargin(top: 6, bottom: 6)
+            ChatCopyableCodeBlock(
+                configuration: configuration,
+                isDark: isDark,
+                palette: palette
+            )
         }
         .link {
             ForegroundColor(isDark ? ChatPalette.cyan : Color.accentColor)
@@ -5819,5 +6028,85 @@ enum ANSIRenderer {
             v == 0 ? 0 : Double(95 + (v - 1) * 40) / 255.0
         }
         return Color(red: toLinear(r), green: toLinear(g), blue: toLinear(b))
+    }
+}
+
+/// Render a fenced code block from Claude with a header showing the
+/// language (when present) and a copy button. Replaces the bare scrollview
+/// previously used in the markdown theme so users can grab the snippet
+/// without selecting char-by-char inside the bubble.
+private struct ChatCopyableCodeBlock: View {
+    let configuration: CodeBlockConfiguration
+    let isDark: Bool
+    let palette: ChatPalette
+
+    @State private var didCopy = false
+    @State private var copyResetWorkItem: DispatchWorkItem?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            header
+            ScrollView(.horizontal, showsIndicators: true) {
+                configuration.label
+                    .markdownTextStyle {
+                        FontFamilyVariant(.monospaced)
+                        FontSize(12)
+                    }
+                    .padding(10)
+            }
+        }
+        .background(palette.codeBg(isDark))
+        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .markdownMargin(top: 6, bottom: 6)
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            if let language = configuration.language, !language.isEmpty {
+                Text(language)
+                    .font(.system(size: 10, weight: .medium, design: .monospaced))
+                    .foregroundColor(.secondary)
+            }
+            Spacer(minLength: 0)
+            Button(action: copy) {
+                HStack(spacing: 4) {
+                    Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
+                        .font(.system(size: 10, weight: .medium))
+                    Text(didCopy
+                        ? String(localized: "claudeChat.codeBlock.copy.copied", defaultValue: "Copied")
+                        : String(localized: "claudeChat.codeBlock.copy.action", defaultValue: "Copy")
+                    )
+                    .font(.system(size: 10, weight: .medium))
+                }
+                .foregroundColor(didCopy ? ChatPalette.green : .secondary)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(String(
+                localized: "claudeChat.codeBlock.copy.tooltip",
+                defaultValue: "Copy this code block to the clipboard"
+            ))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .background(palette.codeBg(isDark).opacity(isDark ? 0.6 : 0.5))
+        .overlay(alignment: .bottom) {
+            Rectangle()
+                .fill(Color.secondary.opacity(0.15))
+                .frame(height: 1)
+        }
+    }
+
+    private func copy() {
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(configuration.content, forType: .string)
+        didCopy = true
+        copyResetWorkItem?.cancel()
+        let item = DispatchWorkItem { didCopy = false }
+        copyResetWorkItem = item
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
     }
 }

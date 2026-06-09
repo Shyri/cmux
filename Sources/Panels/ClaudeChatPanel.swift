@@ -302,7 +302,18 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `Workspace.panelGitBranches[id]` so the chat header can render it
     /// without depending on `Workspace` directly. `nil` when the working
     /// directory is not inside a git repo or the probe has not run yet.
-    @Published private(set) var gitBranchState: SidebarGitBranchState?
+    @Published private(set) var gitBranchState: SidebarGitBranchState? {
+        didSet {
+            guard gitBranchState != oldValue else { return }
+            refreshGitPendingSummary()
+        }
+    }
+
+    /// Resumen de cambios git pendientes sobre `workingDirectory`:
+    /// commits ahead/behind del upstream, ficheros staged/modified/
+    /// untracked y stashes locales. Se refresca cuando cambia el branch
+    /// state o el working directory, ejecutando `git` off-main.
+    @Published private(set) var gitPendingSummary: GitPendingSummary?
 
     /// Chat transcript. Fase 1 ships with a small mock transcript; fase 2
     /// will replace this with live events from `ClaudeChatRunner`.
@@ -1112,6 +1123,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         guard !trimmed.isEmpty, trimmed != workingDirectory else { return }
         workingDirectory = trimmed
         refreshStatusLine()
+        refreshGitPendingSummary()
     }
 
     func updateGitBranchState(_ newState: SidebarGitBranchState?) {
@@ -2406,6 +2418,26 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         }
     }
 
+    /// Recalcula `gitPendingSummary` ejecutando `git status --porcelain=v2
+    /// --branch -z` y `git stash list -z` off-main sobre `workingDirectory`.
+    /// El asterisco original solo decía "hay cambios"; este resumen describe
+    /// *qué* hay pendiente (ahead/behind/staged/modified/untracked/stashed)
+    /// para que el chip debajo del status line sea informativo.
+    func refreshGitPendingSummary() {
+        let cwd = workingDirectory
+        let hasBranch = gitBranchState != nil
+        Task.detached { [weak self] in
+            let summary: GitPendingSummary? = hasBranch
+                ? GitPendingSummary.compute(workingDirectory: cwd)
+                : nil
+            await MainActor.run { [weak self] in
+                guard let self else { return }
+                guard self.gitPendingSummary != summary else { return }
+                self.gitPendingSummary = summary
+            }
+        }
+    }
+
     // MARK: - ChatMcpHttpServerDelegate
 
     func server(
@@ -2614,6 +2646,145 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     have changed your cwd.
     - Always pass an absolute path. Relative paths are rejected.
     """
+
+    /// Resumen de cambios git pendientes en el directorio del panel. Lo
+    /// renderiza la fila debajo del status line en `ClaudeChatPanelView`,
+    /// sustituyendo el viejo asterisco `*` del header por una descripción
+    /// concreta del trabajo sin commitear/empujar/bajar/stashear.
+    struct GitPendingSummary: Equatable {
+        /// Commits locales que tu branch tiene por encima de su upstream
+        /// (pendientes de `git push`). `nil` cuando no hay upstream.
+        var ahead: Int?
+        /// Commits del upstream que tu branch no tiene aún
+        /// (pendientes de `git pull`). `nil` cuando no hay upstream.
+        var behind: Int?
+        /// Cambios staged listos para commit.
+        var staged: Int
+        /// Cambios trackeados modificados pero no staged.
+        var modified: Int
+        /// Ficheros con conflictos de merge.
+        var conflicted: Int
+        /// Ficheros nuevos no trackeados.
+        var untracked: Int
+        /// Entradas en `git stash list`.
+        var stashed: Int
+
+        var isEmpty: Bool {
+            (ahead ?? 0) == 0 && (behind ?? 0) == 0
+                && staged == 0 && modified == 0 && conflicted == 0
+                && untracked == 0 && stashed == 0
+        }
+
+        /// Ejecuta git en `workingDirectory` y parsea el resultado. Vuelve
+        /// `nil` si el directorio no es un repo o git falla. Llamar siempre
+        /// off-main: hace I/O bloqueante.
+        nonisolated static func compute(workingDirectory: String) -> GitPendingSummary? {
+            let trimmed = workingDirectory.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty else { return nil }
+            guard let statusOutput = runGit(
+                in: trimmed,
+                arguments: ["status", "--porcelain=v2", "--branch", "-z"]
+            ) else { return nil }
+
+            var ahead: Int? = nil
+            var behind: Int? = nil
+            var staged = 0
+            var modified = 0
+            var conflicted = 0
+            var untracked = 0
+
+            // `-z` separa entradas con NUL. Las cabeceras `# branch.*`
+            // ocupan una entrada cada una; los registros de rename usan
+            // dos entradas (record + orig path).
+            let entries = statusOutput.split(separator: "\0", omittingEmptySubsequences: false)
+            var index = 0
+            while index < entries.count {
+                let entry = entries[index]
+                if entry.isEmpty {
+                    index += 1
+                    continue
+                }
+                if entry.hasPrefix("# branch.ab ") {
+                    // Formato: "# branch.ab +<ahead> -<behind>"
+                    let parts = entry.dropFirst("# branch.ab ".count)
+                        .split(separator: " ")
+                    if parts.count == 2,
+                       let a = Int(parts[0].dropFirst()),
+                       let b = Int(parts[1].dropFirst()) {
+                        ahead = a
+                        behind = b
+                    }
+                    index += 1
+                    continue
+                }
+                if entry.hasPrefix("# ") {
+                    index += 1
+                    continue
+                }
+                // Registros: "1"/"2" = trackeado, "u" = unmerged, "?" =
+                // untracked. Para "1" y "2" el segundo campo es "XY"
+                // (X=index, Y=worktree); "." significa "sin cambio".
+                let head = entry.first!
+                switch head {
+                case "1", "2":
+                    let fields = entry.split(separator: " ", maxSplits: 2, omittingEmptySubsequences: false)
+                    if fields.count >= 2 {
+                        let xy = fields[1]
+                        let x = xy.first ?? "."
+                        let y = xy.dropFirst().first ?? "."
+                        if x != "." { staged += 1 }
+                        if y != "." { modified += 1 }
+                    }
+                    if head == "2" { index += 1 }
+                case "u":
+                    conflicted += 1
+                case "?":
+                    untracked += 1
+                default:
+                    break
+                }
+                index += 1
+            }
+
+            // `git stash list` es barato pero requiere otra invocación.
+            var stashed = 0
+            if let stashOutput = runGit(in: trimmed, arguments: ["stash", "list", "-z"]) {
+                stashed = stashOutput.split(separator: "\0", omittingEmptySubsequences: true).count
+            }
+
+            return GitPendingSummary(
+                ahead: ahead,
+                behind: behind,
+                staged: staged,
+                modified: modified,
+                conflicted: conflicted,
+                untracked: untracked,
+                stashed: stashed
+            )
+        }
+
+        private nonisolated static func runGit(
+            in directory: String,
+            arguments: [String]
+        ) -> String? {
+            let process = Process()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+            process.arguments = arguments
+            process.currentDirectoryURL = URL(fileURLWithPath: directory)
+            let pipe = Pipe()
+            process.standardOutput = pipe
+            process.standardError = FileHandle.nullDevice
+            do {
+                try process.run()
+                let data = ProcessPipeReader.readDataToEndOfFileOrEmpty(from: pipe.fileHandleForReading)
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return nil }
+                return String(data: data, encoding: .utf8)
+            } catch {
+                return nil
+            }
+        }
+    }
 
     nonisolated static func welcomeMessages() -> [ChatMessage] {
         [
