@@ -100,7 +100,7 @@ If it reports conflicts, resolve them **manually** and `git add` each file as yo
    - Swift files where both sides added a `case` to the same `enum`/`switch` — union both cases manually.
    - Tests under `cmuxTests/` and CI configs (`.github/workflows/*.yml`, `scripts/*.sh`) — usually keep ours.
 
-2. **For Swift product files** (`Sources/`, `Packages/`): hand-resolve. The dominant pattern is union: both sides added a sibling case (chatmux's `.claudeChat` + upstream's `.agentSession`) — keep both. After each file: `git add <file>`. Do **not** run the helper on these; it nukes upstream's hunks.
+2. **For Swift product files** (`Sources/`, `Packages/`): hand-resolve. The dominant pattern is union: both sides added a sibling case (the fork's `.claudeChat` + upstream's `.agentSession`) — keep both. After each file: `git add <file>`. Do **not** run the helper on these; it nukes upstream's hunks.
 
 3. **For `Resources/Localizable.xcstrings`** (JSON): use a programmatic key-level union, preferring ours on collisions:
    ```bash
