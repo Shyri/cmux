@@ -65,7 +65,7 @@ nonisolated enum FileExplorerRootSyncPolicy {
         switch mode {
         case .files, .find:
             return true
-        case .sessions, .feed, .dock:
+        case .sessions, .feed, .dock, .gitlab:
             return false
         }
     }
