@@ -64,6 +64,7 @@ struct ChatAttachment: Identifiable, Equatable {
 /// when the selection differs from the running process.
 enum ChatModelSelection: String, CaseIterable, Identifiable {
     case `default`
+    case fable5
     case opus48
     case opus48Long
     case opus
@@ -75,9 +76,16 @@ enum ChatModelSelection: String, CaseIterable, Identifiable {
 
     /// The value passed to `claude --model`. `nil` means "don't pass
     /// `--model` at all" (the `default` case).
+    ///
+    /// Fable 5 is Anthropic's Mythos-class flagship. Per the Claude Code
+    /// docs (`code.claude.com/docs/en/model-config`) the Anthropic API
+    /// always runs `claude-fable-5` with the 1M context window, so there
+    /// is no separate `[1m]` variant the way Opus 4.7/4.8 have. Requires
+    /// Claude Code v2.1.170+ at runtime.
     var claudeFlag: String? {
         switch self {
         case .default: return nil
+        case .fable5: return "claude-fable-5"
         case .opus48: return "claude-opus-4-8"
         case .opus48Long: return "claude-opus-4-8[1m]"
         case .opus: return "claude-opus-4-7"
@@ -91,6 +99,8 @@ enum ChatModelSelection: String, CaseIterable, Identifiable {
         switch self {
         case .default:
             return String(localized: "claudeChat.model.default", defaultValue: "Default")
+        case .fable5:
+            return String(localized: "claudeChat.model.fable5", defaultValue: "Fable 5")
         case .opus48:
             return String(localized: "claudeChat.model.opus48", defaultValue: "Opus 4.8")
         case .opus48Long:
@@ -109,6 +119,7 @@ enum ChatModelSelection: String, CaseIterable, Identifiable {
     var iconName: String {
         switch self {
         case .default: return "wand.and.stars"
+        case .fable5: return "crown.fill"
         case .opus48, .opus: return "sparkles"
         case .opus48Long, .opusLong: return "infinity"
         case .sonnet: return "circle.hexagongrid"
@@ -302,18 +313,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// `Workspace.panelGitBranches[id]` so the chat header can render it
     /// without depending on `Workspace` directly. `nil` when the working
     /// directory is not inside a git repo or the probe has not run yet.
-    @Published private(set) var gitBranchState: SidebarGitBranchState? {
-        didSet {
-            guard gitBranchState != oldValue else { return }
-            refreshGitPendingSummary()
-        }
-    }
+    /// El refresh del summary detallado se dispara desde
+    /// `updateGitBranchState`, no desde aquí: el workspace probe completa en
+    /// cada evento del FS watcher aunque la tupla `(branch, isDirty)` no
+    /// cambie, y queremos recomputar ahead/behind/staged/modified/untracked/
+    /// stash en cada uno.
+    @Published private(set) var gitBranchState: SidebarGitBranchState?
 
     /// Resumen de cambios git pendientes sobre `workingDirectory`:
     /// commits ahead/behind del upstream, ficheros staged/modified/
     /// untracked y stashes locales. Se refresca cuando cambia el branch
     /// state o el working directory, ejecutando `git` off-main.
     @Published private(set) var gitPendingSummary: GitPendingSummary?
+
+    /// Task de debounce para `refreshGitPendingSummary`. Se cancela y
+    /// reasigna en cada llamada para coalesce ráfagas (`npm install`, build,
+    /// edición masiva por agente) en una única ejecución de `git status` al
+    /// terminar la quietud.
+    private var gitPendingSummaryRefreshTask: Task<Void, Never>?
 
     /// Chat transcript. Fase 1 ships with a small mock transcript; fase 2
     /// will replace this with live events from `ClaudeChatRunner`.
@@ -990,6 +1007,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // holding for this panel id, so a panel created with the same
         // UUID later (e.g. session restore) doesn't see stale rows.
         ChatRowBuilderCache.shared.clear(panelId: id)
+        gitPendingSummaryRefreshTask?.cancel()
     }
 
     /// Replace the panel's transcript with one loaded from a Claude
@@ -1127,8 +1145,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     }
 
     func updateGitBranchState(_ newState: SidebarGitBranchState?) {
-        guard gitBranchState != newState else { return }
-        gitBranchState = newState
+        if gitBranchState != newState {
+            gitBranchState = newState
+        }
+        refreshGitPendingSummary()
     }
 
     func setCustomTitle(_ title: String?) {
@@ -2423,13 +2443,23 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// El asterisco original solo decía "hay cambios"; este resumen describe
     /// *qué* hay pendiente (ahead/behind/staged/modified/untracked/stashed)
     /// para que el chip debajo del status line sea informativo.
+    ///
+    /// Se llama desde `updateGitBranchState` (cada vez que el workspace probe
+    /// completa por evento del FS watcher) y desde `updateWorkingDirectory`.
+    /// Aplicamos un debounce de 300 ms para que ráfagas (`npm install`,
+    /// build, edición masiva por agente) coalesce en una única ejecución de
+    /// `git status` cuando se calma la actividad.
     func refreshGitPendingSummary() {
+        gitPendingSummaryRefreshTask?.cancel()
         let cwd = workingDirectory
         let hasBranch = gitBranchState != nil
-        Task.detached { [weak self] in
+        gitPendingSummaryRefreshTask = Task.detached { [weak self] in
+            try? await Task.sleep(nanoseconds: 300_000_000)
+            if Task.isCancelled { return }
             let summary: GitPendingSummary? = hasBranch
                 ? GitPendingSummary.compute(workingDirectory: cwd)
                 : nil
+            if Task.isCancelled { return }
             await MainActor.run { [weak self] in
                 guard let self else { return }
                 guard self.gitPendingSummary != summary else { return }
