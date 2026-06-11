@@ -16,7 +16,17 @@ import WebKit
 import Combine
 import ObjectiveC.runtime
 import Darwin
+import Security
 import CmuxFoundation
+
+/// Bundle identifier used by the Chatmux fork install (set by
+/// `scripts/install-fork.sh` when patching Info.plist). Centralised so the
+/// launch-time identity check and the Sparkle gate stay in sync.
+private let chatmuxForkBundleIdentifier = "com.cmuxterm.app.fork"
+
+/// `kSecCodeSignatureLinkerSigned` bit from `<Security/CSCommon.h>`. Not
+/// always exposed as a Swift constant; literal value is public ABI.
+private let codesignFlagLinkerSigned: UInt32 = 0x0002_0000
 
 private struct MultiWindowRouteCLIResult {
     let status: String
@@ -1225,7 +1235,93 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         return true
     }
 
+    /// Refuses to launch the Chatmux fork bundle when its codesign identity
+    /// does not match the expected `com.cmuxterm.app.fork`. Catches the
+    /// failure mode where something (Sparkle update, manual copy,
+    /// half-finished install-fork.sh) leaves `/Applications/Chatmux.app`
+    /// with the linker's automatic adhoc signature (`Identifier=cmux`) —
+    /// state in which TCC re-prompts for Documents / App Management on
+    /// every launch because consent is keyed by codesign Identifier, not
+    /// by CFBundleIdentifier.
+    ///
+    /// Only enforced when the running bundle has the fork's
+    /// `CFBundleIdentifier`. Upstream cmux, Xcode debug builds, and tagged
+    /// development builds carry different identifiers and are unaffected.
+    private func verifyForkBundleIdentityOrTerminate() {
+        guard Bundle.main.bundleIdentifier == chatmuxForkBundleIdentifier else {
+            return
+        }
+
+        var staticCode: SecStaticCode?
+        let createStatus = SecStaticCodeCreateWithPath(
+            Bundle.main.bundleURL as CFURL,
+            SecCSFlags(rawValue: 0),
+            &staticCode
+        )
+        guard createStatus == errSecSuccess, let code = staticCode else {
+            // If the Security framework can't inspect our own bundle, do
+            // not block launch on what is most likely a transient
+            // framework failure.
+            return
+        }
+
+        var info: CFDictionary?
+        let signingInfoStatus = SecCodeCopySigningInformation(
+            code,
+            SecCSFlags(rawValue: kSecCSSigningInformation),
+            &info
+        )
+        guard signingInfoStatus == errSecSuccess,
+              let infoDict = info as? [String: Any] else {
+            return
+        }
+
+        let codesignIdentifier = infoDict[kSecCodeInfoIdentifier as String] as? String
+        let flags = (infoDict[kSecCodeInfoFlags as String] as? NSNumber)?.uint32Value ?? 0
+        let isLinkerSigned = (flags & codesignFlagLinkerSigned) != 0
+        let identifierMatches = codesignIdentifier == chatmuxForkBundleIdentifier
+
+        if identifierMatches && !isLinkerSigned {
+            return
+        }
+
+        let actualIdentifier = codesignIdentifier ?? "<missing>"
+        let linkerSuffix = isLinkerSigned ? " (linker-signed)" : ""
+        let alert = NSAlert()
+        alert.messageText = "Chatmux install is corrupted"
+        alert.informativeText = """
+        The code signature does not match the expected fork identity.
+
+        • Expected codesign Identifier: \(chatmuxForkBundleIdentifier)
+        • Actual: \(actualIdentifier)\(linkerSuffix)
+
+        Until this is fixed, macOS keeps re-prompting for Documents and \
+        App Management permissions on every launch — TCC keys grants by \
+        codesign Identifier, not by CFBundleIdentifier.
+
+        Re-install with:
+            scripts/install-fork.sh
+
+        from the cmux repository.
+        """
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "Quit")
+        alert.runModal()
+        NSApp.terminate(nil)
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Hard-gate the fork bundle behind a codesign identity check before
+        // anything else runs. If a Sparkle update, a manual `cp -R`, or a
+        // half-finished `install-fork.sh` ever leaves `/Applications/
+        // Chatmux.app` with a mismatched codesign Identifier (e.g. the
+        // linker-signed default `cmux`), TCC re-prompts for Documents and
+        // App Management permissions on every launch — Apple keys grants
+        // by codesign Identifier, not by CFBundleIdentifier. We refuse to
+        // proceed in that state so the user fixes it instead of clicking
+        // through prompts indefinitely.
+        verifyForkBundleIdentityOrTerminate()
+
         let env = ProcessInfo.processInfo.environment
         let isRunningUnderXCTest = isRunningUnderXCTest(env)
         let telemetryEnabled = TelemetrySettings.enabledForCurrentLaunch
@@ -1398,7 +1494,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             installMenuBarVisibilityObserver()
             syncApplicationPresentationPreferences()
             updateController.actionDelegate = self
-            updateController.startUpdaterIfNeeded()
+            // Sparkle is disabled on the Chatmux fork. The upstream feed
+            // serves binaries signed by Manaflow with a different codesign
+            // Identifier, so applying that update on top of the fork
+            // bundle would silently swap our `com.cmuxterm.app.fork`
+            // signature for `com.cmuxterm.app` and break the TCC consent
+            // trail that `install-fork.sh` carefully sets up. `install-
+            // fork.sh` also strips `SUFeedURL` from the patched
+            // Info.plist as belt-and-suspenders.
+            if Bundle.main.bundleIdentifier != chatmuxForkBundleIdentifier {
+                updateController.startUpdaterIfNeeded()
+            }
         }
         titlebarAccessoryController.start()
         windowDecorationsController.start()

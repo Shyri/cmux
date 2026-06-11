@@ -111,9 +111,16 @@ if [[ -z "${SRC_APP_PATH}" || ! -d "${SRC_APP_PATH}" ]]; then
 fi
 
 DEST="${DEST_DIR%/}/${APP_NAME}.app"
+# Stage the install in a sibling path under DEST_DIR. Same APFS volume as
+# DEST so the final mv is an atomic rename(2). If anything aborts before
+# the final swap, the live DEST is untouched and the staging path is
+# cleaned up by the EXIT trap — there is no window in which a half-baked
+# bundle sits at /Applications/Chatmux.app waiting to be launched.
+STAGING="${DEST_DIR%/}/.${APP_NAME}.installing.$$.app"
 
 echo "==> Installing:"
 echo "    from:       $SRC_APP_PATH"
+echo "    staging:    $STAGING"
 echo "    to:         $DEST"
 echo "    bundle id:  $BUNDLE_ID"
 
@@ -129,13 +136,26 @@ if [[ ! -w "$DEST_DIR" ]]; then
   echo "==> ${DEST_DIR} is not writable; using sudo"
 fi
 
-if [[ -e "$DEST" ]]; then
-  echo "==> Removing existing ${DEST}"
-  $SUDO /bin/rm -rf "$DEST"
+# Always clean up the staging path on exit — error, interrupt, or
+# normal completion (where it has already been mv'd to DEST and rm is a
+# harmless no-op). Without this, a Ctrl-C between ditto and the final
+# swap would leave a dangling `.Chatmux.installing.NNN.app` in
+# /Applications. Also drops the temporary sanitized entitlements plist
+# created later in the script.
+trap '$SUDO /bin/rm -rf "$STAGING" 2>/dev/null || true; [[ -n "${FORK_ENTITLEMENTS:-}" ]] && /bin/rm -f "$FORK_ENTITLEMENTS" 2>/dev/null || true' EXIT
+
+if [[ -e "$STAGING" ]]; then
+  $SUDO /bin/rm -rf "$STAGING"
 fi
 
 # ditto preserves extended attributes, symlinks, and permissions better than cp for app bundles.
-$SUDO /usr/bin/ditto "$SRC_APP_PATH" "$DEST"
+$SUDO /usr/bin/ditto "$SRC_APP_PATH" "$STAGING"
+
+# Operate on the staging path for the rest of the install (Info.plist
+# patch, nested re-signing, outer codesign, verification). FINAL_DEST
+# remembers where to swap the staging bundle to once everything passes.
+FINAL_DEST="$DEST"
+DEST="$STAGING"
 
 # Patch Info.plist to give the fork a distinct identity so it runs side-by-side
 # with the official cmux app.
@@ -147,6 +167,19 @@ if [[ -f "$INFO_PLIST" ]]; then
     || $SUDO /usr/libexec/PlistBuddy -c "Add :CFBundleDisplayName string ${APP_NAME}" "$INFO_PLIST"
   $SUDO /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier ${BUNDLE_ID}" "$INFO_PLIST" 2>/dev/null \
     || $SUDO /usr/libexec/PlistBuddy -c "Add :CFBundleIdentifier string ${BUNDLE_ID}" "$INFO_PLIST"
+
+  # Disable Sparkle on the fork bundle. The upstream `SUFeedURL` serves
+  # binaries signed with Manaflow's Developer ID — applying that update
+  # over the fork would silently swap our `com.cmuxterm.app.fork`
+  # codesign Identifier for `com.cmuxterm.app` and break the TCC consent
+  # trail the rest of this script carefully sets up. AppDelegate also
+  # short-circuits `updateController.startUpdaterIfNeeded()` when running
+  # under this bundle id; this is belt-and-suspenders at the metadata
+  # level so a manually-launched Sparkle never even sees a feed.
+  $SUDO /usr/libexec/PlistBuddy -c "Set :SUEnableAutomaticChecks false" "$INFO_PLIST" 2>/dev/null \
+    || $SUDO /usr/libexec/PlistBuddy -c "Add :SUEnableAutomaticChecks bool false" "$INFO_PLIST"
+  $SUDO /usr/libexec/PlistBuddy -c "Delete :SUFeedURL" "$INFO_PLIST" 2>/dev/null || true
+  $SUDO /usr/libexec/PlistBuddy -c "Delete :SUScheduledCheckInterval" "$INFO_PLIST" 2>/dev/null || true
 fi
 
 # Re-sign ad-hoc so Gatekeeper/codesign accepts the patched bundle.
@@ -164,15 +197,48 @@ fi
 # events, library validation off) — we deliberately skip the team-
 # scoped `Resources/cmux.entitlements` (`keychain-access-groups` needs
 # a real `AppIdentifierPrefix`) since ad-hoc signing has no team.
-FORK_ENTITLEMENTS="$REPO_ROOT/cmux.entitlements"
+# Build a sanitized entitlements file for ad-hoc signing. The
+# checked-in `cmux.entitlements` declares
+# `com.apple.developer.web-browser.public-key-credential`, which is a
+# restricted Apple entitlement that can only be claimed by a Developer
+# ID-signed binary backed by a matching provisioning profile. When an
+# ad-hoc signature tries to claim it, AMFI rejects the launch with
+# `RBSRequestErrorDomain Code=5 / POSIX 153 (Launchd job spawn failed)`
+# and the kernel log shows "Code has restricted entitlements, but the
+# validation of its code signature failed". We strip every
+# `com.apple.developer.*` key out of the entitlements before passing
+# the file to codesign so the fork install only claims entitlements
+# valid under ad-hoc.
+SOURCE_ENTITLEMENTS="$REPO_ROOT/cmux.entitlements"
+FORK_ENTITLEMENTS=""
+if [[ -f "$SOURCE_ENTITLEMENTS" ]]; then
+  FORK_ENTITLEMENTS="$(mktemp -t chatmux-entitlements.XXXXXX).plist"
+  /bin/cp "$SOURCE_ENTITLEMENTS" "$FORK_ENTITLEMENTS"
+  # PlistBuddy reads xml1, plutil converts the working copy to xml1
+  # first (entitlements xml may already be xml1; this is idempotent).
+  /usr/bin/plutil -convert xml1 "$FORK_ENTITLEMENTS" 2>/dev/null || true
+  # Enumerate top-level keys and delete every one starting with
+  # `com.apple.developer.` — those are the restricted ones an ad-hoc
+  # signature cannot claim.
+  while IFS= read -r key; do
+    /usr/libexec/PlistBuddy -c "Delete :${key}" "$FORK_ENTITLEMENTS" 2>/dev/null || true
+  done < <(/usr/libexec/PlistBuddy -c "Print" "$FORK_ENTITLEMENTS" 2>/dev/null \
+    | /usr/bin/awk -F' = ' '/^[[:space:]]+com\.apple\.developer\./ { gsub(/^[[:space:]]+/, "", $1); print $1 }')
+fi
+# `--options runtime` enables hardened runtime. With the sanitized
+# entitlements above (only the `com.apple.security.cs.*` flags, which
+# are valid under ad-hoc), enabling runtime is consistent: the CS
+# entitlements only take effect WITH hardened runtime, and recent
+# macOS (≥ 14) rejects bundles that declare them without it.
 CODESIGN_ARGS=(
   --force
   --sign -
   -i "${BUNDLE_ID}"
+  --options runtime
   --timestamp=none
   --generate-entitlement-der
 )
-if [[ -f "$FORK_ENTITLEMENTS" ]]; then
+if [[ -n "$FORK_ENTITLEMENTS" && -f "$FORK_ENTITLEMENTS" ]]; then
   CODESIGN_ARGS+=(--entitlements "$FORK_ENTITLEMENTS")
 fi
 # Re-sign nested helpers (Sparkle XPC, plugins, frameworks, dock tile
@@ -207,6 +273,23 @@ for nested in "${NESTED_SORTED[@]}"; do
     "$nested"
 done
 
+# Also sign loose `.dylib` and `.so` files. The bundle-only walk above
+# misses standalone shared libraries dropped under `Contents/Frameworks/`
+# (e.g. `libcmux_command_palette_nucleo_ffi.dylib`), and any such
+# unsigned subcomponent causes the outer `codesign` below to fail with
+# "code object is not signed at all". Using `--force` makes re-signing
+# of dylibs already covered by a parent framework safe — that parent
+# gets re-signed afterwards anyway.
+LOOSE_LIBS=()
+while IFS= read -r -d '' lib; do
+  LOOSE_LIBS+=("$lib")
+done < <(/usr/bin/find "$DEST" -type f \( -name "*.dylib" -o -name "*.so" \) -print0)
+for lib in "${LOOSE_LIBS[@]}"; do
+  echo "==> Re-signing shared library: ${lib#$DEST/}"
+  $SUDO /usr/bin/codesign --force --sign - --timestamp=none --generate-entitlement-der \
+    "$lib"
+done
+
 echo "==> Re-signing outer bundle as ${BUNDLE_ID}"
 $SUDO /usr/bin/codesign "${CODESIGN_ARGS[@]}" "$DEST"
 
@@ -229,6 +312,21 @@ echo "==> Signature identifier verified: ${SIG_ID}"
 
 # Clear quarantine if something tagged it (shouldn't happen for a local build, but harmless).
 $SUDO /usr/bin/xattr -dr com.apple.quarantine "$DEST" 2>/dev/null || true
+
+# Atomic swap. STAGING and FINAL_DEST are siblings under the same
+# DEST_DIR (same APFS volume), so the rename(2) inside `mv` is atomic:
+# no observer of FINAL_DEST ever sees a half-finished bundle. We remove
+# the existing FINAL_DEST first; the brief gap between rm and mv is
+# acceptable because (a) the new bundle is already fully signed and
+# verified at STAGING, and (b) the live FINAL_DEST we are replacing is
+# either equally valid (re-install) or already broken (recovery).
+if [[ -e "$FINAL_DEST" ]]; then
+  echo "==> Removing previous install at $FINAL_DEST"
+  $SUDO /bin/rm -rf "$FINAL_DEST"
+fi
+echo "==> Promoting staging bundle to $FINAL_DEST"
+$SUDO /bin/mv "$DEST" "$FINAL_DEST"
+DEST="$FINAL_DEST"
 
 echo "==> Installed:"
 echo "    $DEST"
