@@ -217,6 +217,8 @@ extension Workspace {
             return "right_sidebar_tool"
         case .claudeChat:
             return "claude_chat"
+        case .customSidebar:
+            return "custom_sidebar"
         case .agentSession:
             return "agent_session"
         case .project:
