@@ -146,6 +146,7 @@
 		78D5F2F640FBE23964DDDBD4 /* ClaudeChatPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B24B20C94CA551A82525FEE /* ClaudeChatPanel.swift */; };
 		109982DC7AA14A1116A4F673 /* ClaudeChatPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 328BA8CF66699F6C9B66F660 /* ClaudeChatPanelView.swift */; };
 		60CA36CD0FF69F107A9F22A1 /* ClaudeChatRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */; };
+		A5009B02000000000000FORK /* ClaudeChatSurfaceKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B01000000000000FORK /* ClaudeChatSurfaceKind.swift */; };
 		C13519000000000000000007 /* ClaudeConfigDirectoryPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */; };
 		3EF9A6A5AD88979953831EF3 /* ClaudeSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */; };
 		02F48C2457D5AD5AF2E6D0BE /* ClaudeStreamEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */; };
@@ -1212,6 +1213,7 @@
 		3B24B20C94CA551A82525FEE /* ClaudeChatPanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatPanel.swift; sourceTree = "<group>"; };
 		328BA8CF66699F6C9B66F660 /* ClaudeChatPanelView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatPanelView.swift; sourceTree = "<group>"; };
 		DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatRunner.swift; sourceTree = "<group>"; };
+		A5009B01000000000000FORK /* ClaudeChatSurfaceKind.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatSurfaceKind.swift; sourceTree = "<group>"; };
 		C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeConfigDirectoryPathTests.swift; sourceTree = "<group>"; };
 		9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistory.swift; sourceTree = "<group>"; };
 		23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEvent.swift; sourceTree = "<group>"; };
@@ -2262,6 +2264,7 @@
 				4C34BA89A50145288B8A423A /* ChatPermissionRules.swift */,
 				78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */,
 				DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */,
+				A5009B01000000000000FORK /* ClaudeChatSurfaceKind.swift */,
 				9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */,
 				23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */,
 				A5009B0100000000000000B1 /* McpServerCatalog.swift */,
@@ -3724,6 +3727,7 @@
 				78D5F2F640FBE23964DDDBD4 /* ClaudeChatPanel.swift in Sources */,
 				109982DC7AA14A1116A4F673 /* ClaudeChatPanelView.swift in Sources */,
 				60CA36CD0FF69F107A9F22A1 /* ClaudeChatRunner.swift in Sources */,
+				A5009B02000000000000FORK /* ClaudeChatSurfaceKind.swift in Sources */,
 				3EF9A6A5AD88979953831EF3 /* ClaudeSessionHistory.swift in Sources */,
 				02F48C2457D5AD5AF2E6D0BE /* ClaudeStreamEvent.swift in Sources */,
 				A9F200000000000000000015 /* ClaudeStreamJSONAccumulator.swift in Sources */,
