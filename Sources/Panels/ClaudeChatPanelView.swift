@@ -1,5 +1,6 @@
 import AppKit
 import Bonsplit
+import CmuxSidebar
 import MarkdownUI
 import SwiftUI
 import UniformTypeIdentifiers

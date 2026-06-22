@@ -328,7 +328,7 @@ final class AgentChatTranscriptService {
         }
     }
 
-    private static func completedAssistantTurnTimestamp(in messages: [ChatMessage]) -> Date? {
+    private static func completedAssistantTurnTimestamp(in messages: [AgentChatMessage]) -> Date? {
         guard !messages.isEmpty else { return nil }
         var completedAt: Date?
         for message in messages where message.role == .agent {

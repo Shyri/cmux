@@ -2,6 +2,12 @@ import CmuxAgentChat
 import CmuxFoundation
 import Foundation
 
+/// `ChatMessage` is defined in both `cmux_DEV` (fork's Claude chat panel) and
+/// `CmuxAgentChat` (upstream's mobile agent panel). Alias `AgentChatMessage`
+/// so this file's references resolve to the upstream package's type without
+/// colliding with the fork-internal type.
+typealias AgentChatMessage = CmuxAgentChat.ChatMessage
+
 /// Tails one agent session's transcript JSONL: initial bounded backfill,
 /// incremental parsing on file growth, an in-memory message cache for
 /// history paging, and append/update batches for live push.
@@ -14,9 +20,9 @@ actor AgentChatTranscriptTailer {
     /// updates (tool results that completed earlier messages).
     struct Batch: Sendable {
         /// Messages newly appended, ascending seq.
-        let appended: [ChatMessage]
+        let appended: [AgentChatMessage]
         /// Earlier messages re-emitted with their results filled in.
-        let updated: [ChatMessage]
+        let updated: [AgentChatMessage]
         /// First user prompt text, when it just became known.
         let discoveredTitle: String?
         /// The transcript was truncated/replaced and the seq space
@@ -32,7 +38,7 @@ actor AgentChatTranscriptTailer {
     private let maxInitialLines: Int
     private let maxCachedMessages: Int
 
-    private var cache: [ChatMessage] = []
+    private var cache: [AgentChatMessage] = []
     private var parseState = ChatTranscriptParseState()
     private var byteOffset: UInt64 = 0
     private var lineCount = 0
@@ -106,7 +112,7 @@ actor AgentChatTranscriptTailer {
     ///   - limit: Maximum messages per page.
     /// - Returns: The page, ascending seq.
     func history(beforeSeq: Int?, limit: Int) -> ChatHistoryPage {
-        let eligible: ArraySlice<ChatMessage>
+        let eligible: ArraySlice<AgentChatMessage>
         if let beforeSeq {
             let end = cache.firstIndex { $0.seq >= beforeSeq } ?? cache.endIndex
             eligible = cache[..<end]

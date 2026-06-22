@@ -1,4 +1,4 @@
-import CmuxWorkspaceCore
+import CmuxWorkspaces
 
 extension SurfaceKind {
     /// Fork-only surface kind for the Claude Chat panel.

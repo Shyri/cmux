@@ -548,7 +548,7 @@ final class ClaudeChatRunner {
     }
 
     private func resolveClaudePath() throws -> String {
-        if let custom = UserDefaults.standard.string(forKey: ClaudeCodeIntegrationSettings.customClaudePathKey)?
+        if let custom = UserDefaults.standard.string(forKey: "claudeCodeCustomClaudePath")?
             .trimmingCharacters(in: .whitespacesAndNewlines),
            !custom.isEmpty,
            FileManager.default.isExecutableFile(atPath: custom) {

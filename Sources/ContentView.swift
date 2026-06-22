@@ -10019,24 +10019,6 @@ struct SidebarWorkspaceTopDropIndicator: View {
     }
 }
 
-/// Freezes `showsModifierShortcutHints` for the row whose context menu is open,
-/// so pressing/releasing the modifier key while the menu is up does not flip
-/// the underlying row's shortcut badges (which would be visible around the
-/// open context menu). All other rows transition live.
-enum SidebarShortcutHintFreezePolicy {
-    static func resolved(
-        live: Bool,
-        currentTabId: UUID,
-        frozenTabId: UUID?,
-        frozenValue: Bool
-    ) -> Bool {
-        if frozenTabId == currentTabId {
-            return frozenValue
-        }
-        return live
-    }
-}
-
 struct SidebarTabItemPresentationSnapshot: Equatable {
     let tabId: UUID
     let unreadCount: Int
