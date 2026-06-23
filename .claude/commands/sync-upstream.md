@@ -196,13 +196,30 @@ xcodebuild test -project cmux.xcodeproj -scheme cmux-unit \
   PRODUCT_BUNDLE_IDENTIFIER=com.cmuxterm.app.debug.<tag> \
   CMUX_SIDEBAR_EXTENSION_POINT_ID=com.cmuxterm.app.debug.<tag>.cmux.sidebar \
   CMUX_SKIP_ZIG_BUILD=1 \
+  -only-testing:cmuxTests/ChatmuxUpstreamSeamTests \
   -only-testing:cmuxTests/ChatPermissionRulesTests \
   -only-testing:cmuxTests/McpServerCatalogTests \
   -only-testing:cmuxTests/ChatThinkingEffortResolutionTests \
-  -only-testing:cmuxTests/ChatApprovalDedupePolicyTests
+  -only-testing:cmuxTests/ChatApprovalDedupePolicyTests \
+  -only-testing:cmuxTests/ClaudeStreamEventParseTests \
+  -only-testing:cmuxTests/ClaudeStreamJSONAccumulatorTests \
+  -only-testing:cmuxTests/ClaudeLoginShellWrapperTests \
+  -only-testing:cmuxTests/ClaudeChatLaunchArgumentsTests \
+  -only-testing:cmuxTests/ClaudeSessionHistoryTests \
+  -only-testing:cmuxTests/SlashCommandRegistryTests \
+  -only-testing:cmuxTests/StatusLineRunnerTests \
+  -only-testing:cmuxTests/GitLabModelDecodingTests \
+  -only-testing:cmuxTests/GitLabIssueFiltersStoreTests
 ```
 
-Expect `** TEST SUCCEEDED **`. (These four `Chat*` suites are the fork's permission-rule, MCP-catalog, model/effort-resolution, and approval-dedupe coverage — add any new `Chat*`/fork-owned suites to this list as they land.) The leading `Test Suite 'cmuxTests.xctest' ... Executed 0 tests` line is the XCTest shim and is expected; what matters is the Swift Testing summary `✔ Test run with N tests passed` and the absence of `✘`.
+Expect `** TEST SUCCEEDED **`. These suites are the fork's own coverage, grouped by area:
+- **Upstream seams** (the direct sync canaries): `ChatmuxUpstreamSeamTests` — `SurfaceKind.claudeChat` / `PanelType.claudeChat` raw values and the `SessionPanelSnapshot.claudeChat` persistence field. If a merge breaks fork↔upstream integration, this fails first.
+- **Permissions / MCP / pickers**: `ChatPermissionRulesTests`, `McpServerCatalogTests`, `ChatThinkingEffortResolutionTests`, `ChatApprovalDedupePolicyTests`.
+- **Chat engine**: `ClaudeStreamEventParseTests` (wire decode), `ClaudeStreamJSONAccumulatorTests` (streaming dedup), `ClaudeLoginShellWrapperTests` (the `-i`-hang guard), `ClaudeChatLaunchArgumentsTests` (spawn argv).
+- **Session / commands**: `ClaudeSessionHistoryTests` (resume path encoding + transcript parse), `SlashCommandRegistryTests`, `StatusLineRunnerTests`.
+- **GitLab**: `GitLabModelDecodingTests` (glab JSON → models), `GitLabIssueFiltersStoreTests`.
+
+Add any new `Chat*` / `Claude*` / `Chatmux*` / `GitLab*` fork-owned suites to this list as they land. The leading `Test Suite 'cmuxTests.xctest' ... Executed 0 tests` line is the XCTest shim and is expected; what matters is the Swift Testing summary `✔ Test run with N tests passed` and the absence of `✘`.
 
 If any test fails, the conflict resolution broke a fork invariant — **fix it on the temp branch and rebuild before the fast-forward.** Do not proceed to step 10 over a red run.
 

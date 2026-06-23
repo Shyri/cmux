@@ -101,6 +101,15 @@ private struct GLReleaseResponse: Decodable {
     }
 }
 
+extension GitLabRelease {
+    /// Decode a `glab release list -F json` payload into models. Split out
+    /// of `fetchGitLabReleases` so the field mapping (asset links, source
+    /// count, date parsing) is unit-testable without spawning `glab`.
+    static func decodeList(from data: Data) throws -> [GitLabRelease] {
+        try JSONDecoder().decode([GLReleaseResponse].self, from: data).map { $0.toModel() }
+    }
+}
+
 // MARK: - Fetcher
 
 enum GitLabReleaseFetchError: Error, Sendable {

@@ -55,6 +55,15 @@ private struct GLPipelineResponse: Decodable {
     }
 }
 
+extension GitLabPipeline {
+    /// Decode a `glab ci list -F json` payload into models. Split out of
+    /// `fetchGitLabPipelines` so the field mapping / date parsing is
+    /// unit-testable without spawning `glab`.
+    static func decodeList(from data: Data) throws -> [GitLabPipeline] {
+        try JSONDecoder().decode([GLPipelineResponse].self, from: data).map { $0.toModel() }
+    }
+}
+
 // MARK: - Job model
 
 struct GitLabJob: Identifiable, Equatable, Sendable {

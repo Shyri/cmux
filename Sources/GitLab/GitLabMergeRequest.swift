@@ -109,6 +109,16 @@ private struct GLMRResponse: Decodable {
     }
 }
 
+extension GitLabMergeRequest {
+    /// Decode a `glab mr list -F json` payload into models. Split out of
+    /// `fetchGitLabMergeRequests` so the field mapping (reviewers,
+    /// assignees, draft, merge status, date parsing) is unit-testable
+    /// without spawning `glab`.
+    static func decodeList(from data: Data) throws -> [GitLabMergeRequest] {
+        try JSONDecoder().decode([GLMRResponse].self, from: data).map { $0.toModel() }
+    }
+}
+
 // MARK: - Fetcher
 
 enum GitLabMRFetchError: Error, Sendable {

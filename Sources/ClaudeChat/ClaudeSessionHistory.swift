@@ -94,17 +94,28 @@ enum ClaudeSessionHistory {
                   let text = String(data: data, encoding: .utf8)
             else { return nil }
 
-            var messages: [ChatMessage] = []
-            for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
-                guard let lineData = line.data(using: .utf8),
-                      let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
-                else { continue }
-                if let message = decodeTranscriptLine(obj) {
-                    messages.append(message)
-                }
-            }
+            let messages = decodeTranscript(text: text)
             return messages.isEmpty ? nil : messages
         }.value
+    }
+
+    /// Parse the raw JSONL transcript text into renderable `ChatMessage`s,
+    /// skipping metadata lines and `thinking` blocks. Split out from
+    /// `loadTranscript` (which owns the file I/O) so the line-decoding
+    /// contract — string vs. array user content, tool_use/tool_result
+    /// mapping, thinking suppression — can be unit-tested with fixture
+    /// text instead of a real `~/.claude/projects` file.
+    static func decodeTranscript(text: String) -> [ChatMessage] {
+        var messages: [ChatMessage] = []
+        for line in text.split(separator: "\n", omittingEmptySubsequences: true) {
+            guard let lineData = line.data(using: .utf8),
+                  let obj = try? JSONSerialization.jsonObject(with: lineData) as? [String: Any]
+            else { continue }
+            if let message = decodeTranscriptLine(obj) {
+                messages.append(message)
+            }
+        }
+        return messages
     }
 
     /// Compute the path of the JSONL transcript for a session given the

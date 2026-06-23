@@ -133,6 +133,15 @@ private struct GLIssueResponse: Decodable {
     }
 }
 
+extension GitLabIssue {
+    /// Decode a `glab issue list -F json` payload into models. Split out of
+    /// `fetchGitLabIssues` so the field mapping (milestone, assignees,
+    /// labels, date parsing) is unit-testable without spawning `glab`.
+    static func decodeList(from data: Data) throws -> [GitLabIssue] {
+        try JSONDecoder().decode([GLIssueResponse].self, from: data).map { $0.toModel() }
+    }
+}
+
 // MARK: - Fetcher
 
 enum GitLabIssueFetchError: Error, Sendable {

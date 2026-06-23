@@ -157,6 +157,7 @@
 		6565EC5A507F25D89323E1C9 /* ChatMcpHttpServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */; };
 		9358ED6C0B673D29EEDADCDC /* ChatMcpRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE53E85BE089D858B133162 /* ChatMcpRequest.swift */; };
 		6B7604793CDAE4FC30F643CF /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBEA3FF0E2CD31C56245F60D /* ChatMessage.swift */; };
+		CFB000511000000FORKTEST /* ChatmuxUpstreamSeamTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000512000000FORKTEST /* ChatmuxUpstreamSeamTests.swift */; };
 		85162B47BC013A91A13E2EAB /* ChatPermissionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C34BA89A50145288B8A423A /* ChatPermissionRules.swift */; };
 		CFA0000111000000FORKTEST /* ChatPermissionRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */; };
 		699EFB8F6C40B40C367570D7 /* ChatRunnerDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */; };
@@ -164,15 +165,20 @@
 		F3000000A1B2C3D4E5F60718 /* CJKIMEInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3000001A1B2C3D4E5F60718 /* CJKIMEInputTests.swift */; };
 		D3571002A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3571003A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift */; };
 		C1ADE00002A1B2C3D4E5F719 /* claude in Copy CLI */ = {isa = PBXBuildFile; fileRef = C1ADE00001A1B2C3D4E5F719 /* claude */; };
+		CFB000411000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000412000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift */; };
 		78D5F2F640FBE23964DDDBD4 /* ClaudeChatPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3B24B20C94CA551A82525FEE /* ClaudeChatPanel.swift */; };
 		109982DC7AA14A1116A4F673 /* ClaudeChatPanelView.swift in Sources */ = {isa = PBXBuildFile; fileRef = 328BA8CF66699F6C9B66F660 /* ClaudeChatPanelView.swift */; };
 		60CA36CD0FF69F107A9F22A1 /* ClaudeChatRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */; };
 		A5009B02000000000000FORK /* ClaudeChatSurfaceKind.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B01000000000000FORK /* ClaudeChatSurfaceKind.swift */; };
 		C13519000000000000000007 /* ClaudeConfigDirectoryPathTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */; };
 		A5D41220A1B2C3D4E5F60718 /* ClaudeHookSurfaceResolutionSwiftTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5D41221A1B2C3D4E5F60718 /* ClaudeHookSurfaceResolutionSwiftTests.swift */; };
+		CFB000311000000FORKTEST /* ClaudeLoginShellWrapperTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000312000000FORKTEST /* ClaudeLoginShellWrapperTests.swift */; };
 		3EF9A6A5AD88979953831EF3 /* ClaudeSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */; };
+		CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */; };
 		02F48C2457D5AD5AF2E6D0BE /* ClaudeStreamEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */; };
+		CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */; };
 		A9F200000000000000000015 /* ClaudeStreamJSONAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */; };
+		CFB000211000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000212000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift */; };
 		A5D4120DA1B2C3D4E5F60718 /* CLIAuthAliasTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5D4120EA1B2C3D4E5F60718 /* CLIAuthAliasTests.swift */; };
 		C0D3F1F00000000000000103 /* CLICodexHookTimeoutRegressionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0D3F1F00000000000000104 /* CLICodexHookTimeoutRegressionTests.swift */; };
 		C46790000000000000000001 /* CLIForwardingLaunchArgumentTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = C46790000000000000000002 /* CLIForwardingLaunchArgumentTests.swift */; };
@@ -504,7 +510,9 @@
 		7A58AFA4098FECBFB6B2C3B5 /* GitDiffWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 865698E6B4097E69F6CEE67F /* GitDiffWindow.swift */; };
 		33F4ADEFAB0795B3F7A6283F /* GitLabIssue.swift in Sources */ = {isa = PBXBuildFile; fileRef = 8A17AA9BB64F91C9F6DD682A /* GitLabIssue.swift */; };
 		2DEBAD515CF3E0561EF33AE9 /* GitLabIssueFiltersStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 16F4299705A16B0C5C30B58B /* GitLabIssueFiltersStore.swift */; };
+		CFB001011000000FORKTEST /* GitLabIssueFiltersStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB001012000000FORKTEST /* GitLabIssueFiltersStoreTests.swift */; };
 		F61411B1101F4CE4DC8AD1E9 /* GitLabMergeRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = 89EF014EC9EAC281BDD5F1A7 /* GitLabMergeRequest.swift */; };
+		CFB000911000000FORKTEST /* GitLabModelDecodingTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000912000000FORKTEST /* GitLabModelDecodingTests.swift */; };
 		7A111870F4BE55784F0AFD5C /* GitLabPipeline.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE3D52AC64E37B83BF875D65 /* GitLabPipeline.swift */; };
 		5DE99405E66649D07FE0EF9F /* GitLabProcessUtils.swift in Sources */ = {isa = PBXBuildFile; fileRef = 29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */; };
 		1A2B3C4D5E6F708192A3B4C5 /* GitLabProjectMembers.swift in Sources */ = {isa = PBXBuildFile; fileRef = D1E2F30414253647586978A9 /* GitLabProjectMembers.swift */; };
@@ -866,6 +874,7 @@
 		988C6A036BA56EA5759A95A0 /* SidebarWorkspaceSnapshotRefreshPolicy.swift in Sources */ = {isa = PBXBuildFile; fileRef = D50D9BCE46701FBA91C2EFB6 /* SidebarWorkspaceSnapshotRefreshPolicy.swift */; };
 		62270F3DCECB4787D789CCE3 /* SidebarWorkspaceSnapshotRefreshPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F016B5C09357B3226FA2E014 /* SidebarWorkspaceSnapshotRefreshPolicyTests.swift */; };
 		CE88F827DB2540BCB6E92C1D /* SlashCommandRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = F001C10B3FD713AD45901F02 /* SlashCommandRegistry.swift */; };
+		CFB000711000000FORKTEST /* SlashCommandRegistryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000712000000FORKTEST /* SlashCommandRegistryTests.swift */; };
 		A5001226 /* SocketControlMode+Display.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5001225 /* SocketControlMode+Display.swift */; };
 		F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */; };
 		C510C1E00000000000000002 /* SocketOperationTelemetry.swift in Sources */ = {isa = PBXBuildFile; fileRef = C510C1E00000000000000001 /* SocketOperationTelemetry.swift */; };
@@ -886,6 +895,7 @@
 		C0DE70500000000000000002 /* start-cmux-profiling in Copy CLI */ = {isa = PBXBuildFile; fileRef = C0DE70500000000000000001 /* start-cmux-profiling */; };
 		D35B71010000000000000001 /* StartupBreadcrumbLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = D35B71010000000000000002 /* StartupBreadcrumbLog.swift */; };
 		4AF1C85502BAC4A30809AB1C /* StatusLineRunner.swift in Sources */ = {isa = PBXBuildFile; fileRef = 59F94D4B532E543F34426163 /* StatusLineRunner.swift */; };
+		CFB000811000000FORKTEST /* StatusLineRunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000812000000FORKTEST /* StatusLineRunnerTests.swift */; };
 		C0DE70530000000000000002 /* submit-cmux-profile in Copy CLI */ = {isa = PBXBuildFile; fileRef = C0DE70530000000000000001 /* submit-cmux-profile */; };
 		D7AB00000000000000B041 /* SupersededPhoneDismissBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AB00000000000000B040 /* SupersededPhoneDismissBuffer.swift */; };
 		D7AB00000000000000B041 /* SupersededPhoneDismissBuffer.swift in Sources */ = {isa = PBXBuildFile; fileRef = D7AB00000000000000B040 /* SupersededPhoneDismissBuffer.swift */; };
@@ -1321,6 +1331,7 @@
 		E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMcpHttpServer.swift; sourceTree = "<group>"; };
 		BDE53E85BE089D858B133162 /* ChatMcpRequest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMcpRequest.swift; sourceTree = "<group>"; };
 		FBEA3FF0E2CD31C56245F60D /* ChatMessage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
+		CFB000512000000FORKTEST /* ChatmuxUpstreamSeamTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatmuxUpstreamSeamTests.swift; sourceTree = "<group>"; };
 		4C34BA89A50145288B8A423A /* ChatPermissionRules.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatPermissionRules.swift; sourceTree = "<group>"; };
 		CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPermissionRulesTests.swift; sourceTree = "<group>"; };
 		78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRunnerDebugLog.swift; sourceTree = "<group>"; };
@@ -1328,15 +1339,20 @@
 		F3000001A1B2C3D4E5F60718 /* CJKIMEInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CJKIMEInputTests.swift; sourceTree = "<group>"; };
 		D3571003A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CJKIMEMarkedSelectionTests.swift; sourceTree = "<group>"; };
 		C1ADE00001A1B2C3D4E5F719 /* claude */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = Resources/bin/claude; sourceTree = SOURCE_ROOT; };
+		CFB000412000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChatLaunchArgumentsTests.swift; sourceTree = "<group>"; };
 		3B24B20C94CA551A82525FEE /* ClaudeChatPanel.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatPanel.swift; sourceTree = "<group>"; };
 		328BA8CF66699F6C9B66F660 /* ClaudeChatPanelView.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatPanelView.swift; sourceTree = "<group>"; };
 		DE2E45AD62BDDD22709C1AC1 /* ClaudeChatRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatRunner.swift; sourceTree = "<group>"; };
 		A5009B01000000000000FORK /* ClaudeChatSurfaceKind.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeChatSurfaceKind.swift; sourceTree = "<group>"; };
 		C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeConfigDirectoryPathTests.swift; sourceTree = "<group>"; };
 		A5D41221A1B2C3D4E5F60718 /* ClaudeHookSurfaceResolutionSwiftTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeHookSurfaceResolutionSwiftTests.swift; sourceTree = "<group>"; };
+		CFB000312000000FORKTEST /* ClaudeLoginShellWrapperTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeLoginShellWrapperTests.swift; sourceTree = "<group>"; };
 		9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistory.swift; sourceTree = "<group>"; };
+		CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistoryTests.swift; sourceTree = "<group>"; };
 		23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEvent.swift; sourceTree = "<group>"; };
+		CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEventParseTests.swift; sourceTree = "<group>"; };
 		A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ClaudeStreamJSONAccumulator.swift; sourceTree = "<group>"; };
+		CFB000212000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStreamJSONAccumulatorTests.swift; sourceTree = "<group>"; };
 		A5D4120EA1B2C3D4E5F60718 /* CLIAuthAliasTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIAuthAliasTests.swift; sourceTree = "<group>"; };
 		C0D3F1F00000000000000104 /* CLICodexHookTimeoutRegressionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLICodexHookTimeoutRegressionTests.swift; sourceTree = "<group>"; };
 		C46790000000000000000002 /* CLIForwardingLaunchArgumentTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CLIForwardingLaunchArgumentTests.swift; sourceTree = "<group>"; };
@@ -1617,7 +1633,9 @@
 		865698E6B4097E69F6CEE67F /* GitDiffWindow.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitDiffWindow.swift; sourceTree = "<group>"; };
 		8A17AA9BB64F91C9F6DD682A /* GitLabIssue.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabIssue.swift; sourceTree = "<group>"; };
 		16F4299705A16B0C5C30B58B /* GitLabIssueFiltersStore.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabIssueFiltersStore.swift; sourceTree = "<group>"; };
+		CFB001012000000FORKTEST /* GitLabIssueFiltersStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabIssueFiltersStoreTests.swift; sourceTree = "<group>"; };
 		89EF014EC9EAC281BDD5F1A7 /* GitLabMergeRequest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabMergeRequest.swift; sourceTree = "<group>"; };
+		CFB000912000000FORKTEST /* GitLabModelDecodingTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GitLabModelDecodingTests.swift; sourceTree = "<group>"; };
 		EE3D52AC64E37B83BF875D65 /* GitLabPipeline.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabPipeline.swift; sourceTree = "<group>"; };
 		29DBAA03C0BD5B102626100D /* GitLabProcessUtils.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabProcessUtils.swift; sourceTree = "<group>"; };
 		D1E2F30414253647586978A9 /* GitLabProjectMembers.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = GitLabProjectMembers.swift; sourceTree = "<group>"; };
@@ -1970,6 +1988,7 @@
 		D50D9BCE46701FBA91C2EFB6 /* SidebarWorkspaceSnapshotRefreshPolicy.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Sidebar/SidebarWorkspaceSnapshotRefreshPolicy.swift; sourceTree = "<group>"; };
 		F016B5C09357B3226FA2E014 /* SidebarWorkspaceSnapshotRefreshPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SidebarWorkspaceSnapshotRefreshPolicyTests.swift; sourceTree = "<group>"; };
 		F001C10B3FD713AD45901F02 /* SlashCommandRegistry.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = SlashCommandRegistry.swift; sourceTree = "<group>"; };
+		CFB000712000000FORKTEST /* SlashCommandRegistryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SlashCommandRegistryTests.swift; sourceTree = "<group>"; };
 		A5001225 /* SocketControlMode+Display.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "SocketControlMode+Display.swift"; sourceTree = "<group>"; };
 		F8000001A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketControlPasswordStoreTests.swift; sourceTree = "<group>"; };
 			C510C1E00000000000000001 /* SocketOperationTelemetry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SocketOperationTelemetry.swift; sourceTree = "<group>"; };
@@ -1984,6 +2003,7 @@
 		C0DE70500000000000000001 /* start-cmux-profiling */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "Resources/bin/start-cmux-profiling"; sourceTree = SOURCE_ROOT; };
 		D35B71010000000000000002 /* StartupBreadcrumbLog.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/StartupBreadcrumbLog.swift; sourceTree = "<group>"; };
 		59F94D4B532E543F34426163 /* StatusLineRunner.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = StatusLineRunner.swift; sourceTree = "<group>"; };
+		CFB000812000000FORKTEST /* StatusLineRunnerTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = StatusLineRunnerTests.swift; sourceTree = "<group>"; };
 		C0DE70530000000000000001 /* submit-cmux-profile */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = "Resources/bin/submit-cmux-profile"; sourceTree = SOURCE_ROOT; };
 		D7AB00000000000000B040 /* SupersededPhoneDismissBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupersededPhoneDismissBuffer.swift; sourceTree = "<group>"; };
 		D7AB00000000000000B040 /* SupersededPhoneDismissBuffer.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SupersededPhoneDismissBuffer.swift; sourceTree = "<group>"; };
@@ -3206,6 +3226,16 @@
 				C13519000000000000000004 /* GhosttyTerminalStartupEnvironmentTests.swift */,
 				C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */,
 				CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */,
+				CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */,
+				CFB000212000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift */,
+				CFB000312000000FORKTEST /* ClaudeLoginShellWrapperTests.swift */,
+				CFB000412000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift */,
+				CFB000512000000FORKTEST /* ChatmuxUpstreamSeamTests.swift */,
+				CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */,
+				CFB000712000000FORKTEST /* SlashCommandRegistryTests.swift */,
+				CFB000812000000FORKTEST /* StatusLineRunnerTests.swift */,
+				CFB000912000000FORKTEST /* GitLabModelDecodingTests.swift */,
+				CFB001012000000FORKTEST /* GitLabIssueFiltersStoreTests.swift */,
 				CFA0000212000000FORKTEST /* McpServerCatalogTests.swift */,
 				CFA0000312000000FORKTEST /* ChatThinkingEffortResolutionTests.swift */,
 				CFA0000412000000FORKTEST /* ChatApprovalDedupePolicyTests.swift */,
@@ -4720,12 +4750,18 @@
 				C0DE62600000000000000001 /* BrowserWindowPortalRegistryNotificationTests.swift in Sources */,
 				C0DE35530000000000000101 /* BundledCLILinkageTests.swift in Sources */,
 				CFA0000411000000FORKTEST /* ChatApprovalDedupePolicyTests.swift in Sources */,
+				CFB000511000000FORKTEST /* ChatmuxUpstreamSeamTests.swift in Sources */,
 				CFA0000111000000FORKTEST /* ChatPermissionRulesTests.swift in Sources */,
 				CFA0000311000000FORKTEST /* ChatThinkingEffortResolutionTests.swift in Sources */,
 				F3000000A1B2C3D4E5F60718 /* CJKIMEInputTests.swift in Sources */,
 				D3571002A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift in Sources */,
+				CFB000411000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift in Sources */,
 				C13519000000000000000007 /* ClaudeConfigDirectoryPathTests.swift in Sources */,
 				A5D41220A1B2C3D4E5F60718 /* ClaudeHookSurfaceResolutionSwiftTests.swift in Sources */,
+				CFB000311000000FORKTEST /* ClaudeLoginShellWrapperTests.swift in Sources */,
+				CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */,
+				CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */,
+				CFB000211000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift in Sources */,
 				A5D4120DA1B2C3D4E5F60718 /* CLIAuthAliasTests.swift in Sources */,
 				C0D3F1F00000000000000103 /* CLICodexHookTimeoutRegressionTests.swift in Sources */,
 				C46790000000000000000001 /* CLIForwardingLaunchArgumentTests.swift in Sources */,
@@ -4804,6 +4840,8 @@
 				3069F1D10000000000000003 /* GhosttyPasteboardFidelityTests.swift in Sources */,
 				C13519000000000000000003 /* GhosttyTerminalStartupEnvironmentTests.swift in Sources */,
 				D7AB34400000000000000003 /* GhosttyTerminalViewVisibilityPolicyTests.swift in Sources */,
+				CFB001011000000FORKTEST /* GitLabIssueFiltersStoreTests.swift in Sources */,
+				CFB000911000000FORKTEST /* GitLabModelDecodingTests.swift in Sources */,
 				3865A0053865A0053865A005 /* GlobalSearchShortcutSettingsTests.swift in Sources */,
 				4931A11B0000000000000002 /* HiddenRightSidebarContentMountingTests.swift in Sources */,
 				F1C1AA21B7E84D10A1C10001 /* InactivePaneFirstClickFocusTests.swift in Sources */,
@@ -4899,6 +4937,7 @@
 				C9A57505C9A57505C9A57505 /* SidebarWorkspaceScrollLayoutTests.swift in Sources */,
 				C0DE56010000000000000001 /* SidebarWorkspaceSelectionAnchorPolicyTests.swift in Sources */,
 					62270F3DCECB4787D789CCE3 /* SidebarWorkspaceSnapshotRefreshPolicyTests.swift in Sources */,
+				CFB000711000000FORKTEST /* SlashCommandRegistryTests.swift in Sources */,
 						F8000000A1B2C3D4E5F60718 /* SocketControlPasswordStoreTests.swift in Sources */,
 						6E8B6A69A468EF938B9AD8C2 /* SSHPTYAttachReconnectInputFilter.swift in Sources */,
 						E60610200000000000000003 /* SSHPTYAttachReconnectInputFilterControl.swift in Sources */,
@@ -4906,6 +4945,7 @@
 						E60610300000000000000003 /* SSHPTYAttachReconnectInputFilterState.swift in Sources */,
 						B6285B71BA6F82AF8F945E00 /* SSHPTYAttachReconnectInputFilterTests.swift in Sources */,
 				F6355600A1B2C3D4E5F60718 /* SSHStartupSignalLifecycleTests.swift in Sources */,
+				CFB000811000000FORKTEST /* StatusLineRunnerTests.swift in Sources */,
 				FBE660ABA1854983B84368C6 /* SystemWideHotkeyShortcutPolicyTests.swift in Sources */,
 				C0DE64160000000000000001 /* TabManagerNotificationFocusRegressionTests.swift in Sources */,
 				2BB56A710BB1FC50367E5BCF /* TabManagerSessionSnapshotTests.swift in Sources */,

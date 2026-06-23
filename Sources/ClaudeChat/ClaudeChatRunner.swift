@@ -336,22 +336,22 @@ final class ClaudeChatRunner {
 
     // MARK: - Private
 
-    private func launch(
-        claudePath: String,
-        cwd: String,
-        sessionId: String?,
+    /// Builds the `claude -p` argv (before the login-shell wrapping) for a
+    /// given launch configuration. Pure and deterministic so the flag
+    /// ordering / conditional inclusion can be unit-tested without spawning
+    /// a process — this is the surface that bakes `--permission-mode`,
+    /// `--model`, `--effort`, `--resume` etc. into the spawn, and a wrong
+    /// flag here silently changes the session (the class of bug that drove
+    /// the respawn-on-change tracking).
+    static func buildClaudeArguments(
         permissionMode: String,
         model: String?,
         effort: String?,
         mcpConfigPath: String?,
         permissionPromptTool: String?,
-        appendSystemPrompt: String?
-    ) throws {
-        let process = Process()
-        let stdoutPipe = Pipe()
-        let stderrPipe = Pipe()
-        let stdinPipe = Pipe()
-
+        appendSystemPrompt: String?,
+        sessionId: String?
+    ) -> [String] {
         var claudeArguments: [String] = [
             "-p",
             "--input-format", "stream-json",
@@ -383,6 +383,34 @@ final class ClaudeChatRunner {
         if let sessionId, !sessionId.isEmpty {
             claudeArguments += ["--resume", sessionId]
         }
+        return claudeArguments
+    }
+
+    private func launch(
+        claudePath: String,
+        cwd: String,
+        sessionId: String?,
+        permissionMode: String,
+        model: String?,
+        effort: String?,
+        mcpConfigPath: String?,
+        permissionPromptTool: String?,
+        appendSystemPrompt: String?
+    ) throws {
+        let process = Process()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        let stdinPipe = Pipe()
+
+        let claudeArguments = Self.buildClaudeArguments(
+            permissionMode: permissionMode,
+            model: model,
+            effort: effort,
+            mcpConfigPath: mcpConfigPath,
+            permissionPromptTool: permissionPromptTool,
+            appendSystemPrompt: appendSystemPrompt,
+            sessionId: sessionId
+        )
         let (executableURL, processArguments) = ClaudeLoginShellWrapper.wrap(
             claudePath: claudePath,
             arguments: claudeArguments
