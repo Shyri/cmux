@@ -21,7 +21,8 @@ Brings `Shyri/cmux:upstream-main` up to date with `manaflow-ai/cmux:main`, then 
 
 ## Safety contract
 
-- **Do not push `main` until the user has confirmed a successful build**. The fast-forward at the end is the only "destructive" action and only happens after explicit confirmation.
+- **Do not push `main` until the user has confirmed a successful build AND the Chatmux test suite is green**. The fast-forward at the end is the only "destructive" action and only happens after both gates pass.
+- After resolving conflicts, a green build is necessary but not sufficient: run the fork's own unit tests (the `Chat*` suites under the `cmux-unit` scheme, see step 9). A botched conflict resolution in a fork-owned file can compile fine yet silently break behaviour (permission rules, MCP catalog round-trip, model/effort resolution, approval dedupe). **Never fast-forward `main` over a red test run.**
 - Never force-push `main` or `upstream-main`.
 - Never skip hooks or signing.
 - If anything other than `cmux.xcodeproj/project.pbxproj`, tests, or scripts conflicts, **stop and ask the user**. Code-source conflicts in fork-owned files (Claude Chat panel, GitLab panels, NotesSidebar, diff viewer, etc.) need human judgement.
@@ -184,9 +185,39 @@ rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/reload.sh --tag <tag> 
 
 Expect at least one round of switch-exhaustivity build errors after the merge — every `switch panel.panelType` or `switch RightSidebarMode` that handles `.claudeChat`/`.gitlab`/etc. needs the new upstream case (`.agentSession`) and vice versa. Fix in place, commit on the temp branch, rebuild.
 
-### 9. Fast-forward `main` and clean up
+### 9. Run the Chatmux test suite on the temp branch
 
-Once the user confirms the build works:
+A green build only proves it compiles. The merge edits fork-owned files (Claude Chat panel, MCP catalog, permission rules, model/effort pickers), and a wrong conflict resolution there can compile yet break behaviour. Gate the fast-forward on the fork's own unit tests, which are deterministic and run in seconds. Reuse the **same tagged derived-data path the build produced** so this doesn't rebuild from scratch (substitute `<tag>` with the tag passed to `reload.sh`):
+
+```bash
+xcodebuild test -project cmux.xcodeproj -scheme cmux-unit \
+  -configuration Debug -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath ~/Library/Developer/Xcode/DerivedData/cmux-<tag> \
+  PRODUCT_BUNDLE_IDENTIFIER=com.cmuxterm.app.debug.<tag> \
+  CMUX_SIDEBAR_EXTENSION_POINT_ID=com.cmuxterm.app.debug.<tag>.cmux.sidebar \
+  CMUX_SKIP_ZIG_BUILD=1 \
+  -only-testing:cmuxTests/ChatPermissionRulesTests \
+  -only-testing:cmuxTests/McpServerCatalogTests \
+  -only-testing:cmuxTests/ChatThinkingEffortResolutionTests \
+  -only-testing:cmuxTests/ChatApprovalDedupePolicyTests
+```
+
+Expect `** TEST SUCCEEDED **`. (These four `Chat*` suites are the fork's permission-rule, MCP-catalog, model/effort-resolution, and approval-dedupe coverage — add any new `Chat*`/fork-owned suites to this list as they land.) The leading `Test Suite 'cmuxTests.xctest' ... Executed 0 tests` line is the XCTest shim and is expected; what matters is the Swift Testing summary `✔ Test run with N tests passed` and the absence of `✘`.
+
+If any test fails, the conflict resolution broke a fork invariant — **fix it on the temp branch and rebuild before the fast-forward.** Do not proceed to step 10 over a red run.
+
+If the merge touched large upstream-shared files heavily (big `Workspace.swift` / `ContentView.swift` / `TabManager.swift` hunks), also run the full `cmux-unit` target as a broader regression check, accepting it is slower and may include environment-sensitive integration tests:
+
+```bash
+xcodebuild test -project cmux.xcodeproj -scheme cmux-unit \
+  -configuration Debug -destination 'platform=macOS,arch=arm64' \
+  -derivedDataPath ~/Library/Developer/Xcode/DerivedData/cmux-<tag> \
+  CMUX_SKIP_ZIG_BUILD=1
+```
+
+### 10. Fast-forward `main` and clean up
+
+Once the build works **and** the test suite is green:
 
 ```bash
 git checkout main
@@ -196,7 +227,7 @@ git branch -d "main-merge-$suffix"
 git push fork --delete "main-merge-$suffix"
 ```
 
-### 10. Report
+### 11. Report
 
 Summarise:
 - `upstream-main` now at: `<SHA> <subject>`
@@ -204,6 +235,7 @@ Summarise:
 - Bonsplit pointer: `<sha>`
 - Ghostty pointer: `<sha>`
 - How many genuine new upstream commits landed (= `git rev-list <previous main>..main --count`).
+- Chatmux test result: `<N tests, 0 failures>` (from step 9). State explicitly that the suite passed — this is the proof the conflict resolution preserved fork behaviour.
 
 ## Notes
 
