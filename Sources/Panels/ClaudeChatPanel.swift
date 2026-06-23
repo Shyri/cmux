@@ -154,16 +154,31 @@ enum ChatThinkingEffort: String, CaseIterable, Identifiable {
         let url = FileManager.default
             .homeDirectoryForCurrentUser
             .appendingPathComponent(".claude/settings.json")
-        if let data = try? Data(contentsOf: url),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let raw = json["effortLevel"] as? String,
-           let resolved = ChatThinkingEffort(rawValue: raw),
-           resolved != .default {
-            return resolved
+        return resolveCLIDefault(settingsURL: url)
+    }
+
+    /// Same as `resolveCLIDefault()` but takes an explicit settings.json URL
+    /// so tests (and callers that read non-default locations) can drive it
+    /// without depending on `$HOME`.
+    static func resolveCLIDefault(settingsURL: URL) -> ChatThinkingEffort? {
+        if let data = try? Data(contentsOf: settingsURL),
+           let parsed = parseEffortLevel(from: data),
+           parsed != .default {
+            return parsed
         }
         // Recent claude releases ship with a built-in default of `high`
         // (see the binary string "Now defaults to high effort").
         return .high
+    }
+
+    /// Decode `effortLevel` out of `settings.json` bytes. Returns `nil` when
+    /// the file is not JSON, the top-level is not a dictionary, the field
+    /// is absent, or the value is not a known `ChatThinkingEffort` raw value.
+    static func parseEffortLevel(from data: Data) -> ChatThinkingEffort? {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let raw = json["effortLevel"] as? String
+        else { return nil }
+        return ChatThinkingEffort(rawValue: raw)
     }
 
     var id: String { rawValue }
@@ -281,6 +296,45 @@ enum ChatPermissionMode: String, CaseIterable, Identifiable {
         case .acceptEdits: return "pencil"
         case .auto: return "bolt.fill"
         }
+    }
+}
+
+/// Decides whether an incoming MCP approval request from claude is a
+/// duplicate of one we already surfaced (claude re-fires the same tool_use
+/// with a fresh `tool_use_id` after a retry / re-render), in which case
+/// the panel should attach the new resolver as an alias of the existing
+/// card instead of showing a second Allow/Deny prompt.
+///
+/// Pure logic, extracted from `ClaudeChatPanel.server(_:didReceiveApproval:)`
+/// so it can be unit-tested without booting the whole MainActor panel.
+enum ChatApprovalDedupePolicy {
+    /// A row from the pending-approvals queue, narrowed to just the fields
+    /// dedup looks at (id + the (toolName, inputJSON) match key).
+    struct PendingApprovalKey: Equatable {
+        let id: String
+        let toolName: String
+        let inputJSON: String
+    }
+
+    enum Decision: Equatable {
+        /// No pending card matches; surface as a new primary card.
+        case newPrimary
+        /// A pending card already matches; attach as an alias whose
+        /// resolver drains when the user resolves `primaryID`.
+        case followsExisting(primaryID: String)
+    }
+
+    static func decide(
+        incomingToolName: String,
+        incomingInputJSON: String,
+        pendingApprovals: [PendingApprovalKey]
+    ) -> Decision {
+        if let existing = pendingApprovals.first(where: {
+            $0.toolName == incomingToolName && $0.inputJSON == incomingInputJSON
+        }) {
+            return .followsExisting(primaryID: existing.id)
+        }
+        return .newPrimary
     }
 }
 
@@ -2521,15 +2575,25 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // one. Store its resolver so we can answer claude's duplicate
         // call with the same response when the user clicks Allow/Deny
         // once, but don't surface a second card.
-        if let existing = pendingApprovals.first(where: {
-            $0.toolName == request.toolName && $0.inputJSON == request.inputJSON
-        }) {
-            approvalResolvers[request.id] = completion
-            approvalDedupeAliases[existing.id, default: []].append(request.id)
-            return
+        let dedupeKeys = pendingApprovals.map { approval in
+            ChatApprovalDedupePolicy.PendingApprovalKey(
+                id: approval.id,
+                toolName: approval.toolName,
+                inputJSON: approval.inputJSON
+            )
         }
-        approvalResolvers[request.id] = completion
-        pendingApprovals.append(request)
+        switch ChatApprovalDedupePolicy.decide(
+            incomingToolName: request.toolName,
+            incomingInputJSON: request.inputJSON,
+            pendingApprovals: dedupeKeys
+        ) {
+        case .followsExisting(let primaryID):
+            approvalResolvers[request.id] = completion
+            approvalDedupeAliases[primaryID, default: []].append(request.id)
+        case .newPrimary:
+            approvalResolvers[request.id] = completion
+            pendingApprovals.append(request)
+        }
     }
 
     private func parseInput(_ inputJSON: String) -> [String: Any] {

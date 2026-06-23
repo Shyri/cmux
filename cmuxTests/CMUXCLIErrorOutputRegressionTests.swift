@@ -1291,6 +1291,36 @@ import Testing
         return directory.appendingPathComponent("cmux.sock", isDirectory: false)
     }
 
+    private func writeTheme(named name: String, background: String, to directory: URL) throws {
+        try """
+        background = \(background)
+        foreground = #eeeeee
+        cursor-color = #ff00ff
+        cursor-text = #000000
+        """.write(
+            to: directory.appendingPathComponent(name, isDirectory: false),
+            atomically: true,
+            encoding: .utf8
+        )
+    }
+
+    private func managedThemeValue(in configURL: URL) throws -> String {
+        let contents = try String(contentsOf: configURL, encoding: .utf8)
+        let values = contents.components(separatedBy: .newlines).compactMap { line -> String? in
+            let trimmed = line.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { return nil }
+            let parts = trimmed.split(separator: "=", maxSplits: 1).map(String.init)
+            guard parts.count == 2,
+                  parts[0].trimmingCharacters(in: .whitespacesAndNewlines) == "theme" else {
+                return nil
+            }
+            return parts[1]
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+        }
+        return try XCTUnwrap(values.last)
+    }
+
     private func fakeTaggedBundledCLIPath(
         sourceCLIPath: String,
         tagSlug: String,
@@ -1479,6 +1509,7 @@ private final class UnixSocketResponder {
     private let queue = DispatchQueue(label: "com.cmux.tests.unix-socket-responder")
     private let lock = NSLock()
     private var stopped = false
+    private var requests: [String] = []
     private var listenerFD: Int32 = -1
 
     init(path: String, response: String, responseDelay: TimeInterval = 0) throws {
@@ -1537,6 +1568,12 @@ private final class UnixSocketResponder {
         stop()
     }
 
+    var receivedRequests: [String] {
+        lock.lock()
+        defer { lock.unlock() }
+        return requests
+    }
+
     func stop() {
         lock.lock()
         guard !stopped else {
@@ -1589,6 +1626,12 @@ private final class UnixSocketResponder {
         }
         guard !request.isEmpty else {
             return
+        }
+        if let line = String(data: request, encoding: .utf8)?
+            .trimmingCharacters(in: .whitespacesAndNewlines) {
+            lock.lock()
+            requests.append(line)
+            lock.unlock()
         }
         if responseDelay > 0 {
             Thread.sleep(forTimeInterval: responseDelay)

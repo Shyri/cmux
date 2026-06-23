@@ -153,11 +153,14 @@
 		CA52E0030000000000000000 /* CanvasInlineBrowserHostingEnvironment.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA52F0030000000000000000 /* CanvasInlineBrowserHostingEnvironment.swift */; };
 		CA52B0060000000000000000 /* CanvasLayoutSettings.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA52C0060000000000000000 /* CanvasLayoutSettings.swift */; };
 		CA52B0070000000000000000 /* CanvasPaneContent.swift in Sources */ = {isa = PBXBuildFile; fileRef = CA52C0070000000000000000 /* CanvasPaneContent.swift */; };
+		CFA0000411000000FORKTEST /* ChatApprovalDedupePolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA0000412000000FORKTEST /* ChatApprovalDedupePolicyTests.swift */; };
 		6565EC5A507F25D89323E1C9 /* ChatMcpHttpServer.swift in Sources */ = {isa = PBXBuildFile; fileRef = E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */; };
 		9358ED6C0B673D29EEDADCDC /* ChatMcpRequest.swift in Sources */ = {isa = PBXBuildFile; fileRef = BDE53E85BE089D858B133162 /* ChatMcpRequest.swift */; };
 		6B7604793CDAE4FC30F643CF /* ChatMessage.swift in Sources */ = {isa = PBXBuildFile; fileRef = FBEA3FF0E2CD31C56245F60D /* ChatMessage.swift */; };
 		85162B47BC013A91A13E2EAB /* ChatPermissionRules.swift in Sources */ = {isa = PBXBuildFile; fileRef = 4C34BA89A50145288B8A423A /* ChatPermissionRules.swift */; };
+		CFA0000111000000FORKTEST /* ChatPermissionRulesTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */; };
 		699EFB8F6C40B40C367570D7 /* ChatRunnerDebugLog.swift in Sources */ = {isa = PBXBuildFile; fileRef = 78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */; };
+		CFA0000311000000FORKTEST /* ChatThinkingEffortResolutionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA0000312000000FORKTEST /* ChatThinkingEffortResolutionTests.swift */; };
 		F3000000A1B2C3D4E5F60718 /* CJKIMEInputTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = F3000001A1B2C3D4E5F60718 /* CJKIMEInputTests.swift */; };
 		D3571002A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = D3571003A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift */; };
 		C1ADE00002A1B2C3D4E5F719 /* claude in Copy CLI */ = {isa = PBXBuildFile; fileRef = C1ADE00001A1B2C3D4E5F719 /* claude */; };
@@ -572,6 +575,7 @@
 		A5009B0100000000000000B8 /* McpHealthProber.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B7 /* McpHealthProber.swift */; };
 		A5009B0100000000000000B4 /* McpManagerPopover.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B3 /* McpManagerPopover.swift */; };
 		A5009B0100000000000000B2 /* McpServerCatalog.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5009B0100000000000000B1 /* McpServerCatalog.swift */; };
+		CFA0000211000000FORKTEST /* McpServerCatalogTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFA0000212000000FORKTEST /* McpServerCatalogTests.swift */; };
 		1A8BEE693C9E4C3190CB7F20 /* MenuBarExtraController.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7934BB35B66491B1BCA8064 /* MenuBarExtraController.swift */; };
 		606500010000000000000001 /* MenuBarOnlyActivationPolicyTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 606500010000000000000002 /* MenuBarOnlyActivationPolicyTests.swift */; };
 		C0DE70510000000000000002 /* MenuBarProfilingLauncher.swift in Sources */ = {isa = PBXBuildFile; fileRef = C0DE70510000000000000001 /* MenuBarProfilingLauncher.swift */; };
@@ -1313,11 +1317,14 @@
 		CA52F0030000000000000000 /* CanvasInlineBrowserHostingEnvironment.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasInlineBrowserHostingEnvironment.swift"; sourceTree = "<group>"; };
 		CA52C0060000000000000000 /* CanvasLayoutSettings.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasLayoutSettings.swift"; sourceTree = "<group>"; };
 		CA52C0070000000000000000 /* CanvasPaneContent.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = "CanvasPaneContent.swift"; sourceTree = "<group>"; };
+		CFA0000412000000FORKTEST /* ChatApprovalDedupePolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatApprovalDedupePolicyTests.swift; sourceTree = "<group>"; };
 		E736846EE87C39633BF7FD51 /* ChatMcpHttpServer.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMcpHttpServer.swift; sourceTree = "<group>"; };
 		BDE53E85BE089D858B133162 /* ChatMcpRequest.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMcpRequest.swift; sourceTree = "<group>"; };
 		FBEA3FF0E2CD31C56245F60D /* ChatMessage.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatMessage.swift; sourceTree = "<group>"; };
 		4C34BA89A50145288B8A423A /* ChatPermissionRules.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatPermissionRules.swift; sourceTree = "<group>"; };
+		CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatPermissionRulesTests.swift; sourceTree = "<group>"; };
 		78418D16ACDDE78849592C11 /* ChatRunnerDebugLog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ChatRunnerDebugLog.swift; sourceTree = "<group>"; };
+		CFA0000312000000FORKTEST /* ChatThinkingEffortResolutionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ChatThinkingEffortResolutionTests.swift; sourceTree = "<group>"; };
 		F3000001A1B2C3D4E5F60718 /* CJKIMEInputTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CJKIMEInputTests.swift; sourceTree = "<group>"; };
 		D3571003A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = CJKIMEMarkedSelectionTests.swift; sourceTree = "<group>"; };
 		C1ADE00001A1B2C3D4E5F719 /* claude */ = {isa = PBXFileReference; lastKnownFileType = text.script.sh; path = Resources/bin/claude; sourceTree = SOURCE_ROOT; };
@@ -1679,6 +1686,7 @@
 		A5009B0100000000000000B7 /* McpHealthProber.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpHealthProber.swift; sourceTree = "<group>"; };
 		A5009B0100000000000000B3 /* McpManagerPopover.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpManagerPopover.swift; sourceTree = "<group>"; };
 		A5009B0100000000000000B1 /* McpServerCatalog.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = McpServerCatalog.swift; sourceTree = "<group>"; };
+		CFA0000212000000FORKTEST /* McpServerCatalogTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = McpServerCatalogTests.swift; sourceTree = "<group>"; };
 		C7934BB35B66491B1BCA8064 /* MenuBarExtraController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/MenuBarExtraController.swift; sourceTree = "<group>"; };
 		606500010000000000000002 /* MenuBarOnlyActivationPolicyTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MenuBarOnlyActivationPolicyTests.swift; sourceTree = "<group>"; };
 		C0DE70510000000000000001 /* MenuBarProfilingLauncher.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = App/MenuBarProfilingLauncher.swift; sourceTree = "<group>"; };
@@ -3197,6 +3205,10 @@
 				A11EB0000000000000000001 /* GhosttyConfigPathResolverTests.swift */,
 				C13519000000000000000004 /* GhosttyTerminalStartupEnvironmentTests.swift */,
 				C13519000000000000000008 /* ClaudeConfigDirectoryPathTests.swift */,
+				CFA0000112000000FORKTEST /* ChatPermissionRulesTests.swift */,
+				CFA0000212000000FORKTEST /* McpServerCatalogTests.swift */,
+				CFA0000312000000FORKTEST /* ChatThinkingEffortResolutionTests.swift */,
+				CFA0000412000000FORKTEST /* ChatApprovalDedupePolicyTests.swift */,
 				DEBDADADADADADADAD000004 /* DebugDogfoodCredentialResolverTests.swift */,
 				C135190000000000000000B2 /* SidebarWorkspaceGroupConfigOpenerTests.swift */,
 				A11EAE000000000000000001 /* WorkspaceAppearanceConfigResolutionTests.swift */,
@@ -4707,6 +4719,9 @@
 				C0DE49870000000000000001 /* BrowserWebContentProcessTests.swift in Sources */,
 				C0DE62600000000000000001 /* BrowserWindowPortalRegistryNotificationTests.swift in Sources */,
 				C0DE35530000000000000101 /* BundledCLILinkageTests.swift in Sources */,
+				CFA0000411000000FORKTEST /* ChatApprovalDedupePolicyTests.swift in Sources */,
+				CFA0000111000000FORKTEST /* ChatPermissionRulesTests.swift in Sources */,
+				CFA0000311000000FORKTEST /* ChatThinkingEffortResolutionTests.swift in Sources */,
 				F3000000A1B2C3D4E5F60718 /* CJKIMEInputTests.swift in Sources */,
 				D3571002A1B2C3D4E5F60718 /* CJKIMEMarkedSelectionTests.swift in Sources */,
 				C13519000000000000000007 /* ClaudeConfigDirectoryPathTests.swift in Sources */,
@@ -4804,6 +4819,7 @@
 				A6D1F0100000000000000002 /* MainWindowVisibilityLifecycleTests.swift in Sources */,
 				D6069002D6069002D6069002 /* MarkdownMermaidZoomTests.swift in Sources */,
 				D3664002D3664002D3664002 /* MarkdownPanelTests.swift in Sources */,
+				CFA0000211000000FORKTEST /* McpServerCatalogTests.swift in Sources */,
 				606500010000000000000001 /* MenuBarOnlyActivationPolicyTests.swift in Sources */,
 					C0DE70520000000000000002 /* MenuBarProfilingLauncherTests.swift in Sources */,
 				6AA2F2E8BEB19ED6B8E125DB /* MobileHostAuthorizationTests.swift in Sources */,
