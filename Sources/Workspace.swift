@@ -8812,7 +8812,7 @@ final class Workspace: Identifiable, ObservableObject {
             return nil
         }
 
-        surfaceIdToPanelId[newTabId] = claudeChatPanel.id
+        bindSurface(newTabId, toPanelId: claudeChatPanel.id)
         if shouldFocusNewTab {
             bonsplitController.focusPane(paneId)
             bonsplitController.selectTab(newTabId)
