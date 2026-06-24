@@ -21,7 +21,7 @@ Brings `Shyri/cmux:upstream-main` up to date with `manaflow-ai/cmux:main`, then 
 
 ## Safety contract
 
-- **Do not push `main` until the user has confirmed a successful build AND the Chatmux test suite is green**. The fast-forward at the end is the only "destructive" action and only happens after both gates pass.
+- **Do not push `main` until the user has confirmed a successful build AND the Chatmux test suite is green**. The fast-forward at the end is the only "destructive" action and only happens after both gates pass. The "successful build" gate specifically means `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/reload.sh` compiles cleanly (see step 8).
 - After resolving conflicts, a green build is necessary but not sufficient: run the fork's own unit tests (the `Chat*` suites under the `cmux-unit` scheme, see step 9). A botched conflict resolution in a fork-owned file can compile fine yet silently break behaviour (permission rules, MCP catalog round-trip, model/effort resolution, approval dedupe). **Never fast-forward `main` over a red test run.**
 - Never force-push `main` or `upstream-main`.
 - Never skip hooks or signing.
@@ -181,7 +181,7 @@ Surface the branch name to the user and ask them to run their build. The known g
 rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/reload.sh --tag <tag> --launch
 ```
 
-**Wait for explicit confirmation that the build succeeded before continuing.** If the build fails, debug from the temp branch (the user's `main` is still untouched).
+**The `rm -rf ghostty/zig-pkg && CMUX_SKIP_ZIG_BUILD=1 ./scripts/reload.sh` build must compile cleanly — that is the hard gate for this step.** **Wait for explicit confirmation that the build succeeded before continuing.** If the build fails, debug from the temp branch (the user's `main` is still untouched).
 
 Expect at least one round of switch-exhaustivity build errors after the merge — every `switch panel.panelType` or `switch RightSidebarMode` that handles `.claudeChat`/`.gitlab`/etc. needs the new upstream case (`.agentSession`) and vice versa. Fix in place, commit on the temp branch, rebuild.
 

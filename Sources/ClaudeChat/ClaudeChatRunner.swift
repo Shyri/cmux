@@ -274,16 +274,50 @@ final class ClaudeChatRunner {
         }
     }
 
-    /// Interrupt the in-flight turn (SIGINT). The process may or may not
-    /// survive the signal depending on its build; either way the next
-    /// `ensureStarted` respawns automatically. The session id we passed
-    /// at launch (`--resume <id>`) means the new process picks up where
-    /// the old one left off.
+    /// Interrupt the in-flight turn the way the interactive TUI's Escape
+    /// key does: by writing a `control_request`/`interrupt` message to the
+    /// CLI's stdin (streaming-input mode). The CLI aborts the current turn,
+    /// emits a `[Request interrupted by user]` marker and a `result` with
+    /// `terminal_reason: "aborted_streaming"`, then keeps the process,
+    /// session, and MCP connections alive so the next `sendUserTurn`
+    /// continues seamlessly — no respawn, no lost context.
+    ///
+    /// Wire format (matches `@anthropic-ai/claude-agent-sdk`'s
+    /// `query.interrupt()`, verified against claude-code 2.1.187):
+    /// ```json
+    /// {"type":"control_request","request_id":"<uuid>","request":{"subtype":"interrupt"}}
+    /// ```
+    ///
+    /// Note: that `result` still carries `is_error: true`, so the panel
+    /// must recognise a user-requested stop and not surface it as a Claude
+    /// error. If the stdin write fails (broken pipe, dead process) we fall
+    /// back to SIGINT so the user's stop still takes effect.
     func cancel() {
         processQueue.async { [weak self] in
             guard let self else { return }
-            if let process = self.process, process.isRunning {
+            guard let stdin = self.stdinHandle,
+                  let process = self.process, process.isRunning else { return }
+            let payload: [String: Any] = [
+                "type": "control_request",
+                "request_id": UUID().uuidString.lowercased(),
+                "request": ["subtype": "interrupt"]
+            ]
+            guard let data = try? JSONSerialization.data(withJSONObject: payload, options: []) else {
                 process.interrupt()
+                return
+            }
+            var line = data
+            line.append(0x0A)  // '\n'
+            ChatRunnerDebugLog.shared.appendStdoutLine("→ stdin interrupt control_request")
+            do {
+                try stdin.write(contentsOf: line)
+            } catch {
+                // Couldn't deliver the graceful interrupt — fall back to a
+                // hard SIGINT. The process may exit; the next ensureStarted
+                // respawns and resumes via `--resume <id>`.
+                if process.isRunning {
+                    process.interrupt()
+                }
             }
         }
     }

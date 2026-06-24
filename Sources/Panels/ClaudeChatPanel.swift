@@ -442,6 +442,17 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Conversation status drives input affordances (send/cancel/error banner).
     @Published private(set) var status: ChatStatus = .idle
 
+    /// Set when the user explicitly stops the current turn (the stop
+    /// button → `cancel()`). The graceful interrupt makes the CLI abort the
+    /// turn and emit a `result` with `is_error: true` (terminal_reason
+    /// "aborted_streaming") while keeping the process alive — so this flag
+    /// lets `handle(event:)` treat that error as the expected stop instead
+    /// of surfacing a Claude error banner. It also covers the SIGINT
+    /// fallback path (process exits non-zero) in `handle(processExit:)`.
+    /// Stays set until the next turn is dispatched so both arrival orders
+    /// are covered.
+    private var pendingCancel = false
+
     /// In-progress message the user is composing. Lives on the panel
     /// (rather than as `@State` on the view) so it survives workspace
     /// switches and other moments when SwiftUI tears down and rebuilds
@@ -1336,6 +1347,9 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let messageIndex = messages.firstIndex(where: { $0.id == messageId }).map { $0 + 1 }
             ?? messages.count
         pendingTurnStaging = (userMessageId: messageId, userMessageIndex: messageIndex)
+        // A fresh turn clears any prior stop request — from here on, errors
+        // are real again.
+        pendingCancel = false
         status = .sending
 
         let cwd = sessionCwd
@@ -1386,6 +1400,12 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     }
 
     func cancel() {
+        // Only a turn that is actually in flight can be "stopped". Marking
+        // this lets `handle(event:)` / `handle(processExit:)` treat the
+        // interruption as expected instead of surfacing an error banner.
+        if case .sending = status {
+            pendingCancel = true
+        }
         runner.cancel()
     }
 
@@ -2304,7 +2324,12 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             // process itself stays alive — the next turn reuses it via
             // stdin.
             flushStreamedMessages()
-            if isError {
+            if isError && pendingCancel {
+                // The user stopped this turn — the CLI's `is_error` result is
+                // the expected fallout of the interrupt, not a real failure.
+                // Settle quietly back to idle without an error banner.
+                status = .idle
+            } else if isError {
                 let message = errorMessage?.trimmingCharacters(in: .whitespacesAndNewlines)
                 if let message, !message.isEmpty {
                     status = .error(message)
@@ -2438,6 +2463,19 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 status = .idle
             }
         case .failure(let error):
+            if pendingCancel {
+                // The user stopped the turn and the SIGINT fallback (used
+                // only when the graceful interrupt couldn't be written)
+                // killed the process with a non-zero exit. That's the
+                // requested interruption, not a crash — go back to idle
+                // without an error banner. The next turn respawns the
+                // process automatically via `--resume`.
+                if case .sending = status {
+                    status = .idle
+                }
+                drainPendingDraftIfAny()
+                break
+            }
             let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             status = .error(message)
             let prefix = String(
