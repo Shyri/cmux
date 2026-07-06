@@ -191,8 +191,20 @@ final class MergeRequestsState: ObservableObject {
         guard !targets.isEmpty else { return }
 
         approvalsTask = Task { [weak self] in
+            // Cap in-flight fetches. Each `fetchGitLabMRApproval` spawns a
+            // `glab` process whose pipe drain can block its Swift Concurrency
+            // worker thread (see `drainPipesInParallel`); an unbounded
+            // `addTask` per MR could pin every thread in the fixed-width
+            // cooperative pool at once and stall unrelated `async` work
+            // (e.g. the Claude Chat panel spinning on "Thinking…"). Bounding
+            // to `maxConcurrent` keeps the pool from ever being fully starved
+            // by this fan-out.
+            let maxConcurrent = 4
             await withTaskGroup(of: (Int, GitLabMRApproval?).self) { group in
-                for t in targets {
+                var next = 0
+                while next < min(maxConcurrent, targets.count) {
+                    let t = targets[next]
+                    next += 1
                     group.addTask {
                         do {
                             let a = try await fetchGitLabMRApproval(
@@ -207,6 +219,24 @@ final class MergeRequestsState: ObservableObject {
                     }
                 }
                 for await (iid, approval) in group {
+                    // Keep the pipeline full: enqueue the next target as each
+                    // result lands, never exceeding `maxConcurrent`.
+                    if next < targets.count {
+                        let t = targets[next]
+                        next += 1
+                        group.addTask {
+                            do {
+                                let a = try await fetchGitLabMRApproval(
+                                    projectId: t.projectId,
+                                    iid: t.iid,
+                                    in: directory
+                                )
+                                return (t.iid, a)
+                            } catch {
+                                return (t.iid, nil)
+                            }
+                        }
+                    }
                     guard let self else { return }
                     if Task.isCancelled || token != self.requestCounter
                         || directory != self.lastDirectory { return }

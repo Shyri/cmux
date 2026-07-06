@@ -68,17 +68,31 @@ final class ChatMcpHttpServer {
             // than once even if NWListener emits multiple state updates.
             let lock = NSLock()
             var resumed = false
+            var timeoutItem: DispatchWorkItem?
             let resumeOnce: (Result<Void, Error>) -> Void = { result in
                 lock.lock()
                 let alreadyResumed = resumed
                 resumed = true
                 lock.unlock()
                 guard !alreadyResumed else { return }
+                timeoutItem?.cancel()
                 switch result {
                 case .success: continuation.resume()
                 case .failure(let error): continuation.resume(throwing: error)
                 }
             }
+
+            // Watchdog: fail fast if the listener never reaches `.ready`
+            // (e.g. it sits in `.waiting`, which the state handler below
+            // deliberately does NOT resume on). Scheduled on the listener's
+            // own queue so it fires independently of the actor/executor that
+            // called `start()`.
+            let item = DispatchWorkItem { [weak self] in
+                self?.listener.cancel()
+                resumeOnce(.failure(ServerError.bindTimedOut))
+            }
+            timeoutItem = item
+            queue.asyncAfter(deadline: .now() + Self.startTimeout, execute: item)
 
             listener.stateUpdateHandler = { [weak self] state in
                 guard let self else {
@@ -95,6 +109,15 @@ final class ChatMcpHttpServer {
                     resumeOnce(.failure(error))
                 case .cancelled:
                     resumeOnce(.failure(ServerError.bindFailed))
+                case .waiting(let error):
+                    // Loopback binds should never enter `.waiting`; log it so
+                    // the debug log explains a subsequent bind timeout. Do
+                    // not resume here — NWListener keeps retrying, and a
+                    // transient `.waiting` may still recover into `.ready`
+                    // before the watchdog fires.
+                    ChatRunnerDebugLog.shared.appendStdoutLine(
+                        "MCP listener .waiting to bind: \(error.localizedDescription)"
+                    )
                 default:
                     break
                 }
@@ -116,7 +139,16 @@ final class ChatMcpHttpServer {
 
     enum ServerError: Error {
         case bindFailed
+        case bindTimedOut
     }
+
+    /// Hard ceiling on how long we wait for the loopback listener to reach
+    /// `.ready`. A healthy random-port loopback bind resolves in
+    /// milliseconds; if it hasn't after this long the listener is wedged
+    /// (`.waiting` on a content filter / network path issue), and we would
+    /// rather surface an error than leave the chat panel spinning on
+    /// "Thinking…" forever waiting for `ensureMcpServerStarted`.
+    private static let startTimeout: TimeInterval = 6.0
 
     // MARK: - Connection lifecycle
 

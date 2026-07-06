@@ -75,32 +75,67 @@ func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
 /// macOS). Reading them sequentially can hang glab if it tries to flush the
 /// unread stream while we block on the other.
 ///
-/// The `timeout` parameter is a hard ceiling: if a stream never reaches EOF
-/// (see the regression test) the drain must give up rather than block its
-/// thread forever.
+/// Hard `timeout` ceiling: `glab` (and `git`) routinely spawn helper
+/// subprocesses — credential/keyring helpers, OAuth browser openers — that
+/// inherit fd 1/2. If such a helper outlives the main process, the pipe's
+/// write end is never fully closed, so a plain `readDataToEndOfFile()` never
+/// sees EOF and blocks its thread *forever*. Because these drains run inside
+/// Swift Concurrency tasks (e.g. the MR-approvals fan-out), a handful of such
+/// permanent blocks saturate the fixed-width cooperative thread pool and wedge
+/// every other `async` task in the app — including the Claude Chat panel
+/// startup, which then spins on "Thinking…" indefinitely (cooperative-pool
+/// starvation). The watchdog force-closes the read handles after `timeout`
+/// so the reads return whatever they have and the thread is freed.
+///
+/// Reads use the throwing `read(upToCount:)` in a loop (not the legacy
+/// `readDataToEndOfFile()`, which raises an *ObjC* exception on a mid-read
+/// close that Swift cannot catch → crash). A close from the watchdog surfaces
+/// as a Swift error, which just ends the loop.
 func drainPipesInParallel(
     stdout: Pipe,
     stderr: Pipe,
     timeout: TimeInterval = 30
 ) -> (Data, Data) {
+    let outHandle = stdout.fileHandleForReading
+    let errHandle = stderr.fileHandleForReading
     var outData = Data()
     var errData = Data()
+    let lock = NSLock()
     let group = DispatchGroup()
     let queue = DispatchQueue(label: "gitlab.pipe.drain", attributes: .concurrent)
 
-    group.enter()
-    queue.async {
-        outData = stdout.fileHandleForReading.readDataToEndOfFile()
-        group.leave()
+    func drain(_ handle: FileHandle, append: @escaping (Data) -> Void) {
+        group.enter()
+        queue.async {
+            while true {
+                let chunk: Data?
+                do {
+                    chunk = try handle.read(upToCount: 64 * 1024)
+                } catch {
+                    // Handle closed by the watchdog (or a genuine read
+                    // error) — stop draining this stream.
+                    break
+                }
+                guard let chunk, !chunk.isEmpty else { break }  // nil/empty == EOF
+                append(chunk)
+            }
+            group.leave()
+        }
     }
 
-    group.enter()
-    queue.async {
-        errData = stderr.fileHandleForReading.readDataToEndOfFile()
-        group.leave()
+    drain(outHandle) { chunk in lock.lock(); outData.append(chunk); lock.unlock() }
+    drain(errHandle) { chunk in lock.lock(); errData.append(chunk); lock.unlock() }
+
+    if group.wait(timeout: .now() + timeout) == .timedOut {
+        // Break a leaked-write-end deadlock: closing the read ends makes the
+        // in-flight `read(upToCount:)` calls throw, ending both drain loops.
+        try? outHandle.close()
+        try? errHandle.close()
+        group.wait()
     }
 
-    group.wait()
+    lock.lock()
+    defer { lock.unlock() }
     return (outData, errData)
 }
 
