@@ -74,7 +74,15 @@ func splitConcatenatedJSONArrays(_ data: Data) -> [Data] {
 /// when either stream fills the kernel pipe buffer (typically 16–64 KB on
 /// macOS). Reading them sequentially can hang glab if it tries to flush the
 /// unread stream while we block on the other.
-func drainPipesInParallel(stdout: Pipe, stderr: Pipe) -> (Data, Data) {
+///
+/// The `timeout` parameter is a hard ceiling: if a stream never reaches EOF
+/// (see the regression test) the drain must give up rather than block its
+/// thread forever.
+func drainPipesInParallel(
+    stdout: Pipe,
+    stderr: Pipe,
+    timeout: TimeInterval = 30
+) -> (Data, Data) {
     var outData = Data()
     var errData = Data()
     let group = DispatchGroup()
