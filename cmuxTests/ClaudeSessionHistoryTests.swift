@@ -134,6 +134,29 @@ import Testing
         #expect(messages[0].plainText == "real message")
     }
 
+    @Test func decodeTranscriptHidesSyntheticEnvelopes() {
+        // task-notification / system-reminder lines are harness-injected
+        // synthetic "user" messages, not something the user typed. On restore
+        // they must not render as user bubbles of raw XML.
+        let jsonl = """
+        {"type":"user","message":{"content":"<task-notification><task-id>x</task-id><summary>done</summary></task-notification>"}}
+        {"type":"user","message":{"content":"<system-reminder>be brief</system-reminder>"}}
+        {"type":"user","message":{"content":"real question"}}
+        """
+        let messages = ClaudeSessionHistory.decodeTranscript(text: jsonl)
+        #expect(messages.count == 1)
+        #expect(messages[0].plainText == "real question")
+    }
+
+    @Test func decodeTranscriptNormalizesSlashCommandEnvelope() {
+        // A slash-command envelope renders as the clean command the user ran,
+        // not the raw <command-*> XML.
+        let jsonl = #"{"type":"user","message":{"content":"<command-message>mr-review</command-message><command-name>/mr-review</command-name><command-args>39</command-args>"}}"#
+        let messages = ClaudeSessionHistory.decodeTranscript(text: jsonl)
+        #expect(messages.count == 1)
+        #expect(messages[0].plainText == "/mr-review 39")
+    }
+
     @Test func decodeTranscriptDropsEmptyUserContent() {
         let jsonl = """
         {"type":"user","message":{"content":"   "}}
