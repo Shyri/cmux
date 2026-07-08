@@ -19,9 +19,13 @@ enum SessionEntryResumeCoordinator {
         // separate terminal shell or having to wait for Claude Code to
         // re-emit the history into stdout.
         if case .claude = entry.agent, !entry.sessionId.isEmpty {
+            // Pass the exact JSONL the scan located (`entry.fileURL`) so the
+            // panel hydrates even when `entry.cwd` no longer matches the
+            // on-disk project-dir folder (worktree sessions, dotted paths).
             _ = tabManager.openClaudeChat(
                 resumingSessionId: entry.sessionId,
-                workingDirectory: entry.resumeWorkingDirectory
+                workingDirectory: entry.resumeWorkingDirectory,
+                resumingTranscriptURL: entry.fileURL
             )
             return
         }

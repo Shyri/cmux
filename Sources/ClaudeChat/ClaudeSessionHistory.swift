@@ -92,9 +92,25 @@ enum ClaudeSessionHistory {
         knownTranscriptURL: URL? = nil
     ) async -> [ChatMessage]? {
         await Task.detached(priority: .userInitiated) { () -> [ChatMessage]? in
-            guard let jsonlURL = transcriptURL(sessionId: sessionId, cwd: cwd),
-                  FileManager.default.fileExists(atPath: jsonlURL.path),
-                  let data = try? Data(contentsOf: jsonlURL),
+            // Prefer the exact JSONL the caller already located on disk (the
+            // Vault scan's `entry.fileURL`). Recomputing the path from `cwd`
+            // is unreliable: Claude Code names the project-dir folder after the
+            // session's *launch* cwd, but a session that cd'd into a worktree
+            // reports later, different cwds — so the recomputed folder misses
+            // the file and the panel would open blank. Fall back to the
+            // recomputed path only when no known URL is usable.
+            let jsonlURL: URL
+            if let knownTranscriptURL,
+               FileManager.default.fileExists(atPath: knownTranscriptURL.path) {
+                jsonlURL = knownTranscriptURL
+            } else if let computed = transcriptURL(sessionId: sessionId, cwd: cwd),
+                      FileManager.default.fileExists(atPath: computed.path) {
+                jsonlURL = computed
+            } else {
+                return nil
+            }
+
+            guard let data = try? Data(contentsOf: jsonlURL),
                   let text = String(data: data, encoding: .utf8)
             else { return nil }
 

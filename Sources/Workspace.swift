@@ -8778,6 +8778,7 @@ final class Workspace: Identifiable, ObservableObject {
         inPane paneId: PaneID,
         workingDirectory: String,
         resumingSessionId: String? = nil,
+        resumingTranscriptURL: URL? = nil,
         focus: Bool? = nil
     ) -> ClaudeChatPanel? {
         let shouldFocusNewTab = focus ?? (bonsplitController.focusedPaneId == paneId)
@@ -8837,7 +8838,8 @@ final class Workspace: Identifiable, ObservableObject {
             Task { [weak claudeChatPanel] in
                 guard let messages = await ClaudeSessionHistory.loadTranscript(
                     sessionId: resumingSessionId,
-                    cwd: workingDirectory
+                    cwd: workingDirectory,
+                    knownTranscriptURL: resumingTranscriptURL
                 ) else { return }
                 await MainActor.run {
                     claudeChatPanel?.applyResumedTranscript(

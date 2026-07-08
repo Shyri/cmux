@@ -4111,7 +4111,8 @@ class TabManager: ObservableObject {
     @discardableResult
     func openClaudeChat(
         resumingSessionId: String? = nil,
-        workingDirectory: String? = nil
+        workingDirectory: String? = nil,
+        resumingTranscriptURL: URL? = nil
     ) -> UUID? {
         guard let workspace = selectedWorkspace else { return nil }
         if selectedTabId != workspace.id {
@@ -4140,6 +4141,7 @@ class TabManager: ObservableObject {
                   inPane: paneId,
                   workingDirectory: resolvedCwd,
                   resumingSessionId: resumingSessionId,
+                  resumingTranscriptURL: resumingTranscriptURL,
                   focus: true
               ) else {
             return nil
