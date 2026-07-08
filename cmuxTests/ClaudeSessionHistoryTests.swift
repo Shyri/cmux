@@ -30,6 +30,23 @@ import Testing
         #expect(withSlash.path.hasSuffix(".claude/projects/-tmp-proj/s.jsonl"))
     }
 
+    @Test func transcriptURLEncodesDottedCwd() throws {
+        // Claude Code encodes BOTH "/" and "." as "-" in the project dir name.
+        // A cwd containing a dot ("my.project", a worktree path, etc.) must
+        // resolve to the same folder the Vault scan indexed
+        // (RestorableAgentSessionIndex.encodeClaudeProjectDir), or "Resume in
+        // New Tab" opens an empty chat because loadTranscript can't find the
+        // JSONL. Regression for the encodeCwd-vs-scan divergence.
+        let url = try #require(ClaudeSessionHistory.transcriptURL(sessionId: "sid", cwd: "/Users/me/my.project"))
+        #expect(url.path.hasSuffix(".claude/projects/-Users-me-my-project/sid.jsonl"))
+    }
+
+    @Test func transcriptURLEncodesDotfileCwd() throws {
+        // Dotfiles collapse "/." into "--" just like the scan encoder does.
+        let url = try #require(ClaudeSessionHistory.transcriptURL(sessionId: "s", cwd: "/Users/me/.config/app"))
+        #expect(url.path.hasSuffix(".claude/projects/-Users-me--config-app/s.jsonl"))
+    }
+
     @Test func transcriptURLLivesUnderHomeClaudeProjects() throws {
         let url = try #require(ClaudeSessionHistory.transcriptURL(sessionId: "s", cwd: "/x"))
         let home = FileManager.default.homeDirectoryForCurrentUser.path
