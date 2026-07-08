@@ -182,9 +182,13 @@ enum ClaudeSessionHistory {
     /// tools). Handle both.
     private static func decodeUserMessageContent(_ raw: Any?) -> [ChatMessageBlock] {
         if let str = raw as? String {
-            let trimmed = str.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !trimmed.isEmpty else { return [] }
-            return [.text(str)]
+            // Reuse the Vault's shared user-line cleanup (SessionEntry):
+            // hide harness-injected synthetic envelopes (task-notification,
+            // system-reminder, local-command) and normalize slash-command
+            // envelopes to the command the user actually ran. nil => render
+            // nothing for this line.
+            guard let display = SessionEntry.claudeDisplayTitle(from: str) else { return [] }
+            return [.text(display)]
         }
         if let array = raw as? [[String: Any]] {
             return array.compactMap { decodeTranscriptContentBlock($0) }

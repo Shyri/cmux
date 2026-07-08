@@ -563,6 +563,7 @@ struct SessionEntry: Identifiable, Hashable {
     private static func isClaudeSyntheticEnvelope(_ raw: String) -> Bool {
         isClaudeLocalCommandEnvelope(raw)
             || raw.hasPrefix("<system-reminder>")
+            || raw.hasPrefix("<task-notification>")
     }
 
     private static func isClaudeLocalCommandEnvelope(_ raw: String) -> Bool {
