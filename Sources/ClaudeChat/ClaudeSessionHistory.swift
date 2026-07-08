@@ -121,7 +121,8 @@ enum ClaudeSessionHistory {
     /// Compute the path of the JSONL transcript for a session given the
     /// chat's cwd. Claude Code stores transcripts under
     /// `~/.claude/projects/<encoded-cwd>/<sessionId>.jsonl`, where the
-    /// encoded cwd replaces `/` with `-` and prefixes with `-`.
+    /// encoded cwd replaces both `/` and `.` with `-` (the leading slash
+    /// becomes a leading `-`).
     static func transcriptURL(sessionId: String, cwd: String) -> URL? {
         let encoded = encodeCwd(cwd)
         guard !encoded.isEmpty else { return nil }
@@ -233,11 +234,15 @@ enum ClaudeSessionHistory {
     }
 
     private static func encodeCwd(_ path: String) -> String {
-        // Mirror Claude Code's filename convention: strip trailing slashes,
-        // then replace every `/` with `-` (the leading slash becomes a
-        // leading `-` so the result matches `-Users-shyri-...`).
+        // Mirror Claude Code's filename convention. Normalize away surrounding
+        // slashes (so a trailing "/" doesn't leak a trailing "-"), re-add the
+        // leading slash, then delegate to the SAME encoder the Vault scan uses
+        // (`RestorableAgentSessionIndex.encodeClaudeProjectDir`), which replaces
+        // both "/" and "." with "-". Sharing that one encoder keeps resume and
+        // scan agreeing on the project dir; the previous local copy only
+        // replaced "/", so any dotted cwd resolved to the wrong folder and
+        // reopened with no history.
         let trimmed = path.trimmingCharacters(in: .init(charactersIn: "/"))
-        let encoded = trimmed.replacingOccurrences(of: "/", with: "-")
-        return "-" + encoded
+        return RestorableAgentSessionIndex.encodeClaudeProjectDir("/" + trimmed)
     }
 }
