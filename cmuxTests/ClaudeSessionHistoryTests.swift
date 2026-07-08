@@ -54,6 +54,33 @@ import Testing
         #expect(url.path.contains("/.claude/projects/"))
     }
 
+    // MARK: - loadTranscript path resolution
+
+    @Test func loadTranscriptPrefersKnownURLOverRecomputedCwd() async throws {
+        // When a session cd'd into a worktree, Claude fixes the on-disk
+        // project-dir folder to the *launch* cwd, so it no longer matches the
+        // cwd the Vault scan extracts from the JSONL (the last `cwd` in the
+        // head wins). Recomputing the path from that cwd then misses the file
+        // and the panel opens blank. The exact URL the scan already located
+        // must win over the recomputed cwd. Regression for the worktree
+        // "Resume in New Tab opens an empty chat" bug.
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cst-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("6ec2b538.jsonl")
+        try (#"{"type":"user","message":{"content":"restored history"}}"# + "\n")
+            .write(to: file, atomically: true, encoding: .utf8)
+
+        let messages = try #require(await ClaudeSessionHistory.loadTranscript(
+            sessionId: "6ec2b538",
+            cwd: "/nonexistent/worktree/cwd/mismatch",
+            knownTranscriptURL: file
+        ))
+        #expect(messages.count == 1)
+        #expect(messages[0].plainText == "restored history")
+    }
+
     // MARK: - decodeTranscript
 
     @Test func decodeTranscriptParsesUserStringAndAssistantBlocks() {

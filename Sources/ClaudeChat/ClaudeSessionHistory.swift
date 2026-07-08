@@ -86,7 +86,11 @@ enum ClaudeSessionHistory {
     /// of a user line can be a String *or* an array of blocks. We parse
     /// it defensively — malformed lines are skipped, never abort the
     /// load. Returns `nil` if the file doesn't exist or can't be read.
-    static func loadTranscript(sessionId: String, cwd: String) async -> [ChatMessage]? {
+    static func loadTranscript(
+        sessionId: String,
+        cwd: String,
+        knownTranscriptURL: URL? = nil
+    ) async -> [ChatMessage]? {
         await Task.detached(priority: .userInitiated) { () -> [ChatMessage]? in
             guard let jsonlURL = transcriptURL(sessionId: sessionId, cwd: cwd),
                   FileManager.default.fileExists(atPath: jsonlURL.path),
