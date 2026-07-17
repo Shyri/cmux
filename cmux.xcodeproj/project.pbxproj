@@ -179,6 +179,9 @@
 		A5D41222A1B2C3D4E5F60718 /* ClaudeNotificationStatusLifecycleTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = A5D41223A1B2C3D4E5F60718 /* ClaudeNotificationStatusLifecycleTests.swift */; };
 		3EF9A6A5AD88979953831EF3 /* ClaudeSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */; };
 		CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */; };
+		CFB000A11000000FORKTRIM /* ClaudeTranscriptTrimTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000A12000000FORKTRIM /* ClaudeTranscriptTrimTests.swift */; };
+		CFB000B11000000FORKSLP /* ClaudeChatIdleRunnerSleepTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000B12000000FORKSLP /* ClaudeChatIdleRunnerSleepTests.swift */; };
+		CFB000C11000000FORKDROP /* ClaudeChatDroppedDirectoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000C12000000FORKDROP /* ClaudeChatDroppedDirectoryTests.swift */; };
 		02F48C2457D5AD5AF2E6D0BE /* ClaudeStreamEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */; };
 		CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */; };
 		A9F200000000000000000015 /* ClaudeStreamJSONAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */; };
@@ -1373,6 +1376,9 @@
 		A5D41223A1B2C3D4E5F60718 /* ClaudeNotificationStatusLifecycleTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeNotificationStatusLifecycleTests.swift; sourceTree = "<group>"; };
 		9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistory.swift; sourceTree = "<group>"; };
 		CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistoryTests.swift; sourceTree = "<group>"; };
+		CFB000A12000000FORKTRIM /* ClaudeTranscriptTrimTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeTranscriptTrimTests.swift; sourceTree = "<group>"; };
+		CFB000B12000000FORKSLP /* ClaudeChatIdleRunnerSleepTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChatIdleRunnerSleepTests.swift; sourceTree = "<group>"; };
+		CFB000C12000000FORKDROP /* ClaudeChatDroppedDirectoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeChatDroppedDirectoryTests.swift; sourceTree = "<group>"; };
 		23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEvent.swift; sourceTree = "<group>"; };
 		CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEventParseTests.swift; sourceTree = "<group>"; };
 		A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ClaudeStreamJSONAccumulator.swift; sourceTree = "<group>"; };
@@ -3286,6 +3292,9 @@
 				CFB000412000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift */,
 				CFB000512000000FORKTEST /* ChatmuxUpstreamSeamTests.swift */,
 				CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */,
+				CFB000A12000000FORKTRIM /* ClaudeTranscriptTrimTests.swift */,
+				CFB000B12000000FORKSLP /* ClaudeChatIdleRunnerSleepTests.swift */,
+				CFB000C12000000FORKDROP /* ClaudeChatDroppedDirectoryTests.swift */,
 				CFB000712000000FORKTEST /* SlashCommandRegistryTests.swift */,
 				CFB000812000000FORKTEST /* StatusLineRunnerTests.swift */,
 				CFB000912000000FORKTEST /* GitLabModelDecodingTests.swift */,
@@ -4815,6 +4824,9 @@
 				CFB000311000000FORKTEST /* ClaudeLoginShellWrapperTests.swift in Sources */,
 				A5D41222A1B2C3D4E5F60718 /* ClaudeNotificationStatusLifecycleTests.swift in Sources */,
 				CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */,
+				CFB000A11000000FORKTRIM /* ClaudeTranscriptTrimTests.swift in Sources */,
+				CFB000B11000000FORKSLP /* ClaudeChatIdleRunnerSleepTests.swift in Sources */,
+				CFB000C11000000FORKDROP /* ClaudeChatDroppedDirectoryTests.swift in Sources */,
 				CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */,
 				CFB000211000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift in Sources */,
 				A5D4120DA1B2C3D4E5F60718 /* CLIAuthAliasTests.swift in Sources */,

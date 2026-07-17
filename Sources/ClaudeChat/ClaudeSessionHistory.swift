@@ -106,17 +106,102 @@ enum ClaudeSessionHistory {
             } else if let computed = transcriptURL(sessionId: sessionId, cwd: cwd),
                       FileManager.default.fileExists(atPath: computed.path) {
                 jsonlURL = computed
+            } else if let scanned = locateTranscriptBySessionId(sessionId) {
+                // Encoding-agnostic last resort. The session id is globally
+                // unique, so scan every `~/.claude/projects/<dir>/` for
+                // `<sessionId>.jsonl`. This rescues cold-start restore of
+                // worktree chats: their recomputed cwd folder never matches
+                // the launch-cwd folder Claude actually wrote under, so the
+                // branch above misses and — without this — the panel opens
+                // blank even though `--resume` still continues the session.
+                // (The Vault panel sidesteps all of this by passing the
+                // scan-located `knownTranscriptURL`.)
+                jsonlURL = scanned
             } else {
                 return nil
             }
 
-            guard let data = try? Data(contentsOf: jsonlURL),
-                  let text = String(data: data, encoding: .utf8)
+            // Read only the tail of the transcript. Claude Code JSONLs
+            // routinely reach tens of MB (large tool outputs, base64
+            // images); slurping the whole file into a `Data` + `String`
+            // here spiked memory badly on restore. `tailText` memory-maps
+            // the file and materializes only the most recent lines.
+            guard let text = tailText(of: jsonlURL, maxLines: maxRestoreTranscriptLines)
             else { return nil }
 
             let messages = decodeTranscript(text: text)
             return messages.isEmpty ? nil : messages
         }.value
+    }
+
+    /// Locate a session's JSONL by scanning every Claude Code project
+    /// directory for `<sessionId>.jsonl`. Used as the encoding-agnostic
+    /// fallback in `loadTranscript` when neither a caller-supplied URL nor
+    /// the cwd-recomputed path resolves (the git-worktree cold-start case).
+    /// Returns `nil` when no matching transcript exists on disk.
+    static func locateTranscriptBySessionId(_ sessionId: String) -> URL? {
+        let projectsRoot = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".claude/projects", isDirectory: true)
+        return locateTranscript(sessionId: sessionId, inProjectsRoot: projectsRoot)
+    }
+
+    /// Testable core of `locateTranscriptBySessionId`: search the immediate
+    /// child directories of `projectsRoot` for a file named
+    /// `<sessionId>.jsonl`. The session id is a globally-unique UUID, so the
+    /// first match is authoritative regardless of how the parent folder's
+    /// cwd was encoded.
+    static func locateTranscript(sessionId: String, inProjectsRoot projectsRoot: URL) -> URL? {
+        let fm = FileManager.default
+        guard let projectDirs = try? fm.contentsOfDirectory(
+            at: projectsRoot,
+            includingPropertiesForKeys: nil,
+            options: [.skipsHiddenFiles]
+        ) else { return nil }
+        let target = "\(sessionId).jsonl"
+        for dir in projectDirs {
+            let candidate = dir.appendingPathComponent(target)
+            if fm.fileExists(atPath: candidate.path) {
+                return candidate
+            }
+        }
+        return nil
+    }
+
+    /// Maximum number of transcript lines read from the tail of a session
+    /// JSONL on restore. Mirrors the bounded mobile tailer
+    /// (`AgentChatTranscriptTailer`'s `maxInitialLines`) so restoring a
+    /// huge session materializes only the most recent turns instead of the
+    /// entire file.
+    static let maxRestoreTranscriptLines = 2000
+
+    /// Return at most the last `maxLines` newline-delimited lines of the
+    /// file at `url`, as a single String. The file is memory-mapped so its
+    /// bytes stay file-backed (and evictable under pressure) while only the
+    /// bounded tail is decoded into a heap String. Returns `nil` when the
+    /// file can't be mapped, `""` when it's empty. A trailing line without
+    /// a terminating newline is kept as-is (a partial JSON line simply
+    /// fails to decode downstream, which `decodeTranscript` already skips).
+    static func tailText(of url: URL, maxLines: Int) -> String? {
+        guard let data = try? Data(contentsOf: url, options: .mappedIfSafe) else {
+            return nil
+        }
+        guard !data.isEmpty else { return "" }
+
+        // Byte offset of every line start: 0, then one past each '\n'.
+        var lineStarts: [Int] = [0]
+        data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            for index in 0..<raw.count where raw[index] == 0x0A {
+                lineStarts.append(index + 1)
+            }
+        }
+        // When the file ends with '\n' the final recorded start sits at EOF
+        // and begins no real line — drop it so it isn't counted.
+        if lineStarts.count > 1, lineStarts.last == data.count {
+            lineStarts.removeLast()
+        }
+        let firstIndex = max(0, lineStarts.count - max(1, maxLines))
+        let byteStart = lineStarts[firstIndex]
+        return String(decoding: data[byteStart..<data.count], as: UTF8.self)
     }
 
     /// Parse the raw JSONL transcript text into renderable `ChatMessage`s,

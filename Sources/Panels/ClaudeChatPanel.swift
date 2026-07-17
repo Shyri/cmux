@@ -425,6 +425,17 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// How many additional older messages each "load older" click reveals.
     static let visibleMessageWindowStep: Int = 60
 
+    /// Maximum number of transcript messages the panel keeps in memory.
+    /// The full conversation always lives on disk in Claude Code's JSONL
+    /// (that's what `--resume` replays), so bounding the in-memory
+    /// transcript never changes what Claude remembers — it only caps the
+    /// panel's heap so a long-running chat can't grow without limit. This
+    /// mirrors the bounded mobile tailer (`AgentChatTranscriptTailer`
+    /// caches 4000 messages). When the cap is exceeded the oldest messages
+    /// fall out of the head; "load older" already only reaches
+    /// `messages.count`, so its ceiling simply becomes the retained window.
+    static let maxRetainedMessages: Int = 4000
+
     /// Session id emitted by Claude on the first `system/init` event of a
     /// conversation. Required for `--resume` on subsequent turns.
     @Published private(set) var sessionId: String?
@@ -440,7 +451,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     @Published private(set) var statusLineText: String?
 
     /// Conversation status drives input affordances (send/cancel/error banner).
-    @Published private(set) var status: ChatStatus = .idle
+    /// The `didSet` (re)arms the idle-runner sleep countdown: the timer only
+    /// runs while the conversation is at rest, so an in-flight turn can never
+    /// have its `claude` subprocess slept out from under it.
+    @Published private(set) var status: ChatStatus = .idle {
+        didSet { rescheduleIdleRunnerSleep() }
+    }
+
+    /// How long a chat panel may sit idle before its `claude` subprocess is
+    /// terminated to reclaim memory (each idle process holds ~250-300 MB of
+    /// Node heap + conversation context). The next user turn respawns it
+    /// transparently via `--resume`, so the only visible cost is a short
+    /// cold-start on that first message. See `sleepIdleRunnerIfPossible`.
+    static let idleRunnerSleepTimeout: TimeInterval = 60 * 60
+
+    /// Non-repeating countdown that fires `sleepIdleRunnerIfPossible` after
+    /// `idleRunnerSleepTimeout` of continuous idle. Reset on every status
+    /// change and invalidated on `deinit`.
+    private var idleRunnerSleepTimer: Timer?
 
     /// Set when the user explicitly stops the current turn (the stop
     /// button → `cancel()`). The graceful interrupt makes the CLI abort the
@@ -611,6 +639,37 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             self.userMessageIndex = userMessageIndex
             self.backupPaths = backups?.backups.keys.sorted() ?? []
             self.backups = backups
+        }
+
+        /// Rebuild preserving identity — used only by `withUserMessageIndex`
+        /// so a front-trim can re-anchor an existing checkpoint without
+        /// minting a new `id` or recomputing `backupPaths`.
+        private init(
+            id: UUID,
+            userMessageId: UUID,
+            userMessageIndex: Int,
+            backupPaths: [String],
+            backups: ClaudeSessionHistory.TurnFileBackups?
+        ) {
+            self.id = id
+            self.userMessageId = userMessageId
+            self.userMessageIndex = userMessageIndex
+            self.backupPaths = backupPaths
+            self.backups = backups
+        }
+
+        /// Return a copy anchored at `newIndex`. When the transcript is
+        /// front-trimmed every message index shifts down by the removed
+        /// count, so a surviving checkpoint must be rebased to keep
+        /// `userMessageIndex` pointing at the same user message.
+        func withUserMessageIndex(_ newIndex: Int) -> RewindCheckpoint {
+            RewindCheckpoint(
+                id: id,
+                userMessageId: userMessageId,
+                userMessageIndex: newIndex,
+                backupPaths: backupPaths,
+                backups: backups
+            )
         }
 
         static func == (lhs: Self, rhs: Self) -> Bool {
@@ -1074,6 +1133,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         // UUID later (e.g. session restore) doesn't see stale rows.
         ChatRowBuilderCache.shared.clear(panelId: id)
         gitPendingSummaryRefreshTask?.cancel()
+        idleRunnerSleepTimer?.invalidate()
     }
 
     /// Replace the panel's transcript with one loaded from a Claude
@@ -1493,6 +1553,35 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         }
     }
 
+    /// Route file URLs dropped onto the chat. A **directory** is inserted
+    /// into the draft as its absolute path — the user wants to reference the
+    /// folder in place, not snapshot it — so we skip the attachment copy
+    /// entirely. Everything else keeps the existing behavior: files are
+    /// copied into the panel's temp attachment dir via `attachFile`.
+    func handleDroppedFileURLs(_ urls: [URL]) {
+        for url in urls {
+            var isDirectory: ObjCBool = false
+            let exists = FileManager.default.fileExists(
+                atPath: url.path, isDirectory: &isDirectory
+            )
+            if exists && isDirectory.boolValue {
+                draft = ClaudeChatPanel.draft(draft, appendingPath: url.path)
+            } else {
+                attachFile(at: url)
+            }
+        }
+    }
+
+    /// Append an absolute path to a draft, separating it from any existing
+    /// text with a single space so a dropped directory path never runs into
+    /// the user's prose. Pure so the spacing rules are unit-testable.
+    nonisolated static func draft(_ draft: String, appendingPath path: String) -> String {
+        guard !path.isEmpty else { return draft }
+        if draft.isEmpty { return path }
+        if draft.hasSuffix(" ") || draft.hasSuffix("\n") { return draft + path }
+        return draft + " " + path
+    }
+
     /// Persist arbitrary image data (e.g. from a clipboard / drop NSImage
     /// representation) to the attachments dir as a PNG.
     @discardableResult
@@ -1819,6 +1908,131 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             pendingToolResultsBuffer.removeAll(keepingCapacity: true)
             toolResultsByToolUseId.merge(toMerge) { _, new in new }
         }
+        trimTranscriptIfNeeded()
+    }
+
+    /// Immutable result of a transcript trim. Kept as a value type so the
+    /// reducer below stays pure and unit-testable — the panel itself can't
+    /// be constructed in tests (it spawns a `claude` subprocess), so the
+    /// bounding logic is exercised through this static seam.
+    struct TrimmedTranscript: Equatable {
+        var messages: [ChatMessage]
+        var checkpoints: [RewindCheckpoint]
+        var toolResults: [String: ChatMessageBlock.ToolResult]
+    }
+
+    /// Pure reducer: once the transcript exceeds `maxRetained`, drop the
+    /// oldest messages and reconcile the two structures that reference
+    /// messages by position or id:
+    ///   - rewind checkpoints store an absolute `userMessageIndex`, so
+    ///     every surviving checkpoint is rebased by the removed count and
+    ///     any whose anchor message was evicted is dropped (you can't
+    ///     rewind to a turn that's no longer in memory);
+    ///   - `toolResultsByToolUseId` holds full command output keyed by
+    ///     `tool_use.id`, so results whose `tool_use` block is no longer
+    ///     in any retained message are evicted — this map is the one that
+    ///     otherwise grows forever with large Bash / file-read outputs.
+    nonisolated static func trimmedTranscript(
+        messages: [ChatMessage],
+        checkpoints: [RewindCheckpoint],
+        toolResults: [String: ChatMessageBlock.ToolResult],
+        maxRetained: Int
+    ) -> TrimmedTranscript {
+        let overflow = messages.count - max(0, maxRetained)
+        guard overflow > 0 else {
+            return TrimmedTranscript(
+                messages: messages, checkpoints: checkpoints, toolResults: toolResults)
+        }
+
+        var trimmedMessages = messages
+        trimmedMessages.removeFirst(overflow)
+
+        let rebasedCheckpoints = checkpoints.compactMap { checkpoint -> RewindCheckpoint? in
+            let rebased = checkpoint.userMessageIndex - overflow
+            guard rebased >= 0 else { return nil }
+            return checkpoint.withUserMessageIndex(rebased)
+        }
+
+        var referencedToolUseIds = Set<String>()
+        for message in trimmedMessages {
+            for block in message.blocks {
+                if case .toolUse(let toolUse) = block {
+                    referencedToolUseIds.insert(toolUse.id)
+                }
+            }
+        }
+        let prunedToolResults = toolResults.filter { referencedToolUseIds.contains($0.key) }
+
+        return TrimmedTranscript(
+            messages: trimmedMessages,
+            checkpoints: rebasedCheckpoints,
+            toolResults: prunedToolResults
+        )
+    }
+
+    /// Apply `trimmedTranscript` in place. Called after any path that can
+    /// grow the transcript (the live-stream flush); the resume path is
+    /// bounded upstream by `ClaudeSessionHistory.tailText`.
+    private func trimTranscriptIfNeeded() {
+        guard messages.count > ClaudeChatPanel.maxRetainedMessages else { return }
+        let trimmed = ClaudeChatPanel.trimmedTranscript(
+            messages: messages,
+            checkpoints: undoCheckpoints,
+            toolResults: toolResultsByToolUseId,
+            maxRetained: ClaudeChatPanel.maxRetainedMessages
+        )
+        messages = trimmed.messages
+        undoCheckpoints = trimmed.checkpoints
+        toolResultsByToolUseId = trimmed.toolResults
+    }
+
+    // MARK: - Idle runner sleep
+
+    /// Whether an idle panel's `claude` subprocess can be safely terminated
+    /// to reclaim memory. False whenever a turn is in flight or the user has
+    /// an unanswered approval/question or a queued draft, so sleeping can
+    /// never drop live work. Pure so the invariant is unit-testable — the
+    /// panel spawns a subprocess and can't be constructed in tests.
+    nonisolated static func canSleepIdleRunner(
+        status: ChatStatus,
+        isRunning: Bool,
+        hasPendingApprovals: Bool,
+        hasPendingQuestions: Bool,
+        hasPendingDrafts: Bool
+    ) -> Bool {
+        guard isRunning else { return false }
+        guard case .idle = status else { return false }
+        return !hasPendingApprovals && !hasPendingQuestions && !hasPendingDrafts
+    }
+
+    /// (Re)arm the idle-sleep countdown. Invalidates any existing timer and
+    /// schedules a fresh one only while resting with a live process; any
+    /// non-idle status leaves the runner untouched.
+    private func rescheduleIdleRunnerSleep() {
+        idleRunnerSleepTimer?.invalidate()
+        idleRunnerSleepTimer = nil
+        guard case .idle = status, runner.isRunning else { return }
+        idleRunnerSleepTimer = Timer.scheduledTimer(
+            withTimeInterval: ClaudeChatPanel.idleRunnerSleepTimeout,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in self?.sleepIdleRunnerIfPossible() }
+        }
+    }
+
+    /// Terminate the idle `claude` subprocess to reclaim memory. Keeps
+    /// `sessionId` + `messages` so the next `send` respawns it transparently
+    /// via `--resume`; the clean exit lands in `handle(processExit: .success)`
+    /// which is a no-op while idle (no error banner, no status change).
+    private func sleepIdleRunnerIfPossible() {
+        guard ClaudeChatPanel.canSleepIdleRunner(
+            status: status,
+            isRunning: runner.isRunning,
+            hasPendingApprovals: !pendingApprovals.isEmpty,
+            hasPendingQuestions: !pendingQuestions.isEmpty,
+            hasPendingDrafts: !pendingDrafts.isEmpty
+        ) else { return }
+        runner.terminate()
     }
 
     /// Compatibility shim — callers that historically only cared about

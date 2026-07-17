@@ -890,7 +890,7 @@ struct ClaudeChatPanelView: View {
     var body: some View {
         ChatDropContainer(
             onURLs: { urls in
-                for url in urls { _ = panel.attachFile(at: url) }
+                panel.handleDroppedFileURLs(urls)
             },
             onImageData: { datas in
                 for data in datas {

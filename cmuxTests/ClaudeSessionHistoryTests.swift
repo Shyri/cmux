@@ -171,4 +171,91 @@ import Testing
         #expect(ClaudeSessionHistory.decodeTranscript(text: "").isEmpty)
         #expect(ClaudeSessionHistory.decodeTranscript(text: "\n\n").isEmpty)
     }
+
+    // MARK: - tailText bounded restore read
+
+    /// Restoring a session must not slurp a multi-MB JSONL into memory:
+    /// `tailText` materializes only the most recent `maxLines` lines.
+    @Test func tailTextReturnsOnlyTheLastLines() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        let body = (0..<5000).map { "line \($0)" }.joined(separator: "\n") + "\n"
+        try body.write(to: url, atomically: true, encoding: .utf8)
+
+        let tail = try #require(ClaudeSessionHistory.tailText(of: url, maxLines: 2000))
+        let lines = tail.split(separator: "\n", omittingEmptySubsequences: true).map(String.init)
+        #expect(lines.count == 2000)
+        #expect(lines.first == "line 3000")
+        #expect(lines.last == "line 4999")
+    }
+
+    @Test func tailTextShorterThanLimitReturnsEveryLine() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "a\nb\nc\n".write(to: url, atomically: true, encoding: .utf8)
+
+        let tail = try #require(ClaudeSessionHistory.tailText(of: url, maxLines: 2000))
+        #expect(tail == "a\nb\nc\n")
+    }
+
+    /// A final line without a terminating newline is kept intact.
+    @Test func tailTextHandlesNoTrailingNewline() throws {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString).jsonl")
+        defer { try? FileManager.default.removeItem(at: url) }
+        try "first\nsecond".write(to: url, atomically: true, encoding: .utf8)
+
+        let tail = try #require(ClaudeSessionHistory.tailText(of: url, maxLines: 1))
+        #expect(tail == "second")
+    }
+
+    @Test func tailTextMissingFileReturnsNil() {
+        let url = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)-missing.jsonl")
+        #expect(ClaudeSessionHistory.tailText(of: url, maxLines: 10) == nil)
+    }
+
+    // MARK: - locateTranscript (encoding-agnostic session scan)
+
+    /// Regression: on a cold-start restore, a worktree chat opened blank
+    /// because the cwd-recomputed project folder didn't match the launch-cwd
+    /// folder Claude actually wrote under. The by-session-id scan must find
+    /// the transcript under *any* project folder name.
+    @Test func locateTranscriptFindsSessionUnderMismatchedFolderName() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        // A folder name that no cwd encoding the caller recomputes would
+        // produce — stands in for the worktree mismatch.
+        let projectDir = root.appendingPathComponent(
+            "-some-worktree-encoded-oddly", isDirectory: true)
+        try fm.createDirectory(at: projectDir, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        let sessionId = UUID().uuidString
+        let jsonl = projectDir.appendingPathComponent("\(sessionId).jsonl")
+        try "{}\n".write(to: jsonl, atomically: true, encoding: .utf8)
+
+        let found = ClaudeSessionHistory.locateTranscript(
+            sessionId: sessionId, inProjectsRoot: root)
+        #expect(found?.path == jsonl.path)
+    }
+
+    @Test func locateTranscriptReturnsNilWhenAbsent() throws {
+        let fm = FileManager.default
+        let root = fm.temporaryDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try fm.createDirectory(at: root, withIntermediateDirectories: true)
+        defer { try? fm.removeItem(at: root) }
+        #expect(ClaudeSessionHistory.locateTranscript(
+            sessionId: UUID().uuidString, inProjectsRoot: root) == nil)
+    }
+
+    @Test func locateTranscriptReturnsNilForMissingRoot() {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(UUID().uuidString)-nope", isDirectory: true)
+        #expect(ClaudeSessionHistory.locateTranscript(
+            sessionId: "abc", inProjectsRoot: root) == nil)
+    }
 }
