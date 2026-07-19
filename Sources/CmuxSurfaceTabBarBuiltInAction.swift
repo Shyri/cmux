@@ -3,7 +3,9 @@ import Foundation
 
 enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Hashable {
     case newWorkspace = "cmux.newWorkspace"
+    case newAgentChat = "cmux.newAgentChat"
     case cloudVM = "cmux.cloudvm"
+    case mobileConnect = "cmux.mobileconnect"
     case newTerminal = "cmux.newTerminal"
     case newBrowser = "cmux.newBrowser"
     case splitRight = "cmux.splitRight"
@@ -35,10 +37,15 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
         switch configID {
         case "cmux.newWorkspace", "newWorkspace":
             self = .newWorkspace
+        case "cmux.newAgentChat", "cmux.agentChat", "newAgentChat", "new-agent-chat", "agentChat":
+            self = .newAgentChat
         case "cmux.cloudvm", "cmux.cloudVM", "cloudVM", "cloudvm",
              "cmux.newCloudVM", "cmux.newCloudVm", "newCloudVM", "newCloudVm",
              "cmux.startCloudVM", "cmux.startCloudVm", "startCloudVM", "startCloudVm":
             self = .cloudVM
+        case "cmux.mobileconnect", "cmux.mobileConnect", "mobileConnect", "mobileconnect",
+             "cmux.connectPhone", "connectPhone":
+            self = .mobileConnect
         case "cmux.newTerminal", "newTerminal":
             self = .newTerminal
         case "cmux.newBrowser", "newBrowser":
@@ -73,8 +80,12 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
         switch self {
         case .newWorkspace:
             return "plus.square"
+        case .newAgentChat:
+            return "message"
         case .cloudVM:
             return "cloud"
+        case .mobileConnect:
+            return "iphone"
         case .newTerminal:
             return "terminal"
         case .newBrowser:
@@ -101,8 +112,9 @@ enum CmuxSurfaceTabBarBuiltInAction: String, Codable, Sendable, CaseIterable, Ha
 
     var bonsplitAction: BonsplitConfiguration.SplitActionButton.Action? {
         switch self {
-        case .newWorkspace, .cloudVM, .openInFinder, .openInIDE,
-             .openInSourcetree, .toggleNotes, .newClaudeChat:
+        case .newWorkspace, .newAgentChat, .cloudVM, .mobileConnect,
+             .openInFinder, .openInIDE, .openInSourcetree, .toggleNotes,
+             .newClaudeChat:
             return nil
         case .newTerminal:
             return .newTerminal

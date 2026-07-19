@@ -6,11 +6,11 @@ import Foundation
 import CmuxWorkspaces
 
 /// The surface-domain resume (`resume.set` / `.get` / `.clear`) and reporting
-/// (`report_tty` / `report_shell_state` / `ports_kick`) witnesses, plus the token
-/// parsers. Split out of `TerminalController+ControlSurfaceContext` to keep the
-/// conformance readable; see that file's doc comment for the overview. The blocking
-/// approval `NSAlert` and its `String(localized:)` calls resolve here, in the app
-/// bundle, so translations survive.
+/// (`report_tty` / `report_pwd` / `report_shell_state` / `ports_kick`) witnesses,
+/// plus the token parsers. Split out of `TerminalController+ControlSurfaceContext`
+/// to keep the conformance readable; see that file's doc comment for the overview.
+/// The blocking approval `NSAlert` and its `String(localized:)` calls resolve
+/// here, in the app bundle, so translations survive.
 extension TerminalController {
 
     // MARK: - resume target resolution (twin of v2ResolveSurfaceResumeTarget)
@@ -24,9 +24,8 @@ extension TerminalController {
         hasResolvedWindowID: Bool,
         fallbackTabManager: TabManager
     ) -> (tabManager: TabManager, workspace: Workspace, surfaceId: UUID)? {
-        // Legacy explicit target: surface_id ?? tab_id ONLY (terminal_id is a
-        // general-routing alias but was never a resume target), and the window
-        // branch requires a RESOLVABLE window_id (legacy `v2UUID != nil`).
+        // Explicit target: surface_id, terminal_id, and tab_id all name the
+        // terminal surface; the window branch requires a resolvable window_id.
         if let explicitSurfaceId = explicitTargetID {
             if let explicitWorkspaceId = routing.workspaceID {
                 guard let workspace = fallbackTabManager.tabs.first(where: { $0.id == explicitWorkspaceId }),
@@ -132,17 +131,22 @@ extension TerminalController {
             defaultValue: "Allow Resume Command?"
         )
         let cwd = binding.cwd ?? String(localized: "surfaceResumeApproval.cwd.none", defaultValue: "None")
-        alert.informativeText = String(
+        let informativeText = String(
             format: String(
                 localized: "surfaceResumeApproval.proposal.message",
-                defaultValue: "A process wants cmux to keep this resume command for the current terminal:\n\n%@\n\nWorking directory: %@"
+                defaultValue: "A process wants cmux to keep this resume command for the current terminal:\n\nWorking directory: %@\n\n%@"
             ),
-            binding.command,
-            cwd
+            cwd,
+            binding.command
         )
         alert.addButton(withTitle: String(localized: "surfaceResumeApproval.proposal.auto", defaultValue: "Auto-Restore"))
         alert.addButton(withTitle: String(localized: "surfaceResumeApproval.proposal.ask", defaultValue: "Ask Each Time"))
         alert.addButton(withTitle: String(localized: "surfaceResumeApproval.proposal.manual", defaultValue: "Keep Manual"))
+        let content = CmuxAlertContent(
+            flattenedText: informativeText,
+            separatingScrollableDetails: binding.command
+        )
+        content.apply(to: alert, presentingWindow: nil)
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
@@ -271,11 +275,11 @@ extension TerminalController {
 
     // MARK: - token parsers
 
-    func controlSurfaceParseShellActivityState(_ rawState: String) -> String? {
+    nonisolated func controlSurfaceParseShellActivityState(_ rawState: String) -> String? {
         Self.parseReportedShellActivityState(rawState)?.rawValue
     }
 
-    func controlSurfaceParsePortScanKickReason(_ rawReason: String) -> String? {
+    nonisolated func controlSurfaceParsePortScanKickReason(_ rawReason: String) -> String? {
         Self.parseRemotePortScanKickReason(rawReason)?.rawValue
     }
 
@@ -311,6 +315,42 @@ extension TerminalController {
             _ = tab.applyPendingRemoteSurfacePortKickIfNeeded(to: surfaceId)
         } else {
             PortScanner.shared.registerTTY(workspaceId: workspaceID, panelId: surfaceId, ttyName: ttyName)
+        }
+        return .recorded(surfaceID: surfaceId)
+    }
+
+    // MARK: - report_pwd
+
+    func controlSurfaceReportPWD(
+        workspaceID: UUID,
+        requestedSurfaceID: UUID?,
+        path: String
+    ) -> ControlSurfaceReportPWDResolution {
+        guard let tab = controlTabForSidebarMutation(id: workspaceID) else {
+            return .workspaceNotFound
+        }
+        let validSurfaceIds = Set(tab.panels.keys)
+        tab.pruneSurfaceMetadata(validSurfaceIds: validSurfaceIds)
+
+        let surfaceId = controlResolveReportedSurfaceId(
+            in: tab,
+            requestedSurfaceId: requestedSurfaceID,
+            validSurfaceIds: validSurfaceIds
+        )
+        guard let surfaceId, validSurfaceIds.contains(surfaceId) else {
+            if tab.isRemoteWorkspace, validSurfaceIds.isEmpty {
+                tab.rememberPendingRemoteSurfacePWD(path, requestedSurfaceId: requestedSurfaceID)
+                return .pending
+            }
+            return .surfaceNotFound
+        }
+
+        if let tabManager = AppDelegate.shared?.tabManagerFor(tabId: workspaceID) ?? tabManager {
+            tabManager.updateReportedSurfaceDirectory(tabId: workspaceID, surfaceId: surfaceId, directory: path)
+        } else if tab.isRemoteTerminalSurface(surfaceId) {
+            _ = tab.updateRemotePanelDirectoryWithMetadata(panelId: surfaceId, directory: path)
+        } else {
+            _ = tab.updatePanelDirectory(panelId: surfaceId, directory: path)
         }
         return .recorded(surfaceID: surfaceId)
     }

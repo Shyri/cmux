@@ -114,8 +114,8 @@
       ]
     },
     {
-      "path": ".github/review-bot-rules/swift-file-package-boundaries.md",
-      "description": "Source-of-truth cmux lint rule for Swift file size and SwiftPM package boundary review.",
+      "path": ".github/review-bot-rules/swift-package-boundaries.md",
+      "description": "Source-of-truth cmux lint rule for SwiftPM package boundary review.",
       "scope": [
         "**/*.swift",
         "**/Package.swift",
@@ -170,6 +170,14 @@
         "**/*.jsx",
         "**/*.mjs",
         "**/*.cjs"
+      ]
+    },
+    {
+      "path": ".github/review-bot-rules/react-base-ui-accessibility.md",
+      "description": "Source-of-truth cmux review rule requiring relevant Base UI or local React primitives for custom interactive UI accessibility and keyboard behavior.",
+      "scope": [
+        "web/**/*.tsx",
+        "web/**/*.jsx"
       ]
     },
     {

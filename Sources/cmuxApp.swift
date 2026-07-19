@@ -28,6 +28,14 @@ import CmuxTerminal
 @main
 enum CmuxMain {
     static func main() {
+#if DEBUG
+        // Bonsplit's `dlog` and the app's `cmuxDebugLog` resolve the same
+        // debug log file. Route bonsplit through the shared writer so the
+        // file has exactly one serialized append path (single O_APPEND
+        // handle, monotonic #<seq> line prefixes); with two independent
+        // appenders, concurrent lines interleaved and landed out of order.
+        Bonsplit.DebugEventLog.setExternalSink { cmuxDebugLog($0) }
+#endif
         if CommandLine.arguments.contains(RenderWorkerClient.workerModeArgument) {
             runSidebarRenderWorker()
         }
@@ -50,7 +58,6 @@ struct cmuxApp: App {
     /// hosted-browser sign-in flow). Constructed once at app launch and
     /// injected into AppDelegate and the auth-consuming services.
     private let authComposition: MacAuthComposition
-
     @StateObject private var tabManager: TabManager
     @StateObject private var notificationStore = TerminalNotificationStore.shared
     @StateObject var closedItemHistoryStore = ClosedItemHistoryStore.shared
@@ -60,7 +67,7 @@ struct cmuxApp: App {
     @ObservedObject private var sessionPresetStore = SessionPresetStore.shared
     private let primaryWindowId = UUID()
     @AppStorage(AppearanceSettings.appearanceModeKey) private var appearanceMode = AppearanceSettings.defaultMode.rawValue
-    @AppStorage("titlebarControlsStyle") private var titlebarControlsStyle = TitlebarControlsStyle.classic.rawValue
+    @AppStorage(TitlebarControlsStyle.storageKey) private var titlebarControlsStyle = TitlebarControlsStyle.defaultRawValue
     @AppStorage(DevBuildBannerDebugSettings.sidebarBannerVisibleKey)
     private var showSidebarDevBuildBanner = DevBuildBannerDebugSettings.defaultShowSidebarBanner
     @AppStorage(SocketControlSettings.appStorageKey) private var socketControlMode = SocketControlSettings.defaultMode.rawValue
@@ -68,8 +75,6 @@ struct cmuxApp: App {
     @State private var browserFocusModeMenuRevision = 0
     @StateObject var focusHistoryMenuInvalidator = FocusHistoryMenuInvalidator()
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @Environment(\.openWindow) private var openWindow
-
     private var browserToolbarAccessorySpacing: Int {
         BrowserToolbarAccessorySpacingDebugSettings.resolved(browserToolbarAccessorySpacingRaw)
     }
@@ -161,9 +166,8 @@ struct cmuxApp: App {
         _ = KeyboardShortcutSettings.settingsFileStore
         StartupBreadcrumbLog.append("app.init.keyboardShortcuts.loaded")
 
-        // Apply saved language preference before any UI loads
-        let languageSettingsStore = LanguageSettingsStore(defaults: .standard)
-        languageSettingsStore.applyLanguageOverride(languageSettingsStore.storedLanguage)
+        // Reconcile saved language preference before any UI loads
+        LanguageSettingsStore(defaults: .standard).reconcileLanguageOverrideAtLaunch()
         StartupBreadcrumbLog.append("app.init.language.applied")
         self.settingsRuntime = SettingsRuntime(
             catalog: settingsCatalog,
@@ -385,14 +389,6 @@ struct cmuxApp: App {
                 .cmuxFontMagnificationEnvironment()
                 .cmuxAppearanceColorScheme(appearanceMode)
                 .onAppear {
-                    SettingsWindowPresenter.configure(
-                        openWindow: {
-                            openWindow(id: SettingsWindowPresenter.windowID)
-                        },
-                        parentWindowProvider: {
-                            AppDelegate.shared?.preferredMainWindowForSettingsPresentation()
-                        }
-                    )
 #if DEBUG
                     if ProcessInfo.processInfo.environment["CMUX_UI_TEST_MODE"] == "1" {
                         AppDelegate.shared?.updateLog.append("ui test: cmuxApp onAppear")
@@ -437,7 +433,7 @@ struct cmuxApp: App {
                 Button(String(localized: "menu.app.checkForUpdates", defaultValue: "Check for Updates…")) {
                     appDelegate.checkForUpdates(nil)
                 }
-                InstallUpdateMenuItem(model: appDelegate.updateViewModel)
+                InstallUpdateMenuItem(model: appDelegate.updateViewModel, actions: appDelegate)
             }
 
             CommandGroup(replacing: .appTermination) {
@@ -526,7 +522,7 @@ struct cmuxApp: App {
                     appDelegate.openDebugScrollbackTab(nil)
                 }
 
-                AgentSessionDebugMenuButtons(
+                IrohAndAgentSessionDebugMenuButtons(
                     openReact: { appDelegate.openDebugAgentSessionReact(nil) },
                     openSolid: { appDelegate.openDebugAgentSessionSolid(nil) }
                 )
@@ -546,6 +542,9 @@ struct cmuxApp: App {
                 Menu("Debug Windows") {
                     Button("Background Debug…") {
                         BackgroundDebugWindowController.shared.show()
+                    }
+                    Button("Pro Badge Style…") {
+                        ProBadgeDebugWindowController.shared.show()
                     }
                     Button(
                         String(
@@ -634,7 +633,12 @@ struct cmuxApp: App {
                     Button("Sidebar Debug…") {
                         SidebarDebugWindowController.shared.show()
                     }
-                    Button("Split Button Layout Debug…") {
+                    Button(
+                        String(
+                            localized: "debug.menu.splitButtonLayoutDebug",
+                            defaultValue: "Split Button Layout Debug…"
+                        )
+                    ) {
                         SplitButtonLayoutDebugWindowController.shared.show()
                     }
                     Button(
@@ -743,6 +747,13 @@ struct cmuxApp: App {
                         // shared action path.
                         activeTabManager.addWorkspace(initialSurface: .browser)
                     }
+                }
+
+                splitCommandButton(title: String(localized: "menu.file.newWorkspaceGroup", defaultValue: "New Workspace Group"), shortcut: menuShortcut(for: .newWorkspaceGroup)) {
+                    _ = AppDelegate.shared?.createEmptyWorkspaceGroup(
+                        tabManager: activeTabManager,
+                        preferredWindow: NSApp.keyWindow ?? NSApp.mainWindow
+                    )
                 }
 
                 splitCommandButton(title: String(localized: "menu.file.openFolder", defaultValue: "Open Folder…"), shortcut: menuShortcut(for: .openFolder)) {
@@ -879,20 +890,10 @@ struct cmuxApp: App {
             windowAndViewCommands
         }
 
-        Window(String(localized: "settings.title", defaultValue: "Settings"), id: SettingsWindowPresenter.windowID) {
-            SettingsWindowRoot(runtime: settingsRuntime)
-                .settingsRuntime(settingsRuntime)
-                .cmuxFontMagnificationEnvironment()
-                .background(WindowAccessor(dedupeByWindow: false) { window in
-                    SettingsWindowPresenter.configure(window: window)
-                })
-                .cmuxAppearanceColorScheme(appearanceMode)
-        }
-        .defaultSize(width: 980, height: 680)
-        .windowResizability(.contentMinSize)
-        .commands {
-            SidebarCommands()
-        }
+        // Settings is an AppKit-owned window (SettingsWindowPresenter /
+        // SettingsWindowFactory), not a SwiftUI Window scene: openWindow(id:)
+        // could silently no-op and leave menu/⌘,/CLI opens dead until app
+        // restart (https://github.com/manaflow-ai/cmux/issues/7777).
 
         Window(String(localized: "settings.config.windowTitle", defaultValue: "Config"), id: ConfigSettingsView.windowID) {
             ConfigSettingsView()
@@ -913,6 +914,10 @@ struct cmuxApp: App {
         historyCommands
         CommandGroup(after: .toolbar) {
             splitCommandButton(title: String(localized: "menu.view.toggleLeftSidebar", defaultValue: "Toggle Left Sidebar"), shortcut: menuShortcut(for: .toggleSidebar)) {
+                // The AppKit-hosted Settings window has no SwiftUI
+                // SidebarCommands; route the shared command to its split view
+                // whenever it is key.
+                if SettingsWindowPresenter.handleSidebarToggleIfSettingsWindowIsKey(keyWindow: NSApp.keyWindow) { return }
                 if AppDelegate.shared?.toggleSidebarInActiveMainWindow() != true {
                     sidebarState.toggle()
                 }
@@ -947,6 +952,12 @@ struct cmuxApp: App {
             splitCommandButton(title: String(localized: "menu.view.previousSurface", defaultValue: "Previous Surface"), shortcut: menuShortcut(for: .prevSurface)) {
                 activeTabManager.selectPreviousSurface()
             }
+            splitCommandButton(title: String(localized: "shortcut.moveSurfaceLeft.label", defaultValue: "Move Surface Left"), shortcut: menuShortcut(for: .moveSurfaceLeft)) {
+                activeTabManager.selectedWorkspace?.moveSelectedSurface(by: -1)
+            }
+            splitCommandButton(title: String(localized: "shortcut.moveSurfaceRight.label", defaultValue: "Move Surface Right"), shortcut: menuShortcut(for: .moveSurfaceRight)) {
+                activeTabManager.selectedWorkspace?.moveSelectedSurface(by: 1)
+            }
 
             splitCommandButton(title: String(localized: "menu.view.back", defaultValue: "Back"), shortcut: menuShortcut(for: .browserBack)) {
                 activeTabManager.focusedBrowserPanel?.goBack()
@@ -966,20 +977,21 @@ struct cmuxApp: App {
                     NSSound.beep()
                 }
             }
-
             splitCommandButton(title: String(localized: "menu.view.showJSConsole", defaultValue: "Show JavaScript Console"), shortcut: menuShortcut(for: .showBrowserJavaScriptConsole)) {
                 let manager = activeTabManager
                 if !manager.showJavaScriptConsoleFocusedBrowser() {
                     NSSound.beep()
                 }
             }
-
             splitCommandButton(title: String(localized: "menu.view.toggleReactGrab", defaultValue: "Toggle React Grab"), shortcut: menuShortcut(for: .toggleReactGrab)) {
                 if !activeTabManager.toggleReactGrabFromCurrentFocus() {
                     NSSound.beep()
                 }
             }
-
+            splitCommandButton(title: String(localized: "menu.view.toggleDesignMode", defaultValue: "Toggle Design Mode"), shortcut: menuShortcut(for: .toggleBrowserDesignMode)) {
+                guard let panel = activeTabManager.focusedBrowserPanel else { NSSound.beep(); return }
+                Task { @MainActor in _ = await panel.toggleDesignMode(reason: "viewMenu") }
+            }
             let browserFocusModeMenu = browserFocusModeMenuSnapshot
             Button(browserFocusModeMenu.title) {
                 if !activeTabManager.toggleBrowserFocusModeForFocusedBrowser(reason: "viewMenu") {
@@ -987,17 +999,16 @@ struct cmuxApp: App {
                 }
             }
             .disabled(!browserFocusModeMenu.canToggle)
-
             splitCommandButton(title: String(localized: "menu.view.zoomIn", defaultValue: "Zoom In"), shortcut: menuShortcut(for: .browserZoomIn)) {
-                _ = activeTabManager.zoomInFocusedBrowser()
+                _ = activeTabManager.zoomInFocusedBrowserOrTextFilePreview()
             }
 
             splitCommandButton(title: String(localized: "menu.view.zoomOut", defaultValue: "Zoom Out"), shortcut: menuShortcut(for: .browserZoomOut)) {
-                _ = activeTabManager.zoomOutFocusedBrowser()
+                _ = activeTabManager.zoomOutFocusedBrowserOrTextFilePreview()
             }
 
             splitCommandButton(title: String(localized: "menu.view.actualSize", defaultValue: "Actual Size"), shortcut: menuShortcut(for: .browserZoomReset)) {
-                _ = activeTabManager.resetZoomFocusedBrowser()
+                _ = activeTabManager.resetZoomFocusedBrowserOrTextFilePreview()
             }
 
             Button(String(localized: "menu.view.clearBrowserHistory", defaultValue: "Clear Browser History")) {
@@ -1017,6 +1028,12 @@ struct cmuxApp: App {
 
             splitCommandButton(title: String(localized: "menu.view.previousWorkspace", defaultValue: "Previous Workspace"), shortcut: menuShortcut(for: .prevSidebarTab)) {
                 activeTabManager.selectPreviousTab()
+            }
+            splitCommandButton(title: String(localized: "shortcut.moveWorkspaceUp.label", defaultValue: "Move Workspace Up"), shortcut: menuShortcut(for: .moveWorkspaceUp)) {
+                activeTabManager.moveSelectedWorkspace(by: -1)
+            }
+            splitCommandButton(title: String(localized: "shortcut.moveWorkspaceDown.label", defaultValue: "Move Workspace Down"), shortcut: menuShortcut(for: .moveWorkspaceDown)) {
+                activeTabManager.moveSelectedWorkspace(by: 1)
             }
 
             splitCommandButton(title: String(localized: "menu.view.renameWorkspace", defaultValue: "Rename Workspace…"), shortcut: menuShortcut(for: .renameWorkspace)) {
@@ -1134,29 +1151,15 @@ struct cmuxApp: App {
     }
 
     private func updateSocketController() {
-        let mode = SocketControlSettings.effectiveMode(userMode: currentSocketMode)
-        if mode != .off {
-            let socketPath = TerminalController.shared.activeSocketPath(
-                preferredPath: SocketControlSettings.socketPath()
-            )
-            TerminalController.shared.start(
-                tabManager: activeTabManager,
-                socketPath: socketPath,
-                accessMode: mode
-            )
-        } else {
-            TerminalController.shared.stop()
-        }
+        appDelegate.reconcileSocketListenerConfiguration(
+            source: "settings.automation.socketControlMode.appStorage"
+        )
     }
 
     private func bootstrapMainWindowScene() {
         appDelegate.scheduleInitialMainWindowBootstrap(debugSource: "swiftUIBootstrap")
         appDelegate.installReloadConfigurationMenuItemAction()
         applyAppearance()
-    }
-
-    private var currentSocketMode: SocketControlMode {
-        SocketControlSettings.migrateMode(socketControlMode)
     }
 
     func menuShortcut(for action: KeyboardShortcutSettings.Action) -> StoredShortcut {
@@ -1275,10 +1278,6 @@ struct cmuxApp: App {
         _ = tabManager.createBrowserSplit(direction: direction)
     }
 
-    private func selectedWorkspaceIndex(in manager: TabManager, workspaceId: UUID) -> Int? {
-        manager.tabs.firstIndex { $0.id == workspaceId }
-    }
-
     private func selectedWorkspaceWindowMoveTargets(in manager: TabManager) -> [AppDelegate.WindowMoveTarget] {
         let referenceWindowId = AppDelegate.shared?.windowId(for: manager)
         return AppDelegate.shared?.windowMoveTargets(referenceWindowId: referenceWindowId) ?? []
@@ -1293,15 +1292,6 @@ struct cmuxApp: App {
     private func clearSelectedWorkspaceCustomName(in manager: TabManager) {
         guard let workspace = manager.selectedWorkspace else { return }
         manager.clearCustomTitle(tabId: workspace.id)
-    }
-
-    private func moveSelectedWorkspace(in manager: TabManager, by delta: Int) {
-        guard let workspace = manager.selectedWorkspace,
-              let currentIndex = selectedWorkspaceIndex(in: manager, workspaceId: workspace.id) else { return }
-        let targetIndex = currentIndex + delta
-        guard targetIndex >= 0, targetIndex < manager.tabs.count else { return }
-        _ = manager.reorderWorkspace(tabId: workspace.id, toIndex: targetIndex)
-        manager.selectWorkspace(workspace)
     }
 
     private func moveSelectedWorkspaceToTop(in manager: TabManager) {
@@ -1399,12 +1389,12 @@ struct cmuxApp: App {
         Divider()
 
         Button(String(localized: "contextMenu.moveUp", defaultValue: "Move Up")) {
-            moveSelectedWorkspace(in: manager, by: -1)
+            manager.moveSelectedWorkspace(by: -1)
         }
         .disabled(workspaceIndex == nil || workspaceIndex == 0)
 
         Button(String(localized: "contextMenu.moveDown", defaultValue: "Move Down")) {
-            moveSelectedWorkspace(in: manager, by: 1)
+            manager.moveSelectedWorkspace(by: 1)
         }
         .disabled(workspaceIndex == nil || workspaceIndex == manager.tabs.count - 1)
 
@@ -1486,11 +1476,9 @@ struct cmuxApp: App {
     }
 
     private func closePanelOrWindow() {
-        if let window = NSApp.keyWindow ?? NSApp.mainWindow,
-           cmuxWindowShouldOwnCloseShortcut(window) {
-            window.performClose(nil)
-            return
-        }
+        let window = NSApp.keyWindow ?? NSApp.mainWindow
+        if let window, cmuxWindowShouldOwnCloseShortcut(window) { window.performClose(nil); return }
+        if appDelegate.closeFocusedDockPanelForCommand(preferredWindow: window) { return }
         activeTabManager.closeCurrentPanelWithConfirmation()
     }
 
@@ -1523,6 +1511,7 @@ struct cmuxApp: App {
         FeedTextEditorDebugWindowController.shared.show()
         FeedButtonStyleDebugWindowController.shared.show()
         BonsplitTabBarDebugWindowController.shared.show()
+        SplitButtonLayoutDebugWindowController.shared.show()
     }
 #endif
 }
@@ -1543,7 +1532,6 @@ private struct MainWindowBootstrapView: View {
     }
 }
 
-
 private let cmuxAuxiliaryWindowIdentifiers: Set<String> = [
     "cmux.settings",
     "cmux.about",
@@ -1558,6 +1546,7 @@ private let cmuxAuxiliaryWindowIdentifiers: Set<String> = [
     "cmux.fileExplorerStyleDebug",
     "cmux.folderDragIcon",
     "cmux.pdfPreviewChromeDebug",
+    "cmux.proBadgeDebug",
     "cmux.recentlyClosedHistory",
     "cmux.splitButtonLayoutDebug",
     "cmux.tabBarBackdropLab",
@@ -1569,6 +1558,7 @@ private let cmuxAuxiliaryWindowIdentifiers: Set<String> = [
     "cmux.extensionSidebarInspector",
     "cmux.sidebarDebug",
     "cmux.menubarDebug",
+    "cmux.spinnerGallery",
     "cmux.backgroundDebug",
     "cmux.startupAppearanceDebug",
     "cmux.bonsplitTabBarDebug",
@@ -1800,6 +1790,14 @@ private struct DebugWindowControlsView: View {
                         }
                         Button(
                             String(
+                                localized: "debug.menu.splitButtonLayoutDebug",
+                                defaultValue: "Split Button Layout Debug…"
+                            )
+                        ) {
+                            SplitButtonLayoutDebugWindowController.shared.show()
+                        }
+                        Button(
+                            String(
                                 localized: "debug.menu.feedTextEditorDebug",
                                 defaultValue: "Feed Text Editor Lab…"
                             )
@@ -1820,6 +1818,7 @@ private struct DebugWindowControlsView: View {
                             MenuBarExtraDebugWindowController.shared.show()
                             PDFPreviewChromeDebugWindowController.shared.show()
                             TabBarBackdropLabWindowController.shared.show()
+                            SplitButtonLayoutDebugWindowController.shared.show()
                             FeedTextEditorDebugWindowController.shared.show()
                         }
                     }
@@ -2353,7 +2352,7 @@ private final class AcknowledgmentsWindowController: ReleasingWindowController {
             backing: .buffered,
             defer: false
         )
-        window.title = String(localized: "about.licenses.windowTitle", defaultValue: "Third-Party Licenses")
+        window.title = String(localized: "about.licenses", defaultValue: "Licenses")
         window.identifier = NSUserInterfaceItemIdentifier("cmux.licenses")
         window.center()
         window.contentView = NSHostingView(rootView: AcknowledgmentsView())
@@ -2371,13 +2370,7 @@ private final class AcknowledgmentsWindowController: ReleasingWindowController {
 }
 
 private struct AcknowledgmentsView: View {
-    private let content: String = {
-        if let url = Bundle.main.url(forResource: "THIRD_PARTY_LICENSES", withExtension: "md"),
-           let text = try? String(contentsOf: url) {
-            return text
-        }
-        return String(localized: "about.licenses.notFound", defaultValue: "Licenses file not found.")
-    }()
+    private let content = AboutLicenseContent(bundle: .main).load()
 
     var body: some View {
         ScrollView {
@@ -3036,6 +3029,7 @@ private struct MenuBarExtraDebugView: View {
     }
 }
 
+#if DEBUG
 // MARK: - Split Button Layout Debug Window
 
 private final class SplitButtonLayoutDebugWindowController: ReleasingWindowController {
@@ -3043,12 +3037,12 @@ private final class SplitButtonLayoutDebugWindowController: ReleasingWindowContr
 
     override func makeWindow() -> NSWindow {
         let window = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 320, height: 240),
-            styleMask: [.titled, .closable, .utilityWindow],
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 460),
+            styleMask: [.titled, .closable, .resizable, .utilityWindow],
             backing: .buffered,
             defer: false
         )
-        window.title = "Split Button Layout"
+        window.title = String(localized: "debug.splitButtonLayout.windowTitle", defaultValue: "Split Button Layout")
         window.titleVisibility = .visible
         window.titlebarAppearsTransparent = false
         window.isMovableByWindowBackground = true
@@ -3066,6 +3060,32 @@ private final class SplitButtonLayoutDebugWindowController: ReleasingWindowContr
 
 private struct SplitButtonLayoutDebugView: View {
     @AppStorage("debugFadeColorStyle") private var backdropStyle = 0
+    @AppStorage(TitlebarControlsStyle.storageKey) private var titlebarControlsStyleRawValue = TitlebarControlsStyle.defaultRawValue
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.alwaysHoverKey)
+    private var alwaysHover = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultAlwaysHover
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.forcedHoverSegmentKey)
+    private var forcedHoverSegmentRaw = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultForcedHoverSegment.rawValue
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.plusWidthOffsetKey)
+    private var plusWidthOffset = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPlusWidthOffset
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.caretWidthOffsetKey)
+    private var caretWidthOffset = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultCaretWidthOffset
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.plusPaddingTopKey)
+    private var plusPaddingTop = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.plusPaddingLeadingKey)
+    private var plusPaddingLeading = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.plusPaddingBottomKey)
+    private var plusPaddingBottom = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.plusPaddingTrailingKey)
+    private var plusPaddingTrailing = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPlusPaddingTrailing
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.caretPaddingTopKey)
+    private var caretPaddingTop = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.caretPaddingLeadingKey)
+    private var caretPaddingLeading = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.caretPaddingBottomKey)
+    private var caretPaddingBottom = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @AppStorage(TitlebarNewWorkspaceCloudSplitButtonDebugSettings.caretPaddingTrailingKey)
+    private var caretPaddingTrailing = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+    @State private var plusClicks = 0
 
     private var options: [(Int, String)] {
         [
@@ -3080,29 +3100,259 @@ private struct SplitButtonLayoutDebugView: View {
         ]
     }
 
+    private var currentTitlebarControlsStyle: TitlebarControlsStyle {
+        TitlebarControlsStyle.stored(rawValue: titlebarControlsStyleRawValue)
+    }
+
+    private var forcedHoverSegmentOptions: [(TitlebarNewWorkspaceCloudSplitButtonForcedHoverSegment, String)] {
+        [
+            (
+                .newTab,
+                String(localized: "debug.splitButtonLayout.hoverSegment.plus", defaultValue: "Plus")
+            ),
+            (
+                .cloudMenu,
+                String(localized: "debug.splitButtonLayout.hoverSegment.caret", defaultValue: "Caret")
+            ),
+            (
+                .both,
+                String(localized: "debug.splitButtonLayout.hoverSegment.both", defaultValue: "Both")
+            ),
+        ]
+    }
+
     var body: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text(String(localized: "debug.splitButtonLayout.title", defaultValue: "Button Backdrop Color"))
-                .cmuxFont(.headline)
+        ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                Text(String(localized: "debug.splitButtonLayout.title", defaultValue: "Button Backdrop Color"))
+                    .cmuxFont(.headline)
 
-            ForEach(options, id: \.0) { id, label in
-                HStack {
-                    Image(systemName: backdropStyle == id ? "checkmark.circle.fill" : "circle")
-                        .foregroundColor(backdropStyle == id ? .accentColor : .secondary)
-                    Text(label)
+                GroupBox(String(localized: "debug.splitButtonLayout.cloudPreview", defaultValue: "Cloud Split Button")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        ForEach(TitlebarControlsStyle.allCases) { style in
+                            let isCurrentStyle = style == currentTitlebarControlsStyle
+                            HStack(spacing: 12) {
+                                Text(style.menuTitle)
+                                    .cmuxFont(.caption)
+                                    .foregroundColor(.secondary)
+                                    .frame(width: 72, alignment: .leading)
+                                TitlebarNewWorkspaceCloudSplitButton(
+                                    config: style.config,
+                                    foregroundColor: Color(nsColor: titlebarControlForegroundNSColor(opacity: 1.0)),
+                                    onNewTab: { plusClicks += 1 }
+                                )
+                                if isCurrentStyle {
+                                    Text(String(localized: "debug.splitButtonLayout.inUse", defaultValue: "In Use"))
+                                        .cmuxFont(.caption)
+                                        .foregroundColor(.accentColor)
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(Capsule().fill(Color.accentColor.opacity(0.14)))
+                                }
+                                Spacer(minLength: 0)
+                            }
+                            .frame(height: 28)
+                            .padding(.horizontal, 6)
+                            .background(
+                                RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                    .fill(isCurrentStyle ? Color.accentColor.opacity(0.08) : Color.clear)
+                            )
+                        }
+
+                        HStack(spacing: 8) {
+                            Image(systemName: "plus")
+                            Text(
+                                String(
+                                    format: String(
+                                        localized: "debug.splitButtonLayout.plusClicks",
+                                        defaultValue: "Plus clicks: %d"
+                                    ),
+                                    plusClicks
+                                )
+                            )
+                        }
+                        .cmuxFont(.caption)
+                        .foregroundColor(.secondary)
+                    }
+                    .padding(.vertical, 4)
+
+                    Toggle(
+                        String(
+                            localized: "debug.splitButtonLayout.alwaysHover",
+                            defaultValue: "Always Show Hover State"
+                        ),
+                        isOn: $alwaysHover
+                    )
+
+                    Picker(
+                        String(
+                            localized: "debug.splitButtonLayout.hoverSegment",
+                            defaultValue: "Forced Hover Segment"
+                        ),
+                        selection: $forcedHoverSegmentRaw
+                    ) {
+                        ForEach(forcedHoverSegmentOptions, id: \.0) { segment, label in
+                            Text(label).tag(segment.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(!alwaysHover)
+                    .opacity(alwaysHover ? 1 : 0.55)
                 }
-                .contentShape(Rectangle())
-                .onTapGesture { backdropStyle = id }
-            }
 
-            Text(String(localized: "debug.splitButtonLayout.liveNote", defaultValue: "Changes apply live."))
-                .cmuxFont(.caption)
-                .foregroundColor(.secondary)
+                GroupBox(String(localized: "debug.splitButtonLayout.innerPadding", defaultValue: "Inner Padding and Width")) {
+                    VStack(alignment: .leading, spacing: 12) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(String(localized: "debug.splitButtonLayout.sectionWidth", defaultValue: "Section Width"))
+                                .cmuxFont(.caption)
+                                .foregroundColor(.secondary)
+                            sliderRow(
+                                String(
+                                    localized: "debug.splitButtonLayout.width.plusOffset",
+                                    defaultValue: "Plus Width Offset"
+                                ),
+                                value: $plusWidthOffset,
+                                range: -12...24,
+                                format: "%+.1f"
+                            )
+                            sliderRow(
+                                String(
+                                    localized: "debug.splitButtonLayout.width.caretOffset",
+                                    defaultValue: "Caret Width Offset"
+                                ),
+                                value: $caretWidthOffset,
+                                range: -10...24,
+                                format: "%+.1f"
+                            )
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(String(localized: "debug.splitButtonLayout.plusSegment", defaultValue: "Plus Segment"))
+                                .cmuxFont(.caption)
+                                .foregroundColor(.secondary)
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.top", defaultValue: "Top"),
+                                value: $plusPaddingTop,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.leading", defaultValue: "Leading"),
+                                value: $plusPaddingLeading,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.bottom", defaultValue: "Bottom"),
+                                value: $plusPaddingBottom,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.trailing", defaultValue: "Trailing"),
+                                value: $plusPaddingTrailing,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                        }
+
+                        VStack(alignment: .leading, spacing: 8) {
+                            Text(String(localized: "debug.splitButtonLayout.caretSegment", defaultValue: "Caret Segment"))
+                                .cmuxFont(.caption)
+                                .foregroundColor(.secondary)
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.top", defaultValue: "Top"),
+                                value: $caretPaddingTop,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.leading", defaultValue: "Leading"),
+                                value: $caretPaddingLeading,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.bottom", defaultValue: "Bottom"),
+                                value: $caretPaddingBottom,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                            sliderRow(
+                                String(localized: "debug.splitButtonLayout.padding.trailing", defaultValue: "Trailing"),
+                                value: $caretPaddingTrailing,
+                                range: -8...8,
+                                format: "%.1f"
+                            )
+                        }
+
+                        Button(
+                            String(
+                                localized: "debug.splitButtonLayout.resetPadding",
+                                defaultValue: "Reset Padding and Widths"
+                            )
+                        ) {
+                            resetInnerPadding()
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                GroupBox(String(localized: "debug.splitButtonLayout.backdropOptions", defaultValue: "Backdrop Options")) {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(options, id: \.0) { id, label in
+                            HStack {
+                                Image(systemName: backdropStyle == id ? "checkmark.circle.fill" : "circle")
+                                    .foregroundColor(backdropStyle == id ? .accentColor : .secondary)
+                                Text(label)
+                            }
+                            .contentShape(Rectangle())
+                            .onTapGesture { backdropStyle = id }
+                        }
+                    }
+                    .padding(.vertical, 4)
+                }
+
+                Text(String(localized: "debug.splitButtonLayout.liveNote", defaultValue: "Changes apply live."))
+                    .cmuxFont(.caption)
+                    .foregroundColor(.secondary)
+            }
+            .padding(16)
+            .frame(maxWidth: .infinity, alignment: .topLeading)
         }
-        .padding(16)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+
+    private func resetInnerPadding() {
+        let padding = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPadding
+        plusPaddingTop = padding
+        plusPaddingLeading = padding
+        plusPaddingBottom = padding
+        plusPaddingTrailing = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPlusPaddingTrailing
+        caretPaddingTop = padding
+        caretPaddingLeading = padding
+        caretPaddingBottom = padding
+        caretPaddingTrailing = padding
+        plusWidthOffset = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultPlusWidthOffset
+        caretWidthOffset = TitlebarNewWorkspaceCloudSplitButtonDebugSettings.defaultCaretWidthOffset
+    }
+
+    private func sliderRow(
+        _ label: String,
+        value: Binding<Double>,
+        range: ClosedRange<Double>,
+        format: String
+    ) -> some View {
+        HStack(spacing: 8) {
+            Text(label)
+            Slider(value: value, in: range)
+            Text(String(format: format, value.wrappedValue))
+                .cmuxFont(.caption)
+                .monospacedDigit()
+                .frame(width: 44, alignment: .trailing)
+        }
     }
 }
+#endif
 
 // MARK: - Tab Bar Backdrop Lab Window
 
@@ -4393,16 +4643,10 @@ enum AppIconSettings {
     }
 }
 
-protocol AppIconAppearanceObservation: AnyObject {
-    func invalidate()
-}
-
-extension NSKeyValueObservation: AppIconAppearanceObservation {}
-
 final class AppIconAppearanceObserver: NSObject {
     struct Environment {
         let isApplicationFinishedLaunching: () -> Bool
-        let startEffectiveAppearanceObservation: (@escaping () -> Void) -> AppIconAppearanceObservation?
+        let startEffectiveAppearanceObservation: (@escaping () -> Void) -> EffectiveAppearanceObservation?
         let addDidFinishLaunchingObserver: (@escaping () -> Void) -> NSObjectProtocol
         let removeObserver: (NSObjectProtocol) -> Void
         let currentAppearanceIsDark: () -> Bool?
@@ -4450,7 +4694,7 @@ final class AppIconAppearanceObserver: NSObject {
 
     static let shared = AppIconAppearanceObserver()
     private let environment: Environment
-    private var observation: AppIconAppearanceObservation?
+    private var observation: EffectiveAppearanceObservation?
     private var launchObserver: NSObjectProtocol?
     private var hasDeferredStartPending = false
     private var lastAppliedImageName: String?
@@ -4509,7 +4753,7 @@ final class AppIconAppearanceObserver: NSObject {
     }
 }
 
-nonisolated enum BuildFlavor: String, Sendable {
+enum BuildFlavor: String, Sendable {
     case dev
     case nightly
     case stable

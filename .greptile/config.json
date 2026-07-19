@@ -72,8 +72,8 @@
       "severity": "high"
     },
     {
-      "id": "cmux-swift-file-package-boundaries",
-      "rule": "Flag Swift changes that add too much unrelated responsibility to one file or miss a SwiftPM package boundary: new production Swift files over 400 lines without one responsibility, files over 800 lines, large additions to existing oversized files, mixed UI/state/persistence/network/parsing/protocol code, or independently testable feature logic kept in the app target instead of a small package.",
+      "id": "cmux-swift-package-boundaries",
+      "rule": "Flag independently testable or reusable Swift domain logic kept in the app target instead of a small SwiftPM package. Pass for app-lifecycle composition, small UI/AppKit/Ghostty glue, generated or vendored code, prototypes, and tests.",
       "scope": [
         "**/*.swift",
         "**/Package.swift",
@@ -208,6 +208,15 @@
         "**/*.jsx",
         "**/*.mjs",
         "**/*.cjs"
+      ],
+      "severity": "high"
+    },
+    {
+      "id": "cmux-react-base-ui-accessibility",
+      "rule": "Flag custom React dialogs, popovers, menus, context menus, checkboxes, selects, switches, tabs, tooltips, comboboxes, command menus, or other composite widgets built from raw elements, ad hoc ARIA, tabIndex, or hand-rolled keyboard handlers when @base-ui-components/react or an existing local component provides the relevant primitive. Pass for native semantic controls and for cases with no relevant primitive where the PR owns complete accessibility, keyboard, focus, and disabled/loading behavior.",
+      "scope": [
+        "web/**/*.tsx",
+        "web/**/*.jsx"
       ],
       "severity": "high"
     },

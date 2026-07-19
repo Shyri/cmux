@@ -46,7 +46,7 @@ import Testing
         store.connectPreviewHost()
         // Group sections are account-scoped: the previous account's group
         // names must not survive sign-out into the next session.
-        store.setWorkspacesForTesting(store.workspaces, groups: [
+        store.replaceForegroundWorkspaceState(store.workspaces, groups: [
             MobileWorkspaceGroupPreview(
                 id: "group-1",
                 name: "previous account group",
@@ -70,7 +70,7 @@ import Testing
         store.signIn()
         store.pairingCode = "debug"
         store.connectPreviewHost()
-        store.setWorkspacesForTesting([
+        store.replaceForegroundWorkspaceState([
             MobileWorkspacePreview(id: "ws-foreground", name: "Live", terminals: []),
         ])
         #expect(store.workspaces.map(\.id.rawValue) == ["ws-foreground"])
@@ -131,6 +131,37 @@ import Testing
 
         #expect(store.pairedMacs.map(\.macDeviceID) == ["mac-b"])
         #expect(store.registryDevices.map(\.deviceId) == ["device-b"])
+    }
+
+    @Test func teamChangeRestartsDisconnectedStoredMacReconnectInNewScope() async throws {
+        let team = MutableTeamID("team-a")
+        let pairedStore = DelayedTeamPairedMacStore(
+            recordsByTeam: [
+                "team-a": [try Self.pairedMac(id: "mac-a", teamID: "team-a")],
+                "team-b": [try Self.pairedMac(id: "mac-b", teamID: "team-b")],
+            ],
+            blockedTeams: ["team-a"]
+        )
+        let store = MobileShellComposite(
+            isSignedIn: true,
+            pairedMacStore: pairedStore,
+            identityProvider: StaticIdentityProvider(userID: "user-1"),
+            teamIDProvider: { await team.value },
+            forgottenMacStore: InMemoryPairedMacForgottenStore()
+        )
+
+        let staleReconnect = Task {
+            await store.reconnectActiveMacIfAvailable(stackUserID: "user-1")
+        }
+        await pairedStore.waitUntilLoadStarted(teamID: "team-a")
+
+        await team.set("team-b")
+        store.currentTeamDidChange()
+        await pairedStore.release(teamID: "team-a")
+        _ = await staleReconnect.value
+        for _ in 0..<10 { await Task.yield() }
+
+        #expect(await pairedStore.didStartLoad(teamID: "team-b"))
     }
 
     @Test func createWorkspaceSelectsNewWorkspaceAndTerminal() {

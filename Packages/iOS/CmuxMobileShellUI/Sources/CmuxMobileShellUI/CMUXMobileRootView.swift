@@ -15,6 +15,8 @@ struct CMUXMobileRootView: View {
     @Bindable var store: CMUXMobileShellStore
     @Environment(\.scenePhase) private var scenePhase
     @Environment(AuthCoordinator.self) private var authManager
+    @Environment(\.dogfoodAttachPreparation) private var dogfoodAttachPreparation
+    private let signOutHook: MobileSignOutHook
     #if os(iOS)
     @Environment(MobilePushCoordinator.self) private var pushCoordinator
     /// The persisted first-run onboarding "seen" flag store. The one-time
@@ -43,14 +45,20 @@ struct CMUXMobileRootView: View {
     @Environment(\.tailscaleStatusMonitor) private var tailscaleStatusMonitor
 
     #if os(iOS)
-    init(store: CMUXMobileShellStore, onboardingStore: MobileOnboardingStore) {
+    init(
+        store: CMUXMobileShellStore,
+        onboardingStore: MobileOnboardingStore,
+        signOutHook: MobileSignOutHook
+    ) {
         self.store = store
         self.onboardingStore = onboardingStore
+        self.signOutHook = signOutHook
         _hasSeenOnboarding = State(initialValue: onboardingStore.hasSeenOnboarding)
     }
     #else
-    init(store: CMUXMobileShellStore) {
+    init(store: CMUXMobileShellStore, signOutHook: MobileSignOutHook) {
         self.store = store
+        self.signOutHook = signOutHook
     }
     #endif
 
@@ -70,6 +78,22 @@ struct CMUXMobileRootView: View {
         #endif
     }
 
+    private var shouldShowStreamingChatPreview: Bool {
+        #if os(iOS) && DEBUG
+        return UITestConfig.streamingChatPreviewEnabled
+        #else
+        return false
+        #endif
+    }
+
+    @ViewBuilder private var streamingChatPreview: some View {
+        #if os(iOS) && DEBUG
+        StreamingChatPreviewView()
+        #else
+        EmptyView()
+        #endif
+    }
+
     @ViewBuilder private var terminalLayoutPreview: some View {
         #if os(iOS) && DEBUG
         TerminalLayoutPreviewView()
@@ -78,12 +102,6 @@ struct CMUXMobileRootView: View {
         #endif
     }
 
-    /// DEBUG-only wrapper so Release/iOS archives never reference the
-    /// `#if DEBUG`-gated `WorkspaceListLayoutPreviewView` type directly (a
-    /// simulator screenshot fixture). Swift type-checks every `rootContent`
-    /// branch even when `shouldShowWorkspaceListLayoutPreview` is statically
-    /// false in Release, so gate the reference here, the same way
-    /// `terminalLayoutPreview` does, and Release compiles to `EmptyView`.
     @ViewBuilder private var workspaceListLayoutPreview: some View {
         #if os(iOS) && DEBUG
         WorkspaceListLayoutPreviewView()
@@ -131,7 +149,7 @@ struct CMUXMobileRootView: View {
             store.currentTeamDidChange()
         }
         .onChange(of: scenePhase) { _, phase in
-            guard phase == .active else { return }
+            guard phase == .active else { store.suspendForegroundRefresh(); return }
             store.resumeForegroundRefresh()
             // The user may have toggled Tailscale while we were backgrounded.
             tailscaleStatusMonitor?.refresh()
@@ -168,7 +186,10 @@ struct CMUXMobileRootView: View {
         .onChange(of: authManager.isRestoringSession) { _, isRestoringSession in
             syncShellAuthentication(isAuthenticated, isRestoringSession: isRestoringSession)
             guard !isRestoringSession else { return }
-            _ = consumePendingURLIfReady()
+            if consumePendingURLIfReady() {
+                return
+            }
+            reconnectStoredMacIfNeeded()
         }
         .onChange(of: store.connectionState) { _, connectionState in
             if connectionState == .connected {
@@ -186,10 +207,16 @@ struct CMUXMobileRootView: View {
 
     @ViewBuilder
     private var rootContent: some View {
-        if shouldShowTerminalLayoutPreview {
+        if shouldShowDeleteComputersVerifier {
+            deleteComputersVerifier
+        } else if shouldShowAgentChatDemoPreview {
+            agentChatDemoPreview
+        } else if shouldShowTerminalLayoutPreview {
             terminalLayoutPreview
         } else if shouldShowWorkspaceListLayoutPreview {
             workspaceListLayoutPreview
+        } else if shouldShowStreamingChatPreview {
+            streamingChatPreview
         } else if !isAuthenticated {
             SignInView()
         } else if store.connectionState != .connected && shouldShowRestoringStoredMac {
@@ -200,11 +227,9 @@ struct CMUXMobileRootView: View {
                 reconnectStoredMac: reconnectStoredMacIfNeeded
             )
         } else if shouldShowOnboarding {
-            // Placed after the reconnect-determining branch so `hasKnownPairedMac`
-            // has resolved: a genuine first run (never onboarded, never paired)
-            // sees the one-time explainer before the add-device flow; a returning
-            // paired-but-offline user (who can reach here after a failed
-            // reconnect) is excluded by the gate and falls through to pairing.
+            // Show the one-time explainer before the add-device flow. This is
+            // keyed only by onboarding completion so auto-pairing cannot defer
+            // onboarding until the user later removes every computer.
             onboardingFlow
         } else if store.connectionState != .connected && !store.hasKnownPairedMac {
             // ONLY when there are no saved Macs at all: the add-device flow (it
@@ -290,8 +315,7 @@ struct CMUXMobileRootView: View {
     private var shouldShowOnboarding: Bool {
         #if os(iOS)
         return MobileOnboardingGate.shouldShowOnboarding(
-            hasSeenOnboarding: hasSeenOnboarding,
-            hasKnownPairedMac: store.hasKnownPairedMac
+            hasSeenOnboarding: hasSeenOnboarding
         )
         #else
         return false
@@ -325,7 +349,7 @@ struct CMUXMobileRootView: View {
     }
 
     private var shouldShowRestoringStoredMac: Bool {
-        MobileRootAuthGate.shouldShowRestoringStoredMac(
+        store.workspaceListConnectionStatus != .connected && MobileRootAuthGate.shouldShowRestoringStoredMac(
             authenticated: isAuthenticated,
             connectionState: store.connectionState,
             isReconnectingStoredMac: store.isReconnectingStoredMac,
@@ -356,12 +380,13 @@ struct CMUXMobileRootView: View {
     /// sign-in that completes after mount) so the restoring gate always resolves
     /// even when the auth state never transitions while this view is mounted.
     private func reconnectStoredMacIfNeeded() {
-        guard isAuthenticated else { return }
+        guard isAuthenticated, !authManager.isRestoringSession else { return }
         let startedUITestAttachURL = connectUITestAttachURLIfNeeded()
         guard !startedUITestAttachURL,
               MobileRootAuthGate.shouldReconnectStoredMac(
                 stackAuthenticated: authManager.isAuthenticated,
                 attachTicketAuthenticated: hasActiveAttachTicketAuthentication,
+                isRestoringSession: authManager.isRestoringSession,
                 connectionState: store.connectionState
               ) else { return }
         let stackUserID = authManager.currentUser?.id
@@ -449,19 +474,6 @@ struct CMUXMobileRootView: View {
     }
 
     private func signOut() {
-        #if os(iOS)
-        // The hook receives the tokens captured before the local-first clear:
-        // by the time it runs, the live token store is already empty.
-        let pushCoordinator = pushCoordinator
-        let onSignedOut: @Sendable (String?, String?) async -> Void = { accessToken, refreshToken in
-            await pushCoordinator.unregisterFromServer(
-                accessToken: accessToken,
-                refreshToken: refreshToken
-            )
-        }
-        #else
-        let onSignedOut: @Sendable (String?, String?) async -> Void = { _, _ in }
-        #endif
         Task {
             // Local shell teardown first so the whole UI lands signed out
             // immediately; authManager.signOut clears the local session up
@@ -469,7 +481,8 @@ struct CMUXMobileRootView: View {
             // (push-token DELETE, Stack session revocation).
             didAuthenticateWithAttachTicket = false
             store.signOut()
-            await authManager.signOut(onSignedOut: onSignedOut)
+            let serverTeardown = signOutHook.begin()
+            await authManager.signOut(onSignedOut: serverTeardown)
         }
     }
 
@@ -495,7 +508,9 @@ struct CMUXMobileRootView: View {
         }
         didConsumeUITestAttachURL = true
         Task {
-            await store.connectPairingURL(attachURL)
+            await dogfoodAttachPreparation.run {
+                await store.connectPairingURL(attachURL)
+            }
         }
         return true
         #else

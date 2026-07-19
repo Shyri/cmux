@@ -15,6 +15,7 @@ Current rules:
 - `hot-path-allocating-formatting.md`
 - `no-ambient-global-state.md`
 - `no-test-debug-seam-in-production-source.md`
+- `react-base-ui-accessibility.md`
 - `reliability-single-source-of-truth.md`
 - `runtime-no-hacky-sleeps.md`
 - `source-control-artifacts.md`
@@ -26,7 +27,7 @@ Current rules:
 - `swift-concurrency-modernization.md`
 - `swift-concurrent-annotation.md`
 - `swift-expensive-sync-load.md`
-- `swift-file-package-boundaries.md`
+- `swift-package-boundaries.md`
 - `swift-logging.md`
 - `swiftui-state-layout.md`
 - `user-facing-errors.md`

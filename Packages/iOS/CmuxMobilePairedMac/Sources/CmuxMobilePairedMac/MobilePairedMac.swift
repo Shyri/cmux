@@ -12,6 +12,10 @@ public struct MobilePairedMac: Codable, Equatable, Sendable, Identifiable {
     public var displayName: String?
     /// Attach routes advertised by the Mac, ordered by priority (lowest first).
     public var routes: [CmxAttachRoute]
+    /// App-instance tag reported by this Mac over authenticated host status.
+    /// `nil` means an older host has not established instance-level authority;
+    /// route refresh then requires one unambiguous route-advertising instance.
+    public var instanceTag: String?
     /// When this pairing was first recorded.
     public var createdAt: Date
     /// When this pairing was last refreshed or used.
@@ -37,8 +41,38 @@ public struct MobilePairedMac: Codable, Equatable, Sendable, Identifiable {
     /// An SF Symbol name (ASCII, e.g. `"desktopcomputer"`) or an emoji.
     public var customIcon: String?
 
-    /// The Mac device identifier doubles as the stable `Identifiable` id.
-    public var id: String { macDeviceID }
+    /// Stable identity of this saved app instance.
+    ///
+    /// A physical Mac can run Stable, Nightly, and tagged development builds at
+    /// once. Those processes share ``macDeviceID`` but have distinct
+    /// ``instanceTag`` values, so both fields participate in list identity.
+    public var id: String { Self.pairingID(macDeviceID: macDeviceID, instanceTag: instanceTag) }
+
+    /// Builds the stable local identity for one saved Mac app instance.
+    /// - Parameters:
+    ///   - macDeviceID: Stable identifier of the physical Mac.
+    ///   - instanceTag: Authenticated app-instance tag, or `nil` for a legacy host.
+    /// - Returns: An identifier unique to the physical Mac and app instance.
+    public static func pairingID(macDeviceID: String, instanceTag: String?) -> String {
+        guard let instanceTag, !instanceTag.isEmpty else { return macDeviceID }
+        return "\(macDeviceID)\u{1F}\(instanceTag)"
+    }
+
+    /// Splits a pairing identity received from backup into its physical Mac id
+    /// and optional tagged app-instance id. Legacy physical-only ids remain valid.
+    public static func pairingIdentity(
+        from pairingID: String
+    ) -> (macDeviceID: String, instanceTag: String?) {
+        let parts = pairingID.split(
+            separator: "\u{1F}",
+            maxSplits: 1,
+            omittingEmptySubsequences: false
+        )
+        guard parts.count == 2, !parts[1].isEmpty else {
+            return (pairingID, nil)
+        }
+        return (String(parts[0]), String(parts[1]))
+    }
 
     /// The name to show: the user's custom override if set, else the Mac-reported
     /// name, else the device id.
@@ -68,7 +102,8 @@ public struct MobilePairedMac: Codable, Equatable, Sendable, Identifiable {
         teamID: String? = nil,
         customName: String? = nil,
         customColor: String? = nil,
-        customIcon: String? = nil
+        customIcon: String? = nil,
+        instanceTag: String? = nil
     ) {
         self.macDeviceID = macDeviceID
         self.displayName = displayName
@@ -81,5 +116,6 @@ public struct MobilePairedMac: Codable, Equatable, Sendable, Identifiable {
         self.customName = customName
         self.customColor = customColor
         self.customIcon = customIcon
+        self.instanceTag = instanceTag
     }
 }
