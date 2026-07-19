@@ -6,7 +6,8 @@ extension KeyboardShortcutSettings.Action {
              .switchRightSidebarToFind,
              .switchRightSidebarToSessions,
              .switchRightSidebarToFeed,
-             .switchRightSidebarToDock:
+             .switchRightSidebarToDock,
+             .switchRightSidebarToGitlab:
             return false
         default:
             return true

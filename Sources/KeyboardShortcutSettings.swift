@@ -344,20 +344,6 @@ enum KeyboardShortcutSettings {
 
         var defaultsKey: String { "shortcut.\(rawValue)" }
 
-        var isPublicShortcutAction: Bool {
-            switch self {
-            case .switchRightSidebarToFiles,
-                 .switchRightSidebarToFind,
-                 .switchRightSidebarToSessions,
-                 .switchRightSidebarToFeed,
-                 .switchRightSidebarToDock,
-                 .switchRightSidebarToGitlab:
-                return false
-            default:
-                return true
-            }
-        }
-
         var defaultShortcut: StoredShortcut {
             switch self {
             case .openSettings:

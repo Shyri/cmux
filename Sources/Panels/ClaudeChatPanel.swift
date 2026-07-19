@@ -346,6 +346,7 @@ enum ChatApprovalDedupePolicy {
 final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate {
     let id: UUID
     let panelType: PanelType = .claudeChat
+    let stableSurfaceIdentity = PanelStableSurfaceIdentity()
 
     /// The workspace this panel belongs to.
     private(set) var workspaceId: UUID
