@@ -79,6 +79,24 @@ import Testing
         }
     }
 
+    @Test func resumeHidesTaskNotificationFromTranscript() {
+        // The raw <task-notification> must not surface as a chat bubble after a
+        // resume; the real Bash tool_use/tool_result blocks stay.
+        let panel = resumedPanel(status: "completed", toolUseId: "toolu_bg4", shellId: "sh_hide")
+        for message in panel.messages {
+            for block in message.blocks {
+                if case .text(let value) = block {
+                    #expect(!value.contains("<task-notification>"))
+                }
+            }
+        }
+        // …but the shell status was still reconciled from it.
+        guard case .completed = panel.backgroundShells.first?.status else {
+            Issue.record("expected status still reconciled to .completed")
+            return
+        }
+    }
+
     @Test func resumeLeavesShellWithoutNotificationRunning() {
         // A shell whose notification never arrived must stay live, not be
         // spuriously marked terminal.

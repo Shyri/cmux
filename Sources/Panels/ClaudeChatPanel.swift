@@ -1106,17 +1106,42 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         streamedFlushScheduled = false
         self.sessionId = sessionId
         self.messages = messages
+        // Replay the transcript's `Bash` tool_use/tool_result blocks
+        // through the same bookkeeping the live stream uses, so the
+        // background-shells popover shows real commands instead of
+        // "(background shell)" placeholders after a resume. This also
+        // consumes the harness' `<task-notification>` blocks for shell
+        // status, so it must run before we strip them below.
+        rebuildBackgroundShellsFromTranscript()
+        // Those `<task-notification>` blocks persist in the JSONL as `.user`
+        // messages. Now that their status has been consumed, drop them from
+        // the visible transcript — otherwise the raw XML shows up as a user
+        // bubble in place of the real conversation after a resume.
+        self.messages.removeAll { Self.isTaskNotificationNoise($0) }
         // Cap the visible window the same way `init` does so a long
         // resumed transcript doesn't materialize every row at once.
         self.visibleMessageWindow = min(
             ClaudeChatPanel.defaultVisibleMessageWindow,
-            messages.count
+            self.messages.count
         )
-        // Replay the transcript's `Bash` tool_use/tool_result blocks
-        // through the same bookkeeping the live stream uses, so the
-        // background-shells popover shows real commands instead of
-        // "(background shell)" placeholders after a resume.
-        rebuildBackgroundShellsFromTranscript()
+    }
+
+    /// True when a message is nothing but harness-injected `<task-notification>`
+    /// text (plus whitespace) — a system shell-status update with no real user
+    /// content. Messages that mix a notification with actual text are kept.
+    static func isTaskNotificationNoise(_ message: ChatMessage) -> Bool {
+        guard !message.blocks.isEmpty else { return false }
+        var sawNotification = false
+        for block in message.blocks {
+            guard case .text(let value) = block else { return false }
+            let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+            if trimmed.contains("<task-notification>") {
+                sawNotification = true
+            } else if !trimmed.isEmpty {
+                return false
+            }
+        }
+        return sawNotification
     }
 
     /// After `applyResumedTranscript` swaps in a historic transcript,
@@ -2385,12 +2410,13 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     // After a `--resume`, background-shell exits that happened
                     // while the process was down are replayed as `.user` text
                     // (`<task-notification>`), not as a `system/task_notification`
-                    // event. Reconcile those too so the popover doesn't keep a
-                    // finished shell as "Running".
+                    // event. Reconcile those for shell status and drop them
+                    // rather than rendering the raw XML as a chat bubble.
                     if case .text(let value) = block, value.contains("<task-notification>") {
                         applyTaskNotifications(inText: value)
+                    } else {
+                        passthrough.append(block)
                     }
-                    passthrough.append(block)
                 }
             }
             if !passthrough.isEmpty {
