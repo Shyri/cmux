@@ -34,6 +34,7 @@ struct BackgroundShellsPopover: View {
 
     private var header: some View {
         let running = panel.backgroundShells.filter { isLive($0.status) }.count
+        let finished = panel.backgroundShells.filter { !isLive($0.status) }.count
         return HStack(spacing: 6) {
             Image(systemName: "terminal")
                 .foregroundColor(ChatPalette.cyan)
@@ -48,6 +49,22 @@ struct BackgroundShellsPopover: View {
                     .foregroundColor(.secondary)
             }
             Spacer()
+            if finished > 0 {
+                Button {
+                    panel.dismissFinishedBackgroundShells()
+                } label: {
+                    Text(String(
+                        localized: "claudeChat.bashes.clearFinished",
+                        defaultValue: "Clear finished"
+                    ))
+                    .font(.system(size: 11))
+                }
+                .buttonStyle(.borderless)
+                .help(String(
+                    localized: "claudeChat.bashes.clearFinished.tooltip",
+                    defaultValue: "Remove all finished shells from the list"
+                ))
+            }
         }
     }
 
@@ -73,10 +90,21 @@ struct BackgroundShellsPopover: View {
         HStack(alignment: .top, spacing: 8) {
             statusDot(shell.status)
             VStack(alignment: .leading, spacing: 2) {
-                Text(shell.commandPreview)
-                    .font(.system(size: 12, design: .monospaced))
-                    .lineLimit(2)
-                    .truncationMode(.middle)
+                HStack(spacing: 5) {
+                    if shell.kind == .agentTask {
+                        Image(systemName: "gearshape.2")
+                            .font(.system(size: 10))
+                            .foregroundColor(.secondary)
+                            .help(String(
+                                localized: "claudeChat.bashes.agentTaskLabel",
+                                defaultValue: "The agent's own background task"
+                            ))
+                    }
+                    Text(shell.commandPreview)
+                        .font(.system(size: 12, design: .monospaced))
+                        .lineLimit(2)
+                        .truncationMode(.middle)
+                }
                 HStack(spacing: 6) {
                     if let shellId = shell.shellId, !shellId.isEmpty {
                         Text(shellId)
@@ -91,6 +119,12 @@ struct BackgroundShellsPopover: View {
                         .foregroundColor(.secondary)
                     }
                     statusBadge(shell.status)
+                    Text("·")
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
+                    Text(Self.relativeAge(shell.startedAt))
+                        .font(.system(size: 10))
+                        .foregroundColor(.secondary)
                 }
             }
             Spacer(minLength: 8)
@@ -211,5 +245,17 @@ struct BackgroundShellsPopover: View {
         case .starting, .running, .unknown: return true
         case .completed, .killed: return false
         }
+    }
+
+    private static let ageFormatter: RelativeDateTimeFormatter = {
+        let formatter = RelativeDateTimeFormatter()
+        formatter.unitsStyle = .short
+        return formatter
+    }()
+
+    /// Locale-aware "5 min ago"; gives the user a sense of how long a shell has
+    /// been sitting in the list.
+    private static func relativeAge(_ date: Date) -> String {
+        ageFormatter.localizedString(for: date, relativeTo: Date())
     }
 }

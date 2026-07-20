@@ -991,6 +991,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let commandPreview: String
         let startedAt: Date
         var status: Status
+        /// Whether this is a command the user's agent explicitly ran, or one of
+        /// the harness' own background-task output wrappers. Lets the popover
+        /// visually separate "your commands" from internal plumbing.
+        var kind: Kind = .userCommand
 
         var id: String { toolUseId }
 
@@ -1000,6 +1004,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             case completed(exitCode: String?)
             case killed
             case unknown
+        }
+
+        enum Kind: Equatable {
+            case userCommand
+            case agentTask
         }
     }
 
@@ -1118,7 +1127,7 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         for message in messages {
             for block in message.blocks {
                 if case .toolUse(let toolUse) = block, toolUse.name == "Bash" {
-                    noteBashToolUseIfBackground(toolUse)
+                    noteBashToolUseIfBackground(toolUse, startedAt: message.createdAt)
                 }
             }
         }
@@ -1126,6 +1135,18 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             for block in message.blocks {
                 if case .toolResult(let result) = block {
                     noteBackgroundShellResult(result)
+                }
+            }
+        }
+        // Third pass: reconcile terminal state from the harness'
+        // `<task-notification>` blocks, which persist in the JSONL as `.text`
+        // of `role: .user` messages. Runs last so the shells created by the
+        // Bash passes above already exist and match. Without this every shell
+        // resurrects as `.running` on resume even after it exited.
+        for message in messages where message.role == .user {
+            for block in message.blocks {
+                if case .text(let value) = block {
+                    applyTaskNotifications(inText: value)
                 }
             }
         }
@@ -2002,7 +2023,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         backgroundShells.removeAll { $0.toolUseId == toolUseId }
     }
 
-    fileprivate func noteBashToolUseIfBackground(_ toolUse: ChatMessageBlock.ToolUse) {
+    fileprivate func noteBashToolUseIfBackground(
+        _ toolUse: ChatMessageBlock.ToolUse,
+        startedAt: Date = Date()
+    ) {
         guard let input = parseJSONObject(toolUse.inputJSON) else { return }
         let runInBackground = (input["run_in_background"] as? Bool) ?? false
         guard runInBackground else { return }
@@ -2011,14 +2035,59 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         }
         let rawCmd = (input["command"] as? String) ?? ""
         let trimmed = rawCmd.trimmingCharacters(in: .whitespacesAndNewlines)
-        let preview = trimmed.count > 120 ? String(trimmed.prefix(117)) + "…" : trimmed
+        let kind = Self.classifyBackgroundCommand(trimmed)
         backgroundShells.append(BackgroundShell(
             toolUseId: toolUse.id,
             shellId: nil,
-            commandPreview: preview,
-            startedAt: Date(),
-            status: .starting
+            commandPreview: Self.backgroundCommandPreview(trimmed, kind: kind),
+            startedAt: startedAt,
+            status: .starting,
+            kind: kind
         ))
+    }
+
+    /// Tell the user's real commands apart from the harness' own background
+    /// task wrappers, which redirect output to `…/claude-<n>/…/tasks/<id>`.
+    static func classifyBackgroundCommand(_ command: String) -> BackgroundShell.Kind {
+        if command.range(of: #"/claude-[^/]*/.*/tasks/"#, options: .regularExpression) != nil {
+            return .agentTask
+        }
+        return .userCommand
+    }
+
+    /// Readable one-liner for the popover: agent-task wrappers get a friendly
+    /// "Agent task output (<id>)" instead of the raw redirect blob; user
+    /// commands are shown verbatim, truncated.
+    private static func backgroundCommandPreview(
+        _ command: String,
+        kind: BackgroundShell.Kind
+    ) -> String {
+        if kind == .agentTask,
+           let range = command.range(of: #"/tasks/([A-Za-z0-9_\-]+)"#, options: .regularExpression) {
+            let idPart = command[range].replacingOccurrences(of: "/tasks/", with: "")
+            return String(
+                format: String(
+                    localized: "claudeChat.bashes.agentTaskPreview",
+                    defaultValue: "Agent task output (%@)"
+                ),
+                idPart
+            )
+        }
+        return command.count > 120 ? String(command.prefix(117)) + "…" : command
+    }
+
+    /// Bulk-remove every shell that has finished (completed or killed), leaving
+    /// the ones still live (starting/running/unknown). Backs the popover's
+    /// "clear finished" action.
+    func dismissFinishedBackgroundShells() {
+        backgroundShells.removeAll { shell in
+            switch shell.status {
+            case .completed, .killed:
+                return true
+            case .starting, .running, .unknown:
+                return false
+            }
+        }
     }
 
     fileprivate func noteKillShellToolUse(_ toolUse: ChatMessageBlock.ToolUse) {
@@ -2287,6 +2356,14 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                     // matching shell was terminated.
                     noteBackgroundShellResult(result)
                 default:
+                    // After a `--resume`, background-shell exits that happened
+                    // while the process was down are replayed as `.user` text
+                    // (`<task-notification>`), not as a `system/task_notification`
+                    // event. Reconcile those too so the popover doesn't keep a
+                    // finished shell as "Running".
+                    if case .text(let value) = block, value.contains("<task-notification>") {
+                        applyTaskNotifications(inText: value)
+                    }
                     passthrough.append(block)
                 }
             }
@@ -2446,6 +2523,66 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
             return .set(.completed(exitCode: exitCode ?? "error"))
         default:
             return .keep
+        }
+    }
+
+    /// Parse the `<task-notification>` blocks the harness injects when a
+    /// background shell changes state. These arrive as the `.text` of a
+    /// `role: .user` message (both live after a `--resume` and persisted in the
+    /// transcript JSONL), and carry the only reliable terminal signal
+    /// (`<status>completed|failed|killed</status>`). A single text can contain
+    /// several notifications. Returns them verbatim for `applyBackgroundTaskEvent`.
+    static func parseTaskNotifications(
+        in text: String
+    ) -> [(taskId: String, toolUseId: String?, status: String, exitCode: String?)] {
+        guard text.contains("<task-notification>") else { return [] }
+        guard let blockRegex = try? NSRegularExpression(
+            pattern: "<task-notification>(.*?)</task-notification>",
+            options: [.dotMatchesLineSeparators]
+        ) else { return [] }
+        let ns = text as NSString
+        var out: [(taskId: String, toolUseId: String?, status: String, exitCode: String?)] = []
+        for match in blockRegex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            guard match.numberOfRanges > 1 else { continue }
+            let block = ns.substring(with: match.range(at: 1))
+            guard let taskId = Self.firstRegexCapture(#"<task-id>\s*([^<\s]+)"#, in: block),
+                  let status = Self.firstRegexCapture(#"<status>\s*([^<\s]+)"#, in: block) else {
+                continue
+            }
+            out.append((
+                taskId: taskId,
+                toolUseId: Self.firstRegexCapture(#"<tool-use-id>\s*([^<\s]+)"#, in: block),
+                status: status,
+                exitCode: Self.firstRegexCapture(#"(?i)exit\s*code\s*[:=]?\s*(-?\d+)"#, in: block)
+            ))
+        }
+        return out
+    }
+
+    private static func firstRegexCapture(_ pattern: String, in text: String) -> String? {
+        guard let re = try? NSRegularExpression(pattern: pattern) else { return nil }
+        let ns = text as NSString
+        guard let match = re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)),
+              match.numberOfRanges > 1 else { return nil }
+        let range = match.range(at: 1)
+        guard range.location != NSNotFound else { return nil }
+        return ns.substring(with: range)
+    }
+
+    /// Feed every `<task-notification>` in `text` through the same
+    /// `applyBackgroundTaskEvent` path the live `system/task_notification`
+    /// event uses, so the matching shell (by tool-use-id, else task-id ==
+    /// shell-id) picks up its terminal status.
+    private func applyTaskNotifications(inText text: String) {
+        for note in Self.parseTaskNotifications(in: text) {
+            applyBackgroundTaskEvent(
+                phase: .notification,
+                taskId: note.taskId,
+                toolUseId: note.toolUseId,
+                taskType: nil,
+                status: note.status,
+                exitCode: note.exitCode
+            )
         }
     }
 
