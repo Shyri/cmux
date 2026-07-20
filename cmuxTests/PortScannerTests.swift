@@ -452,7 +452,12 @@ struct ProcessTerminationGateTests {
         var gate = ProcessTerminationGate()
 
         #expect(gate.requestTermination() == false)
-        #expect(gate.markLaunched())
+        // Compare against `true` rather than the bare boolean form: `markLaunched()`
+        // is `mutating`, and this toolchain's `#expect` macro captures a bare
+        // expression into an immutable `$0` closure, which rejects the mutating
+        // call. The `== true` comparison form evaluates in place (like the
+        // `== false` sibling below), so it stays portable across toolchains.
+        #expect(gate.markLaunched() == true)
         gate.markFinished()
         #expect(gate.requestTermination() == false)
     }
