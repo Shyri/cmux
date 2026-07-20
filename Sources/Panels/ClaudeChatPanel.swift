@@ -995,6 +995,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         /// the harness' own background-task output wrappers. Lets the popover
         /// visually separate "your commands" from internal plumbing.
         var kind: Kind = .userCommand
+        /// Absolute path of the file the harness streams this shell's output to
+        /// (scraped from the initial `tool_result`). Backs the "View output"
+        /// window. Nil until the tool_result with the path lands.
+        var outputFilePath: String?
 
         var id: String { toolUseId }
 
@@ -2105,6 +2109,10 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         if let shellId = Self.parseShellId(fromContent: result.content) {
             backgroundShells[idx].shellId = shellId
         }
+        if backgroundShells[idx].outputFilePath == nil,
+           let path = Self.parseOutputFilePath(fromContent: result.content) {
+            backgroundShells[idx].outputFilePath = path
+        }
         if case .killed = backgroundShells[idx].status {
             return
         }
@@ -2176,6 +2184,24 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
         let slice = content[range]
         let digits = slice.unicodeScalars.filter { ("0"..."9").contains(Character($0)) || $0 == "-" }
         return digits.isEmpty ? nil : String(String.UnicodeScalarView(digits))
+    }
+
+    /// Scrape the harness' `Output is being written to: <path>` line from the
+    /// initial Bash background `tool_result`, so we can tail that file in the
+    /// "View output" window.
+    private static func parseOutputFilePath(fromContent content: String) -> String? {
+        if let path = Self.firstRegexCapture(
+            #"Output is being written to:\s*(\S+\.output)"#, in: content
+        ) {
+            return path
+        }
+        guard let raw = Self.firstRegexCapture(
+            #"Output is being written to:\s*(\S+)"#, in: content
+        ) else {
+            return nil
+        }
+        let cleaned = raw.trimmingCharacters(in: CharacterSet(charactersIn: ".\"' \t\n"))
+        return cleaned.isEmpty ? nil : cleaned
     }
 
     // MARK: - Event handling

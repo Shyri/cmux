@@ -1,3 +1,5 @@
+import AppKit
+import Combine
 import SwiftUI
 
 /// Inline `/bashes`-style panel for the Claude chat. Lists every Bash
@@ -9,6 +11,7 @@ import SwiftUI
 struct BackgroundShellsPopover: View {
     @ObservedObject var panel: ClaudeChatPanel
     @Environment(\.dismiss) private var dismiss
+    @Environment(\.colorScheme) private var colorScheme
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -140,6 +143,38 @@ struct BackgroundShellsPopover: View {
 
     @ViewBuilder
     private func actionButtons(for shell: ClaudeChatPanel.BackgroundShell) -> some View {
+        HStack(spacing: 6) {
+            outputButton(for: shell)
+            killOrDismissButton(for: shell)
+        }
+    }
+
+    @ViewBuilder
+    private func outputButton(for shell: ClaudeChatPanel.BackgroundShell) -> some View {
+        if let path = shell.outputFilePath, !path.isEmpty {
+            Button {
+                BackgroundShellOutputWindow.present(
+                    title: shell.shellId ?? shell.commandPreview,
+                    outputPath: path,
+                    isDark: colorScheme == .dark
+                )
+            } label: {
+                Label(String(
+                    localized: "claudeChat.bashes.output",
+                    defaultValue: "Output"
+                ), systemImage: "doc.plaintext")
+                    .font(.system(size: 11))
+            }
+            .buttonStyle(.borderless)
+            .help(String(
+                localized: "claudeChat.bashes.output.tooltip",
+                defaultValue: "Open this shell's live output in a window"
+            ))
+        }
+    }
+
+    @ViewBuilder
+    private func killOrDismissButton(for shell: ClaudeChatPanel.BackgroundShell) -> some View {
         if isLive(shell.status), let shellId = shell.shellId, !shellId.isEmpty {
             Button {
                 panel.killBackgroundShell(shellId: shellId)
@@ -257,5 +292,98 @@ struct BackgroundShellsPopover: View {
     /// been sitting in the list.
     private static func relativeAge(_ date: Date) -> String {
         ageFormatter.localizedString(for: date, relativeTo: Date())
+    }
+}
+
+// MARK: - Background shell output window
+
+/// Presents a background shell's output file in a standalone, resizable floating
+/// window that tails the file while the shell keeps writing. Mirrors the mermaid
+/// diagram pop-out: instances retain themselves in `live` until their window
+/// closes, so the transient popover view doesn't have to own them.
+@MainActor
+private final class BackgroundShellOutputWindow: NSObject, NSWindowDelegate {
+    private static var live: [BackgroundShellOutputWindow] = []
+    private var window: NSWindow?
+
+    static func present(title: String, outputPath: String, isDark: Bool) {
+        let controller = BackgroundShellOutputWindow()
+        controller.show(title: title, outputPath: outputPath, isDark: isDark)
+        live.append(controller)
+    }
+
+    private func show(title: String, outputPath: String, isDark: Bool) {
+        let content = BackgroundShellOutputView(outputPath: outputPath)
+            .frame(minWidth: 480, minHeight: 300)
+        let hosting = NSHostingController(rootView: content)
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.title = String(
+            format: String(
+                localized: "claudeChat.bashes.output.window.title",
+                defaultValue: "Output — %@"
+            ),
+            title
+        )
+        window.setContentSize(NSSize(width: 720, height: 460))
+        window.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+        Self.live.removeAll { $0 === self }
+    }
+}
+
+/// Reads a background shell's output file on appear and re-reads it once a
+/// second, auto-scrolling to the tail. Text is selectable/copyable. Only the
+/// last chunk is loaded so a multi-megabyte log never stalls the main thread.
+private struct BackgroundShellOutputView: View {
+    let outputPath: String
+
+    @State private var text: String = ""
+    /// Fires on the main run loop; the subscription is torn down automatically
+    /// when the view (and its window) goes away.
+    private let ticker = Timer.publish(every: 1.0, on: .main, in: .common).autoconnect()
+
+    private static let tailByteLimit = 512 * 1024
+
+    var body: some View {
+        ScrollViewReader { proxy in
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(displayText)
+                        .font(.system(size: 12, design: .monospaced))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Color.clear.frame(height: 1).id("cmux-output-end")
+                }
+                .padding(10)
+            }
+            .background(Color(nsColor: .textBackgroundColor))
+            .onAppear { reload(proxy: proxy) }
+            .onReceive(ticker) { _ in reload(proxy: proxy) }
+        }
+    }
+
+    private var displayText: String {
+        text.isEmpty
+            ? String(
+                localized: "claudeChat.bashes.output.empty",
+                defaultValue: "Waiting for output…"
+            )
+            : text
+    }
+
+    private func reload(proxy: ScrollViewProxy) {
+        guard let data = FileManager.default.contents(atPath: outputPath) else { return }
+        let slice = data.count > Self.tailByteLimit ? data.suffix(Self.tailByteLimit) : data
+        text = String(decoding: slice, as: UTF8.self)
+        proxy.scrollTo("cmux-output-end", anchor: .bottom)
     }
 }
