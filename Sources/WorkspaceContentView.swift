@@ -354,7 +354,6 @@ struct WorkspaceContentView: View, Equatable {
                         onAutoResumeAgentHibernation: onAutoResumeAgentHibernationAction,
                         onTriggerFlash: onTriggerFlashAction
                     )
-                    .equatable()
                     .onTapGesture {
                         workspace.bonsplitController.focusPane(paneId)
                     }
