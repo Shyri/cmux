@@ -431,6 +431,7 @@ C0DE71B10000000000000001 /* AppDelegate+AgentChatNotifications.swift in Sources 
 		C7A533000000000000000002 /* ClaudeSessionCanonicalizationContext.swift in Sources */ = {isa = PBXBuildFile; fileRef = C7A533000000000000000001 /* ClaudeSessionCanonicalizationContext.swift */; };
 		3EF9A6A5AD88979953831EF3 /* ClaudeSessionHistory.swift in Sources */ = {isa = PBXBuildFile; fileRef = 9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */; };
 		CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */; };
+		CFB000713000000FORKTEST /* BackgroundShellReconciliationTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000714000000FORKTEST /* BackgroundShellReconciliationTests.swift */; };
 		02F48C2457D5AD5AF2E6D0BE /* ClaudeStreamEvent.swift in Sources */ = {isa = PBXBuildFile; fileRef = 23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */; };
 		CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */; };
 		A9F200000000000000000015 /* ClaudeStreamJSONAccumulator.swift in Sources */ = {isa = PBXBuildFile; fileRef = A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */; };
@@ -2594,6 +2595,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 		C7A533000000000000000001 /* ClaudeSessionCanonicalizationContext.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = "ClaudeSessionCanonicalizationContext.swift"; sourceTree = "<group>"; };
 		9A2DD46CB9844E014CB4CB2A /* ClaudeSessionHistory.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistory.swift; sourceTree = "<group>"; };
 		CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeSessionHistoryTests.swift; sourceTree = "<group>"; };
+		CFB000714000000FORKTEST /* BackgroundShellReconciliationTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = BackgroundShellReconciliationTests.swift; sourceTree = "<group>"; };
 		23220DC3E2C06D416B00A249 /* ClaudeStreamEvent.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEvent.swift; sourceTree = "<group>"; };
 		CFB000112000000FORKTEST /* ClaudeStreamEventParseTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ClaudeStreamEventParseTests.swift; sourceTree = "<group>"; };
 		A9F100000000000000000015 /* ClaudeStreamJSONAccumulator.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Panels/ClaudeStreamJSONAccumulator.swift; sourceTree = "<group>"; };
@@ -5942,6 +5944,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				CFB000412000000FORKTEST /* ClaudeChatLaunchArgumentsTests.swift */,
 				CFB000512000000FORKTEST /* ChatmuxUpstreamSeamTests.swift */,
 				CFB000612000000FORKTEST /* ClaudeSessionHistoryTests.swift */,
+				CFB000714000000FORKTEST /* BackgroundShellReconciliationTests.swift */,
 				CFB000712000000FORKTEST /* SlashCommandRegistryTests.swift */,
 				CFB000812000000FORKTEST /* StatusLineRunnerTests.swift */,
 				CFB000912000000FORKTEST /* GitLabModelDecodingTests.swift */,
@@ -8553,6 +8556,7 @@ C0DE71B10000000000000002 /* AppDelegate+AgentChatNotifications.swift */ = {isa =
 				CFB000311000000FORKTEST /* ClaudeLoginShellWrapperTests.swift in Sources */,
 				A5D41222A1B2C3D4E5F60718 /* ClaudeNotificationStatusLifecycleTests.swift in Sources */,
 				CFB000611000000FORKTEST /* ClaudeSessionHistoryTests.swift in Sources */,
+				CFB000713000000FORKTEST /* BackgroundShellReconciliationTests.swift in Sources */,
 				CFB000111000000FORKTEST /* ClaudeStreamEventParseTests.swift in Sources */,
 				CFB000211000000FORKTEST /* ClaudeStreamJSONAccumulatorTests.swift in Sources */,
 				CE7000000000000000000001 /* ClaudeWrapperResumeEnvironmentTests.swift in Sources */,
