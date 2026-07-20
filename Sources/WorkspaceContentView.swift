@@ -296,6 +296,43 @@ struct WorkspaceContentView: View, Equatable {
                         workspace.bonsplitController.focusPane(paneId)
                     }
                 } else {
+                    // Closures hoisted into explicitly-typed locals: the fork's much
+                    // larger `Workspace` gives member lookup inside these bodies many
+                    // more overloads to resolve, and inlining all five into the
+                    // initializer pushed the whole call over the type-checker budget
+                    // ("unable to type-check in reasonable time"). Naming them keeps
+                    // each closure a cheap, independent `() -> Void` check.
+                    let onFocusAction: () -> Void = {
+                        // Keep bonsplit focus in sync with the AppKit first responder for the
+                        // active workspace. This prevents divergence between the blue focused-tab
+                        // indicator and where keyboard input/flash-focus actually lands.
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
+                    }
+                    let onRequestPanelFocusAction: () -> Void = {
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        AppDelegate.shared?.noteMainPanelKeyboardFocusIntent(
+                            workspaceId: workspace.id,
+                            panelId: panel.id,
+                            in: NSApp.keyWindow ?? NSApp.mainWindow
+                        )
+                        workspace.focusPanel(panel.id)
+                    }
+                    let onResumeAgentHibernationAction: () -> Void = {
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        workspace.resumeAgentHibernation(panelId: panel.id, focus: true)
+                    }
+                    let onAutoResumeAgentHibernationAction: () -> Void = {
+                        guard isWorkspaceInputActive else { return }
+                        guard workspace.panels[panel.id] != nil else { return }
+                        workspace.resumeAgentHibernation(panelId: panel.id, focus: false)
+                    }
+                    let onTriggerFlashAction: () -> Void = {
+                        workspace.triggerDebugFlash(panelId: panel.id)
+                    }
                     WorkspacePanelContentHostView(
                         workspace: workspace,
                         panel: panel,
@@ -307,35 +344,11 @@ struct WorkspaceContentView: View, Equatable {
                         isSplit: isSplit,
                         appearance: appearance, windowAppearance: windowAppearance, customSidebarTabManager: workspace.owningTabManager,
                         hasUnreadNotification: showsNotificationRing && !usesWorkspacePaneOverlay,
-                        onFocus: {
-                            // Keep bonsplit focus in sync with the AppKit first responder for the
-                            // active workspace. This prevents divergence between the blue focused-tab
-                            // indicator and where keyboard input/flash-focus actually lands.
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            workspace.focusPanel(panel.id, trigger: .terminalFirstResponder)
-                        },
-                        onRequestPanelFocus: {
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            AppDelegate.shared?.noteMainPanelKeyboardFocusIntent(
-                                workspaceId: workspace.id,
-                                panelId: panel.id,
-                                in: NSApp.keyWindow ?? NSApp.mainWindow
-                            )
-                            workspace.focusPanel(panel.id)
-                        },
-                        onResumeAgentHibernation: {
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            workspace.resumeAgentHibernation(panelId: panel.id, focus: true)
-                        },
-                        onAutoResumeAgentHibernation: {
-                            guard isWorkspaceInputActive else { return }
-                            guard workspace.panels[panel.id] != nil else { return }
-                            workspace.resumeAgentHibernation(panelId: panel.id, focus: false)
-                        },
-                        onTriggerFlash: { workspace.triggerDebugFlash(panelId: panel.id) }
+                        onFocus: onFocusAction,
+                        onRequestPanelFocus: onRequestPanelFocusAction,
+                        onResumeAgentHibernation: onResumeAgentHibernationAction,
+                        onAutoResumeAgentHibernation: onAutoResumeAgentHibernationAction,
+                        onTriggerFlash: onTriggerFlashAction
                     )
                     .equatable()
                     .onTapGesture {
