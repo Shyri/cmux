@@ -247,7 +247,11 @@ struct WorkspaceContentView: View, Equatable {
             }
         }()
 
-        let bonsplitView = BonsplitView(controller: workspace.bonsplitController) { tab, paneId in
+        // Split the content builder off the modifier chain: as one expression
+        // (`BonsplitView(...) { … }.<~15 modifiers>`) the whole thing exceeds the
+        // type-checker budget in the fork module (larger Workspace → more member
+        // overloads to resolve). Two named locals type-check independently.
+        let bonsplitContent = BonsplitView(controller: workspace.bonsplitController) { tab, paneId in
             // Content for each tab in bonsplit
             let _ = Self.debugPanelLookup(tab: tab, workspace: workspace)
             if let panel = workspace.panel(for: tab.id) {
@@ -366,6 +370,8 @@ struct WorkspaceContentView: View, Equatable {
                     workspace.bonsplitController.focusPane(paneId)
                 }
         }
+
+        let bonsplitView = bonsplitContent
         .internalOnlyTabDrag()
         // Split zoom swaps Bonsplit between the full split tree and a single pane view.
         // Recreate the Bonsplit subtree on zoom enter/exit so stale pre-zoom pane chrome
