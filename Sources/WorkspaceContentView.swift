@@ -405,8 +405,12 @@ struct WorkspaceContentView: View, Equatable {
             let foregroundHex = (notification.userInfo?[GhosttyNotificationKey.foregroundColor] as? NSColor)?.hexString() ?? "nil"
             let eventId = (notification.userInfo?[GhosttyNotificationKey.backgroundEventId] as? NSNumber)?.uint64Value
             let source = (notification.userInfo?[GhosttyNotificationKey.backgroundSource] as? String) ?? "nil"
+            let eventIdString = eventId.map(String.init) ?? "nil"
+            let appBgHex = GhosttyApp.shared.defaultBackgroundColor.hexString()
+            let appFgHex = GhosttyApp.shared.defaultForegroundColor.hexString()
+            let appOpacityString = String(format: "%.3f", GhosttyApp.shared.defaultBackgroundOpacity)
             logTheme(
-                "theme notification workspace=\(workspace.id.uuidString) event=\(eventId.map(String.init) ?? "nil") source=\(source) payload=\(payloadHex) payloadFg=\(foregroundHex) appBg=\(GhosttyApp.shared.defaultBackgroundColor.hexString()) appFg=\(GhosttyApp.shared.defaultForegroundColor.hexString()) appOpacity=\(String(format: "%.3f", GhosttyApp.shared.defaultBackgroundOpacity))"
+                "theme notification workspace=\(workspace.id.uuidString) event=\(eventIdString) source=\(source) payload=\(payloadHex) payloadFg=\(foregroundHex) appBg=\(appBgHex) appFg=\(appFgHex) appOpacity=\(appOpacityString)"
             )
             // Resolve from Ghostty's runtime state because notification payload ordering can lag.
             refreshGhosttyAppearanceConfig(
