@@ -492,7 +492,7 @@ struct WorkspaceForkConversationContextMenuTests {
 
     @Test
     func forkTimeoutResumeGateResumesOnlyFirstClaim() async {
-        let value = await withCheckedContinuation { continuation in
+        let value: String = await withCheckedContinuation { continuation in
             let gate = AgentForkTimeoutResumeGate(continuation)
 
             #expect(gate.resume(returning: "timeout"))
@@ -1172,7 +1172,7 @@ struct WorkspaceForkConversationContextMenuTests {
         ))
         let probedLaunchers = OSAllocatedUnfairLock(initialState: [String]())
 
-        func index(for snapshot: SessionRestorableAgentSnapshot) -> RestorableAgentSessionIndex {
+        nonisolated func index(for snapshot: SessionRestorableAgentSnapshot) -> RestorableAgentSessionIndex {
             RestorableAgentSessionIndex.load(
                 homeDirectory: root.path,
                 fileManager: fm,
@@ -2639,7 +2639,7 @@ struct WorkspaceForkConversationContextMenuTests {
             executablePath: executable.path
         )
 
-        func indexResult() -> SharedLiveAgentIndexLoader.LoadResult {
+        nonisolated func indexResult() -> SharedLiveAgentIndexLoader.LoadResult {
             let panelKey = RestorableAgentSessionIndex.PanelKey(
                 workspaceId: workspaceId,
                 panelId: panelId
@@ -3151,7 +3151,7 @@ struct WorkspaceForkConversationContextMenuTests {
             } else if let workspaceId = notification.userInfo?["workspaceId"] as? UUID,
                let panelId = notification.userInfo?["panelId"] as? UUID {
                 notifiedPanelKeys.withLock {
-                    $0.insert("\(workspaceId.uuidString)|\(panelId.uuidString)")
+                    _ = $0.insert("\(workspaceId.uuidString)|\(panelId.uuidString)")
                 }
             } else {
                 unscopedNotificationCount.withLock { $0 += 1 }
@@ -4902,7 +4902,7 @@ struct WorkspaceForkConversationContextMenuTests {
         )
     }
 
-    private func makePiFamilySnapshot(
+    nonisolated private func makePiFamilySnapshot(
         launcher: String,
         workspaceRoot: String,
         executablePath: String = "/usr/local/bin/agent-wrapper"
