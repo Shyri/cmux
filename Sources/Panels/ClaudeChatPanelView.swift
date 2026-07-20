@@ -4,6 +4,7 @@ import CmuxSidebar
 import MarkdownUI
 import SwiftUI
 import UniformTypeIdentifiers
+import WebKit
 
 // MARK: - Chat palette
 
@@ -6043,17 +6044,38 @@ private struct ChatCopyableCodeBlock: View {
 
     @State private var didCopy = false
     @State private var copyResetWorkItem: DispatchWorkItem?
+    /// For mermaid blocks: whether to show the rendered diagram (true) or the
+    /// raw fence source (false). Defaults to the diagram; the user can flip it
+    /// from the header to copy/inspect the source.
+    @State private var showMermaidSource = false
+
+    /// Trimmed fence language, lowercased. `nil`/empty when the fence had none.
+    private var languageTag: String? {
+        configuration.language?
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+    }
+
+    private var isMermaid: Bool { languageTag == "mermaid" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
             header
-            ScrollView(.horizontal, showsIndicators: true) {
-                configuration.label
-                    .markdownTextStyle {
-                        FontFamilyVariant(.monospaced)
-                        FontSize(12)
-                    }
+            if isMermaid && !showMermaidSource {
+                // Kept mounted across streaming updates so mermaid.js loads once
+                // and each new token is a cheap, debounced re-render rather than
+                // a fresh 2.5 MB web view.
+                ChatMermaidDiagramView(source: configuration.content, isDark: isDark)
                     .padding(10)
+            } else {
+                ScrollView(.horizontal, showsIndicators: true) {
+                    configuration.label
+                        .markdownTextStyle {
+                            FontFamilyVariant(.monospaced)
+                            FontSize(12)
+                        }
+                        .padding(10)
+                }
             }
         }
         .background(palette.codeBg(isDark))
@@ -6069,6 +6091,54 @@ private struct ChatCopyableCodeBlock: View {
                     .foregroundColor(.secondary)
             }
             Spacer(minLength: 0)
+            if isMermaid {
+                Button {
+                    showMermaidSource.toggle()
+                } label: {
+                    HStack(spacing: 4) {
+                        Image(systemName: showMermaidSource ? "chart.xyaxis.line" : "curlybraces")
+                            .font(.system(size: 10, weight: .medium))
+                        Text(showMermaidSource
+                            ? String(
+                                localized: "claudeChat.codeBlock.mermaid.showDiagram",
+                                defaultValue: "Diagram"
+                            )
+                            : String(
+                                localized: "claudeChat.codeBlock.mermaid.showSource",
+                                defaultValue: "Source"
+                            )
+                        )
+                        .font(.system(size: 10, weight: .medium))
+                    }
+                    .foregroundColor(.secondary)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(String(
+                    localized: "claudeChat.codeBlock.mermaid.toggle.tooltip",
+                    defaultValue: "Toggle between the rendered diagram and its source"
+                ))
+                Button {
+                    MermaidDiagramWindowController.present(
+                        source: configuration.content,
+                        isDark: isDark
+                    )
+                } label: {
+                    Image(systemName: "arrow.up.left.and.arrow.down.right")
+                        .font(.system(size: 10, weight: .medium))
+                        .foregroundColor(.secondary)
+                        .padding(.horizontal, 6)
+                        .padding(.vertical, 2)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help(String(
+                    localized: "claudeChat.codeBlock.mermaid.openWindow.tooltip",
+                    defaultValue: "Open the diagram in a larger window"
+                ))
+            }
             Button(action: copy) {
                 HStack(spacing: 4) {
                     Image(systemName: didCopy ? "checkmark" : "doc.on.doc")
@@ -6109,5 +6179,374 @@ private struct ChatCopyableCodeBlock: View {
         let item = DispatchWorkItem { didCopy = false }
         copyResetWorkItem = item
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: item)
+    }
+}
+
+// MARK: - Mermaid diagram rendering in chat
+
+/// A WKWebView that reports its rendered content height back to AppKit so the
+/// SwiftUI layout can size the diagram exactly. `intrinsicContentSize` is driven
+/// by `reportedHeight`, which the coordinator updates from a JS `postMessage`.
+private final class MermaidWebView: WKWebView {
+    /// In the chat transcript the view sizes itself to the diagram via
+    /// `reportedHeight`. In the pop-out window the container drives the size, so
+    /// the intrinsic height is disabled and the view stretches to fill.
+    var usesIntrinsicHeight = true
+    var reportedHeight: CGFloat = 1 {
+        didSet {
+            if abs(oldValue - reportedHeight) > 0.5 {
+                invalidateIntrinsicContentSize()
+            }
+        }
+    }
+
+    override var intrinsicContentSize: NSSize {
+        guard usesIntrinsicHeight else {
+            return NSSize(width: NSView.noIntrinsicMetric, height: NSView.noIntrinsicMetric)
+        }
+        return NSSize(width: NSView.noIntrinsicMetric, height: reportedHeight)
+    }
+
+    /// Keep the enclosing chat scroll view usable: a plain wheel scroll is
+    /// forwarded to the next responder (the message list keeps scrolling), while
+    /// ⌘-wheel zooms the diagram in place. Panning is handled by drag in JS.
+    override func scrollWheel(with event: NSEvent) {
+        if event.modifierFlags.contains(.command) {
+            let dy = event.hasPreciseScrollingDeltas
+                ? event.scrollingDeltaY
+                : event.deltaY
+            evaluateJavaScript("window.__cmuxWheelZoom && window.__cmuxWheelZoom(\(dy))")
+        } else {
+            nextResponder?.scrollWheel(with: event)
+        }
+    }
+}
+
+/// Renders a ```mermaid fence as a live diagram using the bundled `mermaid.min.js`
+/// (the same asset the markdown file viewer loads on demand). Each diagram is an
+/// isolated, transparent WKWebView sized to its rendered SVG. The view is kept
+/// mounted across streaming updates: mermaid.js loads once and each new token is
+/// a cheap, debounced re-render. Intermediate parse failures (the fence is still
+/// streaming and syntactically incomplete) keep the last valid diagram on screen.
+private struct ChatMermaidDiagramView: NSViewRepresentable {
+    let source: String
+    let isDark: Bool
+    /// When true the diagram fills its container (used by the pop-out window)
+    /// instead of capping to a fixed height inside the chat transcript.
+    var fillHeight: Bool = false
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator()
+    }
+
+    func makeNSView(context: Context) -> MermaidWebView {
+        let config = WKWebViewConfiguration()
+        config.userContentController.add(context.coordinator, name: "cmuxMermaid")
+        let webView = MermaidWebView(frame: .zero, configuration: config)
+        // Transparent background so the surrounding code-block card shows
+        // through (matches how the markdown viewer keeps its web content clear).
+        webView.setValue(false, forKey: "drawsBackground")
+        webView.underPageBackgroundColor = .clear
+        webView.navigationDelegate = context.coordinator
+        webView.usesIntrinsicHeight = !fillHeight
+        // Only hug vertically in the transcript; the pop-out window must be free
+        // to stretch the web view to fill the window.
+        if !fillHeight {
+            webView.setContentHuggingPriority(.defaultHigh, for: .vertical)
+        }
+        context.coordinator.fillHeight = fillHeight
+        context.coordinator.attach(webView)
+        context.coordinator.load(source: source, isDark: isDark)
+        return webView
+    }
+
+    func updateNSView(_ webView: MermaidWebView, context: Context) {
+        context.coordinator.update(source: source, isDark: isDark)
+    }
+
+    static func dismantleNSView(_ webView: MermaidWebView, coordinator: Coordinator) {
+        coordinator.cancelPending()
+        webView.configuration.userContentController
+            .removeScriptMessageHandler(forName: "cmuxMermaid")
+    }
+
+    @MainActor
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
+        var fillHeight = false
+
+        private weak var webView: MermaidWebView?
+        private var isLoaded = false
+        private var loadedIsDark: Bool?
+        private var lastRenderedSource: String?
+        private var pendingSource: String?
+        private var debounceWorkItem: DispatchWorkItem?
+
+        func attach(_ webView: MermaidWebView) {
+            self.webView = webView
+        }
+
+        func cancelPending() {
+            debounceWorkItem?.cancel()
+            debounceWorkItem = nil
+        }
+
+        func load(source: String, isDark: Bool) {
+            loadedIsDark = isDark
+            lastRenderedSource = source
+            pendingSource = source
+            isLoaded = false
+            webView?.loadHTMLString(
+                Self.shellHTML(isDark: isDark, fillHeight: fillHeight),
+                baseURL: nil
+            )
+        }
+
+        func update(source: String, isDark: Bool) {
+            // A theme flip needs a fresh `mermaid.initialize`, so reload the shell.
+            if loadedIsDark != isDark {
+                load(source: source, isDark: isDark)
+                return
+            }
+            guard source != lastRenderedSource else { return }
+            lastRenderedSource = source
+            guard isLoaded else {
+                pendingSource = source
+                return
+            }
+            // Debounce so a fast token stream coalesces into one render.
+            cancelPending()
+            let item = DispatchWorkItem { [weak self] in
+                self?.render(source)
+            }
+            debounceWorkItem = item
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: item)
+        }
+
+        private func render(_ source: String) {
+            // Pass the source as base64 to avoid any string-escaping pitfalls.
+            let encoded = Data(source.utf8).base64EncodedString()
+            webView?.evaluateJavaScript("window.__cmuxRenderMermaid('\(encoded)')")
+        }
+
+        // MARK: WKNavigationDelegate
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            isLoaded = true
+            if let pending = pendingSource {
+                pendingSource = nil
+                render(pending)
+            }
+        }
+
+        // MARK: WKScriptMessageHandler
+
+        func userContentController(
+            _ userContentController: WKUserContentController,
+            didReceive message: WKScriptMessage
+        ) {
+            guard let body = message.body as? [String: Any] else { return }
+            if let height = body["height"] as? Double {
+                webView?.reportedHeight = max(1, CGFloat(height))
+            }
+            // A parse/render error (e.g. an incomplete fence mid-stream) is
+            // ignored: the previously rendered diagram, if any, stays on screen.
+        }
+
+        // MARK: HTML shell
+
+        private static func shellHTML(isDark: Bool, fillHeight: Bool) -> String {
+            let mermaidJS = MarkdownViewerAssets.shared.lazyAsset(name: "mermaid.min", ext: "js")
+            let theme = isDark ? "dark" : "default"
+            let fg = isDark ? "#dddddd" : "#333333"
+            let fillFlag = fillHeight ? "true" : "false"
+            let zoomInLabel = String(
+                localized: "claudeChat.mermaid.zoomIn", defaultValue: "Zoom in"
+            )
+            let zoomOutLabel = String(
+                localized: "claudeChat.mermaid.zoomOut", defaultValue: "Zoom out"
+            )
+            let fitLabel = String(
+                localized: "claudeChat.mermaid.fit", defaultValue: "Fit"
+            )
+            return """
+            <!DOCTYPE html>
+            <html>
+            <head>
+            <meta charset="utf-8">
+            <style>
+              html, body { margin: 0; padding: 0; background: transparent; height: 100%; }
+              #viewport {
+                position: relative; overflow: hidden; width: 100%;
+                color: \(fg);
+              }
+              #stage {
+                transform-origin: 0 0; display: inline-block; width: 100%;
+                cursor: grab; will-change: transform;
+              }
+              #stage.dragging { cursor: grabbing; }
+              #stage svg { display: block; width: 100%; height: auto; }
+              .zbar {
+                position: absolute; top: 6px; right: 6px; display: flex; gap: 2px;
+                align-items: center; padding: 2px; border-radius: 6px;
+                background: rgba(128, 128, 128, 0.16);
+                opacity: 0; transition: opacity 0.15s;
+                font: 12px ui-sans-serif, -apple-system, system-ui, sans-serif;
+                user-select: none;
+              }
+              #viewport:hover .zbar { opacity: 1; }
+              .zbar button {
+                all: unset; cursor: pointer; width: 20px; height: 20px;
+                text-align: center; line-height: 20px; border-radius: 4px; color: \(fg);
+              }
+              .zbar button:hover { background: rgba(128, 128, 128, 0.28); }
+              .zbar .pct { min-width: 40px; text-align: center; opacity: 0.85; }
+            </style>
+            </head>
+            <body>
+            <div id="viewport">
+              <div id="stage"></div>
+              <div class="zbar">
+                <button id="z-out" aria-label="\(zoomOutLabel)" title="\(zoomOutLabel)">&#8722;</button>
+                <span class="pct" id="z-pct">100%</span>
+                <button id="z-in" aria-label="\(zoomInLabel)" title="\(zoomInLabel)">&#43;</button>
+                <button id="z-fit" aria-label="\(fitLabel)" title="\(fitLabel)">&#10530;</button>
+              </div>
+            </div>
+            <script>\(mermaidJS)</script>
+            <script>
+              mermaid.initialize({
+                startOnLoad: false,
+                theme: '\(theme)',
+                securityLevel: 'strict',
+                fontFamily: 'ui-sans-serif, -apple-system, system-ui, sans-serif'
+              });
+
+              var FILL = \(fillFlag);
+              var CAP = 520, MIN_S = 0.2, MAX_S = 8;
+              var scale = 1, tx = 0, ty = 0, H0 = 0;
+              var viewport = document.getElementById('viewport');
+              var stage = document.getElementById('stage');
+              var pct = document.getElementById('z-pct');
+              if (FILL) { viewport.style.height = '100%'; }
+
+              function apply() {
+                stage.style.transform =
+                  'translate(' + tx + 'px,' + ty + 'px) scale(' + scale + ')';
+                pct.textContent = Math.round(scale * 100) + '%';
+              }
+              function fit() { scale = 1; tx = 0; ty = 0; apply(); }
+              function setScale(ns, cx, cy) {
+                ns = Math.min(MAX_S, Math.max(MIN_S, ns));
+                var rect = viewport.getBoundingClientRect();
+                var vx = (cx == null) ? rect.width / 2 : cx;
+                var vy = (cy == null) ? rect.height / 2 : cy;
+                var sx = (vx - tx) / scale, sy = (vy - ty) / scale;
+                scale = ns;
+                tx = vx - sx * scale; ty = vy - sy * scale;
+                apply();
+              }
+
+              document.getElementById('z-in').onclick = function () { setScale(scale * 1.25); };
+              document.getElementById('z-out').onclick = function () { setScale(scale / 1.25); };
+              document.getElementById('z-fit').onclick = function () { fit(); };
+              window.__cmuxWheelZoom = function (dy) {
+                setScale(scale * Math.exp(dy * 0.0016));
+              };
+
+              var dragging = false, lastX = 0, lastY = 0;
+              viewport.addEventListener('mousedown', function (e) {
+                if (e.button !== 0 || e.target.closest('.zbar')) return;
+                dragging = true; lastX = e.clientX; lastY = e.clientY;
+                stage.classList.add('dragging'); e.preventDefault();
+              });
+              window.addEventListener('mousemove', function (e) {
+                if (!dragging) return;
+                tx += e.clientX - lastX; ty += e.clientY - lastY;
+                lastX = e.clientX; lastY = e.clientY; apply();
+              });
+              window.addEventListener('mouseup', function () {
+                if (!dragging) return;
+                dragging = false; stage.classList.remove('dragging');
+              });
+
+              function __report(h) {
+                window.webkit.messageHandlers.cmuxMermaid.postMessage({ height: h });
+              }
+              var __seq = 0;
+              window.__cmuxRenderMermaid = async function (b64) {
+                var src = new TextDecoder().decode(
+                  Uint8Array.from(atob(b64), function (c) { return c.charCodeAt(0); })
+                );
+                try {
+                  await mermaid.parse(src);
+                  var res = await mermaid.render('cmux-mmd-' + (++__seq), src);
+                  stage.innerHTML = res.svg;
+                  fit();
+                  requestAnimationFrame(function () {
+                    if (FILL) {
+                      // The pop-out window sizes the web view; fill it and let
+                      // zoom/pan explore anything larger than the viewport.
+                      __report(window.innerHeight);
+                      return;
+                    }
+                    // Measure the natural (fit-to-width) height, then cap the
+                    // viewport so a huge diagram scrolls/zooms in place instead
+                    // of pushing the whole chat down.
+                    H0 = Math.ceil(stage.getBoundingClientRect().height);
+                    var vh = Math.min(H0, CAP);
+                    viewport.style.height = vh + 'px';
+                    __report(vh);
+                  });
+                } catch (e) {
+                  window.webkit.messageHandlers.cmuxMermaid.postMessage({
+                    error: String((e && e.message) || e)
+                  });
+                }
+              };
+            </script>
+            </body>
+            </html>
+            """
+        }
+    }
+}
+
+/// Presents a mermaid diagram in a standalone, resizable floating window so the
+/// user can inspect large diagrams with full zoom/pan. Instances retain
+/// themselves in `live` until their window closes, avoiding an owner reference
+/// from the transient code-block view.
+@MainActor
+private final class MermaidDiagramWindowController: NSObject, NSWindowDelegate {
+    private static var live: [MermaidDiagramWindowController] = []
+    private var window: NSWindow?
+
+    static func present(source: String, isDark: Bool) {
+        let controller = MermaidDiagramWindowController()
+        controller.show(source: source, isDark: isDark)
+        live.append(controller)
+    }
+
+    private func show(source: String, isDark: Bool) {
+        let content = ChatMermaidDiagramView(source: source, isDark: isDark, fillHeight: true)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color(nsColor: .windowBackgroundColor))
+        let hosting = NSHostingController(rootView: content)
+        let window = NSWindow(contentViewController: hosting)
+        window.styleMask = [.titled, .closable, .resizable, .miniaturizable]
+        window.title = String(
+            localized: "claudeChat.mermaid.window.title", defaultValue: "Diagram"
+        )
+        window.setContentSize(NSSize(width: 960, height: 720))
+        window.appearance = NSAppearance(named: isDark ? .darkAqua : .aqua)
+        window.isReleasedWhenClosed = false
+        window.delegate = self
+        window.center()
+        window.makeKeyAndOrderFront(nil)
+        self.window = window
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        window = nil
+        Self.live.removeAll { $0 === self }
     }
 }
