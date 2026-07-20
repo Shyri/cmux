@@ -128,8 +128,8 @@ final class AgentChatProseStreamer {
 
     /// Builds the preview message. The id is stable per session so successive
     /// previews replace in place; the seq sorts it after the committed window.
-    private func previewMessage(sessionID: String, text: String) -> ChatMessage {
-        ChatMessage(
+    private func previewMessage(sessionID: String, text: String) -> AgentChatMessage {
+        AgentChatMessage(
             id: "stream:\(sessionID)",
             seq: Int.max - 1,
             role: .agent,
