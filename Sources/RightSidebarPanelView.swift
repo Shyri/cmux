@@ -948,7 +948,7 @@ struct GitStatusSidebarView: View {
         .padding(.vertical, 4)
         .frame(maxWidth: .infinity, alignment: .leading)
         .contentShape(Rectangle())
-        .onTapGesture { openDiff() }
+        .onTapGesture { openDiff(file) }
         .help(file.path)
     }
 
@@ -962,13 +962,17 @@ struct GitStatusSidebarView: View {
         }
     }
 
-    private func openDiff() {
+    private func openDiff(_ file: GitStatusFile) {
         guard !workspace.currentDirectory.isEmpty else { return }
+        // Scope the diff to the clicked file only. `compare == nil` diffs the
+        // working tree against HEAD, so a modified/staged file shows exactly
+        // its own uncommitted changes instead of the whole working tree.
         let spec = GitDiffSpec(
             base: "HEAD",
             compare: nil,
             directory: workspace.currentDirectory,
-            title: String(localized: "gitStatus.diff.title", defaultValue: "Working tree")
+            title: (file.path as NSString).lastPathComponent,
+            pathspec: [file.path]
         )
         GitDiffWindowRegistry.show(spec: spec)
     }

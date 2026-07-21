@@ -56,6 +56,10 @@ struct GitDiffSpec: Equatable, Sendable {
     let compare: String?
     let directory: String
     let title: String
+    /// When non-empty, limits the diff to these pathspecs (passed after `--`).
+    /// Used by the working-copy "Changes" view to open a single clicked file
+    /// instead of the whole tree.
+    var pathspec: [String]? = nil
     /// Set when the diff was opened from a GitLab merge request. Enables the
     /// "Approve" button in the window toolbar.
     var mergeRequestIID: Int? = nil
@@ -403,15 +407,16 @@ private func rethrowAsMissingRefs(_ error: Error, spec: GitDiffSpec) -> Error {
 
 func fetchChangedFiles(spec: GitDiffSpec) async throws -> [GitDiffFile] {
     let rangeArgs = try await resolvedRangeArgs(for: spec)
+    let pathspecArgs = spec.pathspec ?? []
     let numstat: String
     let nameStatus: String
     do {
         numstat = try await runGit(
-            args: ["diff", "--numstat", "-z"] + rangeArgs + ["--"],
+            args: ["diff", "--numstat", "-z"] + rangeArgs + ["--"] + pathspecArgs,
             directory: spec.directory
         )
         nameStatus = try await runGit(
-            args: ["diff", "--name-status", "-z"] + rangeArgs + ["--"],
+            args: ["diff", "--name-status", "-z"] + rangeArgs + ["--"] + pathspecArgs,
             directory: spec.directory
         )
     } catch {
