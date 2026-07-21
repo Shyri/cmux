@@ -778,6 +778,16 @@ enum WorkingCopyStatusProvider {
         return files
     }
 
+    static func branchName(workingDirectory: String) -> String? {
+        guard !workingDirectory.isEmpty else { return nil }
+        guard let output = runGit(
+            in: workingDirectory,
+            arguments: ["rev-parse", "--abbrev-ref", "HEAD"]
+        ) else { return nil }
+        let name = output.trimmingCharacters(in: .whitespacesAndNewlines)
+        return name.isEmpty ? nil : name
+    }
+
     private static func runGit(in directory: String, arguments: [String]) -> String? {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
@@ -805,6 +815,7 @@ enum WorkingCopyStatusProvider {
 @MainActor
 final class GitStatusStore: ObservableObject {
     @Published private(set) var files: [GitStatusFile] = []
+    @Published private(set) var branch: String?
     @Published private(set) var isLoading = false
     private var loadTask: Task<Void, Never>?
 
@@ -817,11 +828,15 @@ final class GitStatusStore: ObservableObject {
         }
         isLoading = true
         loadTask = Task { [weak self] in
-            let result = await Task.detached(priority: .userInitiated) {
-                WorkingCopyStatusProvider.compute(workingDirectory: directory)
+            let (result, branchName) = await Task.detached(priority: .userInitiated) {
+                (
+                    WorkingCopyStatusProvider.compute(workingDirectory: directory),
+                    WorkingCopyStatusProvider.branchName(workingDirectory: directory)
+                )
             }.value
             guard let self, !Task.isCancelled else { return }
             self.files = result
+            self.branch = branchName
             self.isLoading = false
         }
     }
@@ -848,9 +863,22 @@ struct GitStatusSidebarView: View {
 
     private var header: some View {
         HStack(spacing: 6) {
-            Text(String(localized: "gitStatus.title", defaultValue: "Changes"))
-                .font(.system(size: 12, weight: .semibold))
-                .foregroundStyle(Color.darculaForeground)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(String(localized: "gitStatus.title", defaultValue: "Changes"))
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(Color.darculaForeground)
+                if let branch = store.branch, !branch.isEmpty {
+                    HStack(spacing: 3) {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 9))
+                        Text(branch)
+                            .font(.system(size: 10, design: .monospaced))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    .foregroundStyle(Color.darculaForeground.opacity(0.6))
+                }
+            }
             Spacer()
             Button {
                 store.load(directory: workspace.currentDirectory)
