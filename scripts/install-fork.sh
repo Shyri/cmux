@@ -224,6 +224,13 @@ if [[ -f "$SOURCE_ENTITLEMENTS" ]]; then
     /usr/libexec/PlistBuddy -c "Delete :${key}" "$FORK_ENTITLEMENTS" 2>/dev/null || true
   done < <(/usr/libexec/PlistBuddy -c "Print" "$FORK_ENTITLEMENTS" 2>/dev/null \
     | /usr/bin/awk -F' = ' '/^[[:space:]]+com\.apple\.developer\./ { gsub(/^[[:space:]]+/, "", $1); print $1 }')
+  # `keychain-access-groups` is Team-ID-scoped (e.g. `7WLXT3NR37.com.cmuxterm.app`).
+  # It does not start with `com.apple.developer.`, so the loop above misses it,
+  # but ad-hoc signing has no team and cannot claim it — AMFI then rejects the
+  # launch with error 163 ("Code has restricted entitlements, but the validation
+  # of its code signature failed") and the installed app never opens. The fork
+  # keys its own keychain by bundle id, so the shared group is unnecessary here.
+  /usr/libexec/PlistBuddy -c "Delete :keychain-access-groups" "$FORK_ENTITLEMENTS" 2>/dev/null || true
 fi
 # `--options runtime` enables hardened runtime. With the sanitized
 # entitlements above (only the `com.apple.security.cs.*` flags, which
