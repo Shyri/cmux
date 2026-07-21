@@ -44,6 +44,17 @@ struct GitLabSidebarView: View {
             content
         }
         .background(Color.darculaSidebarBackground)
+        // Preserve the selected sub-tab per workspace: restore it on appear and
+        // when the workspace changes, and persist every change.
+        .onAppear {
+            selectedTab = GitLabSidebarTabStore.shared.tab(for: workspace.id)
+        }
+        .onChange(of: workspace.id) { newWorkspaceId in
+            selectedTab = GitLabSidebarTabStore.shared.tab(for: newWorkspaceId)
+        }
+        .onChange(of: selectedTab) { newTab in
+            GitLabSidebarTabStore.shared.setTab(newTab, for: workspace.id)
+        }
     }
 
     private var tabBar: some View {
@@ -137,5 +148,35 @@ struct GitLabSidebarView: View {
         case .releases:
             ReleasesListView(workspace: workspace)
         }
+    }
+}
+
+/// Persists the selected GitLab sidebar sub-tab per workspace so switching
+/// workspaces and returning keeps you on the same tab (survives the
+/// `.id(ws.id)` view recreation and app restarts). Mirrors the per-workspace
+/// `GitLabIssueFiltersStore`.
+@MainActor
+final class GitLabSidebarTabStore {
+    static let shared = GitLabSidebarTabStore()
+
+    private let defaultsKey = "gitlab.sidebar.selectedTabByWorkspace"
+    private var tabsByWorkspaceId: [String: String]
+
+    private init() {
+        tabsByWorkspaceId = (UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String]) ?? [:]
+    }
+
+    func tab(for workspaceId: UUID) -> GitLabSidebarTab {
+        guard let raw = tabsByWorkspaceId[workspaceId.uuidString],
+              let tab = GitLabSidebarTab(rawValue: raw) else {
+            return .mergeRequests
+        }
+        return tab
+    }
+
+    func setTab(_ tab: GitLabSidebarTab, for workspaceId: UUID) {
+        guard tabsByWorkspaceId[workspaceId.uuidString] != tab.rawValue else { return }
+        tabsByWorkspaceId[workspaceId.uuidString] = tab.rawValue
+        UserDefaults.standard.set(tabsByWorkspaceId, forKey: defaultsKey)
     }
 }
