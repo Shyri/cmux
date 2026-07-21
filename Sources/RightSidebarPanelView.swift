@@ -64,7 +64,7 @@ enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
 }
 
 extension RightSidebarMode {
-    static let paneModes: [RightSidebarMode] = [.files, .find, .sessions]
+    static let paneModes: [RightSidebarMode] = [.files, .find, .sessions, .gitlab, .gitStatus]
 
     var canOpenAsPane: Bool {
         Self.paneModes.contains(self)

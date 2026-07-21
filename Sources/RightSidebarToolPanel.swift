@@ -60,6 +60,8 @@ final class RightSidebarToolPanel: Panel, ObservableObject {
     var displayTitle: String { mode.label }
     var displayIcon: String? { mode.symbolName }
 
+    var attachedWorkspace: Workspace? { workspace }
+
     func reattach(to workspace: Workspace) {
         self.workspace = workspace
         observeWorkspaceRootChanges(workspace)
@@ -294,7 +296,21 @@ struct RightSidebarToolPanelView: View {
                 RightSidebarToolFocusAnchor(onViewChange: panel.attachSessionIndexFocusAnchor)
                     .frame(width: 0, height: 0)
             )
-        case .feed, .dock, .gitlab, .gitStatus, .customSidebar:
+        case .gitlab:
+            if let workspace = panel.attachedWorkspace {
+                GitLabSidebarView(workspace: workspace)
+                    .id(workspace.id)
+            } else {
+                EmptyView()
+            }
+        case .gitStatus:
+            if let workspace = panel.attachedWorkspace {
+                GitStatusSidebarView(workspace: workspace)
+                    .id(workspace.id)
+            } else {
+                EmptyView()
+            }
+        case .feed, .dock, .customSidebar:
             EmptyView()
         }
     }
