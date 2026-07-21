@@ -1023,41 +1023,97 @@ struct ClaudeChatPanelView: View {
     /// The actual SwiftUI tree of the chat panel, embedded inside the
     /// AppKit dragging container. Kept as a separate computed property so
     /// the body's outer view is just the container.
+    /// User-chosen width of the diff pane, persisted across sessions/panels.
+    /// Clamped to the container on use so neither side can collapse.
+    @AppStorage("cmux.claudeChat.diffPaneWidth") private var diffPaneWidthStored: Double = 360
+    @State private var diffDragStartWidth: CGFloat?
+
+    private static let diffPaneMinWidth: CGFloat = 240
+    private static let chatColumnMinWidth: CGFloat = 360
+
+    private func clampDiffWidth(_ value: CGFloat, total: CGFloat) -> CGFloat {
+        let maxDiff = max(Self.diffPaneMinWidth, total - Self.chatColumnMinWidth)
+        return min(max(value, Self.diffPaneMinWidth), maxDiff)
+    }
+
     private var chatContent: some View {
-        HStack(spacing: 0) {
-            chatColumn
-            if panel.diffPaneOpen {
-                Divider()
-                DiffPaneView(
-                    edits: panel.lastTurnEdits,
-                    isDark: colorScheme == .dark,
-                    onClose: {
-                        panel.diffPaneOpen = false
-                        // User just expressed an explicit preference —
-                        // suppress any future auto-open for the rest
-                        // of this session.
-                        panel.hasAutoOpenedDiffPaneThisSession = true
+        GeometryReader { geo in
+            VStack(spacing: 0) {
+                HStack(spacing: 0) {
+                    chatColumn
+                    if panel.diffPaneOpen {
+                        diffResizeHandle(totalWidth: geo.size.width)
+                        DiffPaneView(
+                            edits: panel.lastTurnEdits,
+                            isDark: colorScheme == .dark,
+                            onClose: {
+                                panel.diffPaneOpen = false
+                                // User just expressed an explicit preference —
+                                // suppress any future auto-open for the rest
+                                // of this session.
+                                panel.hasAutoOpenedDiffPaneThisSession = true
+                            }
+                        )
+                        .frame(width: clampDiffWidth(CGFloat(diffPaneWidthStored), total: geo.size.width))
+                        .transition(.move(edge: .trailing).combined(with: .opacity))
                     }
-                )
-                .frame(minWidth: 280, idealWidth: 360, maxWidth: 480)
-                .transition(.move(edge: .trailing).combined(with: .opacity))
+                }
+                .frame(maxHeight: .infinity)
+                Divider()
+                // Composer spans the full width, beneath both the chat and the
+                // diff pane, instead of being confined to the chat column.
+                composerBar
             }
-        }
-        .overlay {
-            if isDropTargeted {
-                RoundedRectangle(cornerRadius: 0)
-                    .stroke(ChatPalette.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
-                    .background(ChatPalette.green.opacity(0.06))
-                    .allowsHitTesting(false)
+            .overlay {
+                if isDropTargeted {
+                    RoundedRectangle(cornerRadius: 0)
+                        .stroke(ChatPalette.green, style: StrokeStyle(lineWidth: 3, dash: [6, 4]))
+                        .background(ChatPalette.green.opacity(0.06))
+                        .allowsHitTesting(false)
+                }
             }
+            .animation(.easeInOut(duration: 0.18), value: panel.diffPaneOpen)
+            // The chat palette must be injected here, INSIDE the AppKit
+            // hosting container — environments do not cross the
+            // NSHostingView boundary, so an outer `.environment` would never
+            // reach DiffPaneView/DiffBlock and they'd render with the static
+            // default palette.
+            .environment(\.chatPalette, palette)
         }
-        .animation(.easeInOut(duration: 0.18), value: panel.diffPaneOpen)
-        // The chat palette must be injected here, INSIDE the AppKit
-        // hosting container — environments do not cross the
-        // NSHostingView boundary, so an outer `.environment` would never
-        // reach DiffPaneView/DiffBlock and they'd render with the static
-        // default palette.
-        .environment(\.chatPalette, palette)
+    }
+
+    /// The divider between chat and diff, widened into a drag handle so the
+    /// user can pick the split. Dragging left (toward the chat) grows the diff
+    /// pane; the width is clamped and persisted.
+    private func diffResizeHandle(totalWidth: CGFloat) -> some View {
+        Divider()
+            .overlay(
+                Rectangle()
+                    .fill(Color.clear)
+                    .frame(width: 10)
+                    .contentShape(Rectangle())
+                    .onHover { inside in
+                        if inside {
+                            NSCursor.resizeLeftRight.push()
+                        } else {
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(
+                        DragGesture()
+                            .onChanged { value in
+                                if diffDragStartWidth == nil {
+                                    diffDragStartWidth = clampDiffWidth(
+                                        CGFloat(diffPaneWidthStored), total: totalWidth
+                                    )
+                                }
+                                let base = diffDragStartWidth ?? CGFloat(diffPaneWidthStored)
+                                let proposed = base - value.translation.width
+                                diffPaneWidthStored = Double(clampDiffWidth(proposed, total: totalWidth))
+                            }
+                            .onEnded { _ in diffDragStartWidth = nil }
+                    )
+            )
     }
 
     private var chatColumn: some View {
@@ -1068,10 +1124,19 @@ struct ClaudeChatPanelView: View {
             if case .error(let message) = panel.status {
                 errorBanner(message)
             }
-            Divider()
             if let todos = panel.currentTodos, !todos.isEmpty {
+                Divider()
                 todosBanner(todos)
             }
+        }
+        .frame(maxWidth: .infinity)
+    }
+
+    /// The composer (status line + git state + attachments + input), pulled out
+    /// of `chatColumn` so it spans the full width beneath both the chat and the
+    /// diff pane.
+    private var composerBar: some View {
+        VStack(spacing: 0) {
             if let line = panel.statusLineText, !line.isEmpty {
                 statusLineRow(line)
             }
@@ -1083,7 +1148,6 @@ struct ClaudeChatPanelView: View {
             }
             inputBar
         }
-        .frame(maxWidth: .infinity)
     }
 
     /// Persistent banner above the status line that mirrors Claude
