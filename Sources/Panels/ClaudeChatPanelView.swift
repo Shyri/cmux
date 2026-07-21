@@ -5327,6 +5327,7 @@ private struct TextBlockRow: View, Equatable {
                                     Text(text)
                                         .font(.system(size: fontSize))
                                         .foregroundColor(palette.fg(isDark))
+                                        .lineSpacing(2)
                                 }
                                 .padding(.horizontal, 12)
                                 .padding(.vertical, 8)
@@ -5379,11 +5380,13 @@ private struct TextBlockRow: View, Equatable {
                             Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
                                 .foregroundStyle(palette.fg(isDark))
                                 .font(.system(size: fontSize))
+                                .lineSpacing(2)
                                 .tint(isDark ? ChatPalette.cyan : Color.accentColor)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         case .heavy:
                             Markdown(ChatMarkdownContentCache.shared.content(for: text))
                                 .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette, fontSize: fontSize))
+                                .lineSpacing(2)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
