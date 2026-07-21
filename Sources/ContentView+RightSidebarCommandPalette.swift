@@ -148,6 +148,8 @@ extension ContentView {
             return "palette.showRightSidebarDock"
         case .gitlab:
             return "palette.showRightSidebarGitlab"
+        case .gitStatus:
+            return "palette.showRightSidebarGitStatus"
         case .customSidebar:
             return "palette.showRightSidebarCustomSidebar"
         }
@@ -171,7 +173,7 @@ extension ContentView {
             return "palette.openFindPane"
         case .sessions:
             return "palette.openVaultPane"
-        case .feed, .dock, .gitlab, .customSidebar:
+        case .feed, .dock, .gitlab, .gitStatus, .customSidebar:
             return nil
         }
     }
@@ -184,7 +186,7 @@ extension ContentView {
             return String(localized: "command.openFindPane.title", defaultValue: "Open Find as Pane")
         case .sessions:
             return String(localized: "command.openVaultPane.title", defaultValue: "Open Vault as Pane")
-        case .feed, .dock, .gitlab, .customSidebar:
+        case .feed, .dock, .gitlab, .gitStatus, .customSidebar:
             return nil
         }
     }

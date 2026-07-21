@@ -20,6 +20,7 @@ enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
     case feed
     case dock
     case gitlab
+    case gitStatus = "git-status"
     case customSidebar = "custom-sidebar"
 
     var label: String {
@@ -30,6 +31,7 @@ enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .feed: return String(localized: "rightSidebar.mode.feed", defaultValue: "Feed")
         case .dock: return String(localized: "rightSidebar.mode.dock", defaultValue: "Dock")
         case .gitlab: return String(localized: "rightSidebar.mode.gitlab", defaultValue: "GitLab")
+        case .gitStatus: return String(localized: "rightSidebar.mode.gitStatus", defaultValue: "Changes")
         case .customSidebar: return String(localized: "rightSidebar.mode.customSidebar", defaultValue: "Custom")
         }
     }
@@ -42,6 +44,7 @@ enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .feed: return "dot.radiowaves.left.and.right"
         case .dock: return "dock.rectangle"
         case .gitlab: return "arrow.triangle.merge"
+        case .gitStatus: return "checklist"
         case .customSidebar: return "wand.and.stars"
         }
     }
@@ -54,6 +57,7 @@ enum RightSidebarMode: String, CaseIterable, Codable, Sendable {
         case .feed: return .switchRightSidebarToFeed
         case .dock: return .switchRightSidebarToDock
         case .gitlab: return .switchRightSidebarToGitlab
+        case .gitStatus: return nil
         case .customSidebar: return nil
         }
     }
@@ -79,7 +83,7 @@ enum FileExplorerRootSyncPolicy {
         switch mode {
         case .files, .find:
             return true
-        case .sessions, .feed, .dock, .gitlab, .customSidebar:
+        case .sessions, .feed, .dock, .gitlab, .gitStatus, .customSidebar:
             return false
         }
     }
@@ -429,6 +433,13 @@ struct RightSidebarPanelView: View {
                 } else {
                     Color.clear
                 }
+            case .gitStatus:
+                if let ws = workspace {
+                    GitStatusSidebarView(workspace: ws)
+                        .id(ws.id)
+                } else {
+                    Color.clear
+                }
             case .customSidebar:
                 EmptyView()
             }
@@ -716,5 +727,234 @@ extension NSView {
             view = current.superview
         }
         return true
+    }
+}
+
+// MARK: - Git status sidebar mode
+
+/// A changed file in the working copy.
+struct GitStatusFile: Identifiable, Equatable {
+    enum Group: Int { case staged, unstaged, untracked }
+    let id: String        // "<group>:<path>" so a file staged AND modified lists twice
+    let path: String
+    let code: String      // one-letter status (M/A/D/R/?/…)
+    let group: Group
+}
+
+/// Runs `git status --porcelain` on the workspace repo and groups the files.
+enum WorkingCopyStatusProvider {
+    static func compute(workingDirectory: String) -> [GitStatusFile] {
+        guard !workingDirectory.isEmpty else { return [] }
+        guard let output = runGit(
+            in: workingDirectory,
+            arguments: ["status", "--porcelain"]
+        ) else { return [] }
+
+        var files: [GitStatusFile] = []
+        for rawLine in output.split(separator: "\n", omittingEmptySubsequences: true) {
+            let line = String(rawLine)
+            guard line.count >= 3 else { continue }
+            let chars = Array(line)
+            let x = chars[0]   // staged (index)
+            let y = chars[1]   // unstaged (working tree)
+            var path = String(line.dropFirst(3))
+            // Renames come as "old -> new"; keep the new path.
+            if let arrow = path.range(of: " -> ") {
+                path = String(path[arrow.upperBound...])
+            }
+            path = path.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+
+            if x == "?" && y == "?" {
+                files.append(GitStatusFile(id: "u:\(path)", path: path, code: "?", group: .untracked))
+                continue
+            }
+            if x != " " {
+                files.append(GitStatusFile(id: "s:\(path)", path: path, code: String(x), group: .staged))
+            }
+            if y != " " {
+                files.append(GitStatusFile(id: "w:\(path)", path: path, code: String(y), group: .unstaged))
+            }
+        }
+        return files
+    }
+
+    private static func runGit(in directory: String, arguments: [String]) -> String? {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/git")
+        process.arguments = arguments
+        process.currentDirectoryURL = URL(fileURLWithPath: directory)
+        var env = ProcessInfo.processInfo.environment
+        env["GIT_OPTIONAL_LOCKS"] = "0"
+        process.environment = env
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            process.waitUntilExit()
+            guard process.terminationStatus == 0 else { return nil }
+            return String(data: data, encoding: .utf8)
+        } catch {
+            return nil
+        }
+    }
+}
+
+/// Loads the working-copy status off the main thread and publishes it.
+@MainActor
+final class GitStatusStore: ObservableObject {
+    @Published private(set) var files: [GitStatusFile] = []
+    @Published private(set) var isLoading = false
+    private var loadTask: Task<Void, Never>?
+
+    func load(directory: String) {
+        loadTask?.cancel()
+        guard !directory.isEmpty else {
+            files = []
+            isLoading = false
+            return
+        }
+        isLoading = true
+        loadTask = Task { [weak self] in
+            let result = await Task.detached(priority: .userInitiated) {
+                WorkingCopyStatusProvider.compute(workingDirectory: directory)
+            }.value
+            guard let self, !Task.isCancelled else { return }
+            self.files = result
+            self.isLoading = false
+        }
+    }
+}
+
+/// SourceTree-style "changes" viewer: lists working-copy files grouped by
+/// staged / modified / untracked. Click a row to open the working-tree diff.
+struct GitStatusSidebarView: View {
+    @ObservedObject var workspace: Workspace
+    @StateObject private var store = GitStatusStore()
+
+    var body: some View {
+        VStack(spacing: 0) {
+            header
+            Rectangle().fill(Color.darculaBorder).frame(height: 1)
+            content
+        }
+        .background(Color.darculaSidebarBackground)
+        .onAppear { store.load(directory: workspace.currentDirectory) }
+        .onChange(of: workspace.currentDirectory) { newDirectory in
+            store.load(directory: newDirectory)
+        }
+    }
+
+    private var header: some View {
+        HStack(spacing: 6) {
+            Text(String(localized: "gitStatus.title", defaultValue: "Changes"))
+                .font(.system(size: 12, weight: .semibold))
+                .foregroundStyle(Color.darculaForeground)
+            Spacer()
+            Button {
+                store.load(directory: workspace.currentDirectory)
+            } label: {
+                Image(systemName: "arrow.clockwise")
+                    .font(.system(size: 11, weight: .medium))
+                    .foregroundStyle(Color.darculaForeground.opacity(0.85))
+            }
+            .buttonStyle(.plain)
+            .disabled(workspace.currentDirectory.isEmpty)
+            .help(String(localized: "gitStatus.refresh", defaultValue: "Refresh"))
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 8)
+    }
+
+    @ViewBuilder
+    private var content: some View {
+        if workspace.currentDirectory.isEmpty {
+            emptyState(String(localized: "gitStatus.noRepo", defaultValue: "No repository for this workspace"))
+        } else if store.files.isEmpty {
+            emptyState(store.isLoading
+                ? String(localized: "gitStatus.loading", defaultValue: "Loading…")
+                : String(localized: "gitStatus.clean", defaultValue: "No changes — working tree clean"))
+        } else {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 0) {
+                    fileGroup(.staged, title: String(localized: "gitStatus.group.staged", defaultValue: "Staged"))
+                    fileGroup(.unstaged, title: String(localized: "gitStatus.group.modified", defaultValue: "Modified"))
+                    fileGroup(.untracked, title: String(localized: "gitStatus.group.untracked", defaultValue: "Untracked"))
+                }
+                .padding(.bottom, 6)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func fileGroup(_ group: GitStatusFile.Group, title: String) -> some View {
+        let items = store.files.filter { $0.group == group }
+        if !items.isEmpty {
+            Text(title.uppercased())
+                .font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(Color.darculaForeground.opacity(0.5))
+                .padding(.horizontal, 10)
+                .padding(.top, 8)
+                .padding(.bottom, 2)
+            ForEach(items) { file in
+                fileRow(file)
+            }
+        }
+    }
+
+    private func fileRow(_ file: GitStatusFile) -> some View {
+        HStack(spacing: 8) {
+            Text(file.code)
+                .font(.system(size: 10, weight: .bold, design: .monospaced))
+                .foregroundStyle(color(for: file.code))
+                .frame(width: 14, alignment: .center)
+            Text((file.path as NSString).lastPathComponent)
+                .font(.system(size: 12))
+                .foregroundStyle(Color.darculaForeground)
+                .lineLimit(1)
+                .truncationMode(.middle)
+            Spacer(minLength: 4)
+        }
+        .padding(.horizontal, 10)
+        .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { openDiff() }
+        .help(file.path)
+    }
+
+    private func color(for code: String) -> Color {
+        switch code {
+        case "A": return .green
+        case "D": return .red
+        case "M": return .orange
+        case "?": return Color.darculaForeground.opacity(0.5)
+        default: return Color.darculaForeground.opacity(0.85)
+        }
+    }
+
+    private func openDiff() {
+        guard !workspace.currentDirectory.isEmpty else { return }
+        let spec = GitDiffSpec(
+            base: "HEAD",
+            compare: nil,
+            directory: workspace.currentDirectory,
+            title: String(localized: "gitStatus.diff.title", defaultValue: "Working tree")
+        )
+        GitDiffWindowRegistry.show(spec: spec)
+    }
+
+    private func emptyState(_ text: String) -> some View {
+        VStack {
+            Spacer()
+            Text(text)
+                .font(.system(size: 11))
+                .foregroundStyle(Color.darculaForeground.opacity(0.5))
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 16)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
