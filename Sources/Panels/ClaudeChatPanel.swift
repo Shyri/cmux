@@ -964,6 +964,11 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     ///     to `.killed`
     /// Output is intentionally NOT cached here — the user said they only
     /// want to see and kill them, not view what each shell is doing.
+    /// Body font size of the chat transcript, in points. Adjusted by
+    /// Cmd-+/Cmd-- (zoomIn/zoomOut) on the focused chat panel; the value is
+    /// persisted as the default so it's remembered across panels/sessions.
+    @Published private(set) var fontSize: Double = ChatFontSizeSettings.resolvedDefault()
+
     @Published private(set) var backgroundShells: [BackgroundShell] = [] {
         didSet {
             var live = 0
@@ -2108,6 +2113,38 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
     /// Bulk-remove every shell that has finished (completed or killed), leaving
     /// the ones still live (starting/running/unknown). Backs the popover's
     /// "clear finished" action.
+    // MARK: - Font size / zoom
+
+    /// Increases the chat font size by one step. Returns `true` if it changed.
+    @discardableResult
+    func zoomIn() -> Bool {
+        setFontSize(fontSize + ChatFontSizeSettings.stepPointSize)
+    }
+
+    /// Decreases the chat font size by one step. Returns `true` if it changed.
+    @discardableResult
+    func zoomOut() -> Bool {
+        setFontSize(fontSize - ChatFontSizeSettings.stepPointSize)
+    }
+
+    /// Resets the chat font size to the configured `claudeChat.fontSize` default.
+    @discardableResult
+    func resetZoom() -> Bool {
+        setFontSize(ChatFontSizeSettings.defaultPointSize)
+    }
+
+    /// Sets the chat font size to an explicit point value (clamped) and persists
+    /// it as the default so new/reopened panels inherit it. Returns `true` if
+    /// the size actually changed.
+    @discardableResult
+    func setFontSize(_ candidate: Double) -> Bool {
+        let clamped = ChatFontSizeSettings.clamp(candidate)
+        guard abs(clamped - fontSize) > 0.0001 else { return false }
+        fontSize = clamped
+        ChatFontSizeSettings.setDefault(clamped)
+        return true
+    }
+
     func dismissFinishedBackgroundShells() {
         backgroundShells.removeAll { shell in
             switch shell.status {
@@ -3125,5 +3162,38 @@ final class ClaudeChatPanel: Panel, ObservableObject, ChatMcpHttpServerDelegate 
                 )
             )
         ]
+    }
+}
+
+/// Persistent + per-panel body font size for the agent chat, mirroring
+/// `MarkdownFontSizeSettings`. The value is the chat message body size in
+/// points; Cmd-+/Cmd-- adjust the focused panel and persist the default so it
+/// is remembered across panels and sessions.
+enum ChatFontSizeSettings {
+    /// UserDefaults / cmux.json key (`claudeChat.fontSize`).
+    static let key = "claudeChat.fontSize"
+    static let defaultPointSize: Double = 13
+    static let minimumPointSize: Double = 9
+    static let maximumPointSize: Double = 28
+    static let stepPointSize: Double = 1
+
+    /// Clamps a requested point size into the supported range.
+    static func clamp(_ value: Double) -> Double {
+        min(max(value, minimumPointSize), maximumPointSize)
+    }
+
+    /// The persistent default point size, honoring `claudeChat.fontSize` from
+    /// UserDefaults / cmux.json and falling back to ``defaultPointSize``.
+    static func resolvedDefault(defaults: UserDefaults = .standard) -> Double {
+        guard let raw = defaults.object(forKey: key) as? NSNumber else {
+            return defaultPointSize
+        }
+        return clamp(raw.doubleValue)
+    }
+
+    /// Persists `points` (clamped, rounded to integer points) as the default
+    /// `claudeChat.fontSize` so new/reopened panels start at this size.
+    static func setDefault(_ points: Double, defaults: UserDefaults = .standard) {
+        defaults.set(Int(clamp(points).rounded()), forKey: key)
     }
 }

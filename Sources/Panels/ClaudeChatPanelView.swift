@@ -748,6 +748,21 @@ extension EnvironmentValues {
     }
 }
 
+/// Body font size of the chat transcript, injected via environment so rows read
+/// it without holding the panel store (snapshot-boundary rule). A change forces
+/// a re-render of the rows that read it even though `TextBlockRow.==` ignores it,
+/// exactly like `chatPalette`.
+private struct ChatFontSizeKey: EnvironmentKey {
+    static let defaultValue: CGFloat = 13
+}
+
+extension EnvironmentValues {
+    var chatFontSize: CGFloat {
+        get { self[ChatFontSizeKey.self] }
+        set { self[ChatFontSizeKey.self] = newValue }
+    }
+}
+
 /// SwiftUI view that renders a `ClaudeChatPanel`. Fase 1 ships the layout
 /// (message list, tool cards, input bar) wired to the panel's mock state;
 /// fase 2 connects it to the live `ClaudeChatRunner` subprocess.
@@ -1079,6 +1094,7 @@ struct ClaudeChatPanelView: View {
             // reach DiffPaneView/DiffBlock and they'd render with the static
             // default palette.
             .environment(\.chatPalette, palette)
+            .environment(\.chatFontSize, CGFloat(panel.fontSize))
         }
     }
 
@@ -1563,6 +1579,8 @@ struct ClaudeChatPanelView: View {
             alwaysAllowedButton
             mcpManagerButton
             backgroundShellsButton
+            fontZoomOutButton
+            fontZoomInButton
             copyChatButton
             clearButton
         }
@@ -1754,6 +1772,34 @@ struct ClaudeChatPanelView: View {
         .help(String(
             localized: "claudeChat.bashes.button.tooltip",
             defaultValue: "Background shells claude has launched in this chat"
+        ))
+    }
+
+    private var fontZoomOutButton: some View {
+        Button {
+            panel.zoomOut()
+        } label: {
+            Image(systemName: "textformat.size.smaller")
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.borderless)
+        .help(String(
+            localized: "claudeChat.fontZoom.out.tooltip",
+            defaultValue: "Decrease chat font size"
+        ))
+    }
+
+    private var fontZoomInButton: some View {
+        Button {
+            panel.zoomIn()
+        } label: {
+            Image(systemName: "textformat.size.larger")
+                .font(.system(size: 11))
+        }
+        .buttonStyle(.borderless)
+        .help(String(
+            localized: "claudeChat.fontZoom.in.tooltip",
+            defaultValue: "Increase chat font size"
         ))
     }
 
@@ -3432,6 +3478,7 @@ private struct ExitPlanModeView: View {
     let isDark: Bool
 
     @Environment(\.chatPalette) private var palette
+    @Environment(\.chatFontSize) private var fontSize
 
     private var planMarkdown: String {
         (input?["plan"] as? String) ?? ""
@@ -3460,7 +3507,7 @@ private struct ExitPlanModeView: View {
                 .foregroundColor(.secondary)
             } else {
                 Markdown(trimmed)
-                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+                    .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette, fontSize: fontSize))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(10)
                     .background(
@@ -4471,6 +4518,8 @@ private struct ChatMarkdownPrewarmView: View {
     let isDark: Bool
     let palette: ChatPalette
 
+    @Environment(\.chatFontSize) private var fontSize
+
     /// Touches every MarkdownUI block type we care about. The exact
     /// content is irrelevant — only the AST shape (block kinds, list
     /// nesting, table presence) matters for metadata instantiation.
@@ -4502,7 +4551,7 @@ private struct ChatMarkdownPrewarmView: View {
 
     var body: some View {
         Markdown(ChatMarkdownContentCache.shared.content(for: Self.prewarmContent))
-            .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+            .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette, fontSize: fontSize))
             .frame(width: 1, height: 1)
             .opacity(0)
             .allowsHitTesting(false)
@@ -4527,8 +4576,8 @@ private final class ChatMarkdownThemeCache {
         cache.countLimit = 16
     }
 
-    func theme(isDark: Bool, palette: ChatPalette) -> Theme {
-        let key = Self.cacheKey(isDark: isDark, palette: palette) as NSString
+    func theme(isDark: Bool, palette: ChatPalette, fontSize: CGFloat) -> Theme {
+        let key = Self.cacheKey(isDark: isDark, palette: palette, fontSize: fontSize) as NSString
         if let box = cache.object(forKey: key) {
             return box.theme
         }
@@ -4537,13 +4586,13 @@ private final class ChatMarkdownThemeCache {
         if let box = cache.object(forKey: key) {
             return box.theme
         }
-        let theme = ChatMarkdownThemeCache.build(isDark: isDark, palette: palette)
+        let theme = ChatMarkdownThemeCache.build(isDark: isDark, palette: palette, fontSize: fontSize)
         cache.setObject(Box(theme), forKey: key)
         return theme
     }
 
-    private static func cacheKey(isDark: Bool, palette: ChatPalette) -> String {
-        "\(isDark ? "d" : "l")|\(Self.rgbHex(palette.terminalBg))|\(Self.rgbHex(palette.terminalFg))"
+    private static func cacheKey(isDark: Bool, palette: ChatPalette, fontSize: CGFloat) -> String {
+        "\(isDark ? "d" : "l")|\(Self.rgbHex(palette.terminalBg))|\(Self.rgbHex(palette.terminalFg))|\(Int(fontSize.rounded()))"
     }
 
     private static func rgbHex(_ color: NSColor) -> String {
@@ -4554,8 +4603,8 @@ private final class ChatMarkdownThemeCache {
         return String(format: "%02X%02X%02X", r, g, b)
     }
 
-    private static func build(isDark: Bool, palette: ChatPalette) -> Theme {
-        cmuxChatMarkdownThemeUncached(isDark: isDark, palette: palette)
+    private static func build(isDark: Bool, palette: ChatPalette, fontSize: CGFloat) -> Theme {
+        cmuxChatMarkdownThemeUncached(isDark: isDark, palette: palette, fontSize: fontSize)
     }
 }
 
@@ -4563,8 +4612,8 @@ private final class ChatMarkdownThemeCache {
 /// instance keyed by `(isDark, palette terminal colors)` so repeated
 /// `TextBlockRow.body` evaluations during streaming don't reconstruct
 /// the closure-heavy `Theme` from scratch.
-private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme {
-    ChatMarkdownThemeCache.shared.theme(isDark: isDark, palette: palette)
+private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette, fontSize: CGFloat) -> Theme {
+    ChatMarkdownThemeCache.shared.theme(isDark: isDark, palette: palette, fontSize: fontSize)
 }
 
 /// Actual builder. Kept as a separate function so the cache wrapper
@@ -4573,15 +4622,15 @@ private func cmuxChatMarkdownTheme(isDark: Bool, palette: ChatPalette) -> Theme 
 /// margins and theme-aware colours. `palette` carries the user's
 /// terminal background/foreground so inline code highlight stays
 /// legible across themes.
-private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette) -> Theme {
+private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette, fontSize: CGFloat) -> Theme {
     Theme()
         .text {
             ForegroundColor(palette.fg(isDark))
-            FontSize(13)
+            FontSize(fontSize)
         }
         .code {
             FontFamilyVariant(.monospaced)
-            FontSize(12)
+            FontSize(max(9, fontSize - 1))
             // IntelliJ-Darcula-style: inline code uses the same blue as
             // identifiers/keywords in the editor. Avoid the prior purple
             // because it clashed with the rest of the palette. A brighter
@@ -4594,7 +4643,8 @@ private func cmuxChatMarkdownThemeUncached(isDark: Bool, palette: ChatPalette) -
             ChatCopyableCodeBlock(
                 configuration: configuration,
                 isDark: isDark,
-                palette: palette
+                palette: palette,
+                fontSize: fontSize
             )
         }
         .link {
@@ -5179,6 +5229,7 @@ private struct TextBlockRow: View, Equatable {
     var onCancelPending: ((UUID) -> Void)? = nil
 
     @Environment(\.chatPalette) private var palette
+    @Environment(\.chatFontSize) private var fontSize
     @State private var isExpanded: Bool = false
     @State private var didCopy: Bool = false
 
@@ -5274,7 +5325,7 @@ private struct TextBlockRow: View, Equatable {
                                             ))
                                     }
                                     Text(text)
-                                        .font(.system(size: 13))
+                                        .font(.system(size: fontSize))
                                         .foregroundColor(palette.fg(isDark))
                                 }
                                 .padding(.horizontal, 12)
@@ -5327,12 +5378,12 @@ private struct TextBlockRow: View, Equatable {
                         case .simple:
                             Text(ChatSimpleMarkdownCache.shared.attributed(for: text))
                                 .foregroundStyle(palette.fg(isDark))
-                                .font(.system(size: 13))
+                                .font(.system(size: fontSize))
                                 .tint(isDark ? ChatPalette.cyan : Color.accentColor)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         case .heavy:
                             Markdown(ChatMarkdownContentCache.shared.content(for: text))
-                                .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette))
+                                .markdownTheme(cmuxChatMarkdownTheme(isDark: isDark, palette: palette, fontSize: fontSize))
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                     }
@@ -6105,6 +6156,7 @@ private struct ChatCopyableCodeBlock: View {
     let configuration: CodeBlockConfiguration
     let isDark: Bool
     let palette: ChatPalette
+    let fontSize: CGFloat
 
     @State private var didCopy = false
     @State private var copyResetWorkItem: DispatchWorkItem?
@@ -6136,7 +6188,7 @@ private struct ChatCopyableCodeBlock: View {
                     configuration.label
                         .markdownTextStyle {
                             FontFamilyVariant(.monospaced)
-                            FontSize(12)
+                            FontSize(max(9, fontSize - 1))
                         }
                         .padding(10)
                 }
